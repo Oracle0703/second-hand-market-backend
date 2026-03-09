@@ -72,3 +72,34 @@
 3. 幂等键存储策略（TTL 与清理）需在实现时固化到工程规范。
 
 不要只做文字润色，重点补足业务闭环、状态流转、接口粒度和开发可执行性。
+
+## 7. 小修订补丁（本轮追加）
+
+### 7.1 Checklist
+- [x] 补齐 `merchant/account` 与 `merchant/account/password` 接口到后端 API 清单
+- [x] 明确 `merchant/profile` 与 `merchant/account` 职责边界
+- [x] 明确 `stock` 在本期二手单件场景的定义（固定为 1，保留字段）
+
+### 7.2 本轮修改文件
+1. `docs/backend-api-checklist.md`
+2. `docs/frontend-pages.md`
+3. `docs/specs.md`
+4. `docs/data-model.md`
+5. `docs/review-fixes-summary.md`
+
+### 7.3 本轮变更说明
+1. 在 API 文档新增账号设置接口：
+   - `GET /merchant/account`
+   - `PUT /merchant/account/password`
+   并补齐用途、参数、响应字段、权限、失败场景。
+2. 在产品与页面文档明确接口职责边界：
+   - `merchant/profile`：商家主体资料 + 审核状态
+   - `merchant/account`：当前登录账号资料 + 安全设置
+3. 在 specs、前端页面、数据模型、API 文档统一 `stock` 约束：
+   - 本期不允许 `stock > 1`
+   - `stock` 固定为 `1`
+   - 作为后续扩展保留字段
+
+### 7.4 当前可开工评估
+结论：经过本轮补丁，文档仍然满足并强化了“可直接进入开发实现”的标准。  
+本轮补丁主要消除了接口对齐缺口与职责歧义，降低联调误差。

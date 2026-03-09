@@ -134,7 +134,7 @@
 | price_cent | int | 售价（分） |
 | original_price_cent | int null | 原价（分） |
 | condition_level | varchar(16) | `LIKE_NEW/GOOD/FAIR/POOR` |
-| stock | int | 库存（本期建议默认 1） |
+| stock | int | 库存（本期固定为 1，保留字段） |
 | cover_file_id | bigint null | 封面图文件 ID |
 | status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` |
 | active_order_id | bigint null | 当前占用中的订单 ID（仅 `LOCKED` 时有值） |
@@ -155,6 +155,10 @@
 2. `idx_merchant_status(merchant_id, status, updated_at)`
 3. `idx_merchant_title(merchant_id, title)`
 4. `idx_active_order(active_order_id)`
+
+约束说明：
+1. 本期为二手单件交易模型，`stock` 仅允许为 `1`。
+2. `stock` 作为保留字段存在，为后续“同款多件”扩展预留，不参与本期库存扣减逻辑。
 
 ### 2.7 product_images（商品图片）
 

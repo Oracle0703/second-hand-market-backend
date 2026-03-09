@@ -58,17 +58,33 @@
 1. 商家 `PENDING/REJECTED` 登录返回 `10006`。
 2. 管理员或商家账号 `DISABLED` 返回 `10007`。
 
-## 3. 商家资料与审核状态模块（merchant-onboarding）
+## 3. 商家主体资料与审核状态模块（merchant-onboarding）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
 | `/merchant/profile` | GET | 获取当前商家资料与审核状态 | 无 | `merchant_info{id,name,contact,phone}, review_status, reject_reason` | MERCHANT |
 | `/merchant/reapply` | POST | 驳回后重新提交资料 | `merchant_name(O), contact_name(O), phone(O), license_file_id(O)` | `review_status` | MERCHANT |
 
+职责边界：
+1. `merchant/profile` 仅面向“商家主体 + 审核状态”，不返回账号安全信息。
+2. 账号层信息（用户名、密码修改、安全设置）统一由 `merchant/account` 域接口提供。
+
 失败场景：
 1. 当前非 `REJECTED` 调用 `reapply` 返回 `10005`。
 
-## 4. 管理员审核模块（admin-audit）
+## 4. 商家账号与安全设置模块（merchant-account）
+
+| 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
+| --- | --- | --- | --- | --- | --- |
+| `/merchant/account` | GET | 获取当前登录账号资料与安全设置 | 无 | `account{id,username,role,status,last_login_at}, security{password_updated_at,mfa_enabled}` | MERCHANT |
+| `/merchant/account/password` | PUT | 修改当前登录账号密码 | `old_password(R), new_password(R)` | `success, password_updated_at` | MERCHANT |
+
+失败场景：
+1. `old_password` 错误返回 `10001`（或业务子码）。
+2. `new_password` 不满足强度策略返回 `10001`。
+3. 账号状态为 `DISABLED` 返回 `10007`。
+
+## 5. 管理员审核模块（admin-audit）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
@@ -81,7 +97,7 @@
 1. 非 `PENDING` 执行 `approve/reject` 返回 `10005`。
 2. `reject` 未传 `reason` 返回 `10001`。
 
-## 5. 分类字典模块（categories）
+## 6. 分类字典模块（categories）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
@@ -91,12 +107,12 @@
 1. 新建/编辑商品页面先请求一级分类，再根据 `parent_id` 请求二级分类。
 2. 本期不提供分类增删改接口。
 
-## 6. 商品管理模块（products）
+## 7. 商品管理模块（products）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(R), image_file_ids(R[])` | `product_id, product_no, status, created_at` | MERCHANT |
-| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), stock(O), image_file_ids(O[])` | `product_id, status, updated_at` | MERCHANT |
+| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(O,仅允许1), image_file_ids(R[])` | `product_id, product_no, status, stock, created_at` | MERCHANT |
+| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), image_file_ids(O[])` | `product_id, status, stock, updated_at` | MERCHANT |
 | `/merchant/products/:id` | GET | 商品详情 | `id(path,R)` | `product{id,title,status,category,price_cent,condition_level,stock,images[],active_order_id}` | MERCHANT |
 | `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,updated_at}], total,page,page_size` | MERCHANT |
 | `/merchant/products/:id/on-shelf` | POST | 上架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT |
@@ -104,19 +120,21 @@
 | `/merchant/products/:id/close` | POST | 关闭商品 | `id(path,R), reason(O)` | `product_id, from_status, to_status, changed_at` | MERCHANT |
 
 编辑约束：
-1. `DRAFT/OFF_SHELF`：允许全字段编辑。
+1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、图片），不含 `stock`。
 2. `ON_SHELF`：仅允许 `description,image_file_ids`。
 3. `LOCKED/SOLD/CLOSED`：禁止编辑。
+4. `stock` 为保留字段，本期固定 `1`，不支持编辑。
 
 失败场景：
 1. 跨商家访问返回 `10003`。
 2. 非法状态流转返回 `10005`。
 3. 分类不存在或非二级分类返回 `10001`。
+4. 创建商品时 `stock` 传入且不为 `1` 返回 `10001`。
 
 幂等说明：
 1. `on-shelf/off-shelf/close` 重复请求且目标状态已达成时返回成功（`code=0`，`idempotent=true`）。
 
-## 7. 轻量订单模块（orders-lite）
+## 8. 轻量订单模块（orders-lite）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
@@ -140,7 +158,7 @@
 1. `complete/close` 重复请求如果订单已到目标状态返回成功并标记 `idempotent=true`。
 2. 若已到另一个终态（如已 `CLOSED` 再调 `complete`）返回 `10005`。
 
-## 8. 文件上传模块（uploads）
+## 9. 文件上传模块（uploads）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
@@ -150,20 +168,20 @@
 失败场景：
 1. MIME 或大小不合法返回 `10008`。
 
-## 9. 审计日志模块（operation-logs）
+## 10. 审计日志模块（operation-logs）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
 | `/admin/logs` | GET | 管理员查看全局日志 | `operator_type(O), action(O), resource_type(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,operator,action,resource_type,resource_id,from_status,to_status,result_code,created_at}], total,page,page_size` | ADMIN |
 | `/merchant/logs` | GET | 商家查看本商家日志 | `action(O), resource_type(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,action,resource_type,resource_id,from_status,to_status,result_code,created_at}], total,page,page_size` | MERCHANT |
 
-## 10. Dashboard 模块
+## 11. Dashboard 模块
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
 | `/merchant/dashboard` | GET | 商家仪表盘统计 | 无 | `product_stats{draft,on_shelf,locked,off_shelf,sold,closed}, order_stats{created,completed,closed}` | MERCHANT |
 
-## 11. 关键接口 JSON 示例
+## 12. 关键接口 JSON 示例
 
 ### 11.1 注册（`POST /api/v1/auth/register`）
 
@@ -362,7 +380,7 @@
 }
 ```
 
-## 12. 后端交付 Checklist
+## 13. 后端交付 Checklist
 
 ### 12.1 接口实现检查
 1. 所有接口均有 DTO 参数校验（必填、长度、枚举、范围）。

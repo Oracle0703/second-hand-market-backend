@@ -5,6 +5,7 @@
 2. 页面按角色鉴权：未登录、平台管理员、商家主账号。
 3. 商品状态采用：`DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED`。
 4. 分类采用两级字典，页面通过分类查询接口动态加载。
+5. `stock` 在本期固定为 `1`，前端仅展示不允许修改。
 
 ## 1. 路由与信息架构
 
@@ -57,6 +58,8 @@
 - 关键动作 -> 接口：
   - 获取状态：`GET /api/v1/merchant/profile`
   - 重新提交：`POST /api/v1/merchant/reapply`
+- 接口职责说明：
+  - `merchant/profile` 用于商家主体资料与审核状态，不承载账号安全设置。
 - 状态展示规则：
   - `PENDING`：显示等待审核。
   - `REJECTED`：显示驳回原因与重提按钮。
@@ -127,7 +130,7 @@
 
 #### 新建商品页（`/merchant/products/new`）
 - 角色：MerchantOwner。
-- 核心内容：标题、价格、成色、库存、描述、图片、分类选择。
+- 核心内容：标题、价格、成色、库存（固定 1，只读展示）、描述、图片、分类选择。
 - 关键动作 -> 接口：
   - 获取一级/二级分类：`GET /api/v1/merchant/categories`
   - 创建商品：`POST /api/v1/merchant/products`
@@ -135,6 +138,7 @@
 - 分类交互规则：
   - 先选一级再加载二级。
   - 必选二级分类后才允许提交。
+  - 库存不提供可编辑输入，提交时不传或仅传固定值 `1`。
 
 #### 商品编辑页（`/merchant/products/:productId/edit`）
 - 角色：MerchantOwner。
@@ -143,9 +147,11 @@
   - 更新商品：`PUT /api/v1/merchant/products/:id`
   - 分类查询：`GET /api/v1/merchant/categories`
 - 字段可编辑规则：
-  - `DRAFT/OFF_SHELF`：全字段可编辑。
+  - `DRAFT/OFF_SHELF`：除库存外可编辑（标题、描述、分类、价格、成色、图片）。
   - `ON_SHELF`：仅描述、图片可编辑。
   - `LOCKED/SOLD/CLOSED`：禁止编辑。
+- 库存规则：
+  - 编辑页不提供 `stock` 编辑控件，库存固定展示 `1`。
 - 前后端约束：
   - 前端禁用不可编辑字段和提交按钮。
   - 后端二次校验字段变更，拒绝越权更新。
@@ -186,6 +192,9 @@
 - 关键动作 -> 接口：
   - 获取信息：`GET /api/v1/merchant/account`
   - 修改密码：`PUT /api/v1/merchant/account/password`
+- 接口职责说明：
+  - `merchant/account` 返回当前登录账号信息与安全设置（如密码更新时间）。
+  - 与 `merchant/profile` 分工明确，避免主体资料与账号安全模型混用。
 
 #### 商家操作日志页（`/merchant/logs`）
 - 角色：MerchantOwner。
@@ -215,6 +224,12 @@
 3. `CLOSED`：已关闭
 
 ## 4. 跨页面通用规范
+### 4.1 接口职责边界
+1. `merchant/profile`：商家主体资料 + 审核状态。
+2. `merchant/account`：当前登录账号资料 + 安全设置。
+3. 前端按页面职责调用接口，禁止“在账号设置页读取 profile 代替 account”。
+
+### 4.2 通用行为
 1. 权限守卫：
    - 未登录访问受限页跳转登录。
    - 商家审核未通过登录后统一跳转 `/register/status`。
