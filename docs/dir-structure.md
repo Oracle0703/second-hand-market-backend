@@ -3,6 +3,12 @@
 ## 默认假设
 1. 仓库采用单仓（monorepo）承载前后端与文档，便于联调与版本一致性管理。
 2. 当前仓库是空白初始化状态，本结构为推荐落地形态。
+3. 本期不做拆仓，工程组织以“快速交付商家后台闭环”为优先目标。
+
+## 仓库定位说明
+1. 这是单仓前后端一体项目，包含 `frontend/`、`backend/`、`docs/`。
+2. 仓库名虽为 `second-hand-market-backend`，但当前实际承载前端、后端与文档。
+3. 未来若拆仓，当前目录结构仅代表本期组织方式，不影响业务边界定义。
 
 ## 1. 推荐目录树
 
@@ -13,7 +19,7 @@ second-hand-market-backend/
 │   ├── src/
 │   │   ├── app/                     # 应用入口、路由、provider
 │   │   ├── pages/                   # 页面级组件（按路由）
-│   │   ├── features/                # 业务域模块（auth/products/orders）
+│   │   ├── features/                # 业务域模块（auth/audit/products/orders/categories）
 │   │   ├── components/              # 通用组件
 │   │   ├── services/                # API 请求封装
 │   │   ├── stores/                  # 全局状态（轻量）
@@ -38,23 +44,23 @@ second-hand-market-backend/
 │   │   ├── dto/                     # 请求响应 DTO
 │   │   ├── middleware/              # 鉴权、日志、限流
 │   │   ├── auth/                    # token/session 逻辑
-│   │   ├── stateflow/               # 状态机校验
+│   │   ├── stateflow/               # 状态机校验（审核/商品/订单）
 │   │   ├── filesvc/                 # 文件上传抽象
 │   │   └── common/                  # 错误码、工具、常量
 │   ├── migrations/                  # 数据库迁移脚本
-│   ├── scripts/                     # 本地开发脚本
+│   ├── scripts/                     # 本地开发脚本（含管理员初始化、分类初始化）
 │   ├── configs/                     # 配置模板
 │   ├── tests/                       # 集成测试
 │   ├── go.mod
 │   └── go.sum
-├── docs/                            # 项目文档（本次产出目录）
+├── docs/                            # 项目文档
 ├── Makefile
 └── README.md
 ```
 
 ## 2. 前端分层建议
 1. `pages/` 仅负责页面编排，不直接写复杂业务逻辑。
-2. `features/` 按业务域组织（`auth`、`merchantAudit`、`products`、`orders`）。
+2. `features/` 按业务域组织（`auth`、`merchantAudit`、`products`、`orders`、`categories`）。
 3. `services/` 对接后端 API，统一处理 token、错误码、重试策略。
 4. `types/` 与后端 DTO 对齐，避免页面层定义散乱类型。
 
@@ -76,12 +82,17 @@ second-hand-market-backend/
    - `FILE_BUCKET`
 3. 禁止将生产密钥写入仓库。
 
-## 5. 测试目录与约定
+## 5. 初始化脚本约定
+1. `backend/scripts/bootstrap_admin`：初始化 `SUPER_ADMIN` 与基础管理员。
+2. `backend/scripts/seed_categories`：导入一级/二级分类字典。
+3. 初始化脚本需要幂等，可重复执行。
+
+## 6. 测试目录与约定
 1. 单元测试与源代码同目录：`*_test.go`。
 2. 集成测试集中在 `backend/tests/`，覆盖主流程。
 3. 前端 E2E 可放 `frontend/e2e/`（如 Playwright）。
 
-## 6. 可维护性约束
+## 7. 可维护性约束
 1. 错误码、状态枚举、权限常量集中管理，不允许魔法字符串散落。
 2. 新增接口必须同步更新 OpenAPI 与 `docs/backend-api-checklist.md`。
 3. 状态流转变更必须同步更新：

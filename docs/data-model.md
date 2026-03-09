@@ -7,17 +7,18 @@
 4. 枚举字段使用 `VARCHAR` + 业务层枚举校验（便于演进）。
 
 ## 1. 实体关系概览
-1. `merchants`（商家主体）1:N `merchant_accounts`（账号）。
+1. `merchants`（商家主体）1:N `merchant_accounts`（商家账号）。
 2. `merchants` 1:N `products`（商品）。
-3. `products` 1:N `product_images`（商品图片）。
-4. `products` 1:N `orders`（轻量订单）。
-5. `orders` 1:N `order_events`（订单事件流）。
-6. `merchants` 1:N `merchant_audit_logs`（审核日志）。
-7. 所有关键动作写入 `operation_logs`。
+3. `categories`（分类字典）1:N `products`。
+4. `products` 1:N `product_images`（商品图片）。
+5. `products` 1:N `orders`（轻量订单）。
+6. `orders` 1:N `order_events`（订单事件流）。
+7. `merchants` 1:N `merchant_audit_logs`（审核日志）。
+8. 所有关键动作写入 `operation_logs`。
 
 ## 2. 核心数据表
 
-## 2.1 merchants（商家主体）
+### 2.1 merchants（商家主体）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -42,7 +43,7 @@
 2. `idx_review_status(review_status, created_at)`
 3. `idx_contact_phone(contact_phone)`
 
-## 2.2 merchant_accounts（商家账号）
+### 2.2 merchant_accounts（商家账号）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -61,7 +62,7 @@
 1. `uk_username(username)`
 2. `idx_merchant_role(merchant_id, role)`
 
-## 2.3 admin_users（平台管理员）
+### 2.3 admin_users（平台管理员）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -69,13 +70,18 @@
 | username | varchar(64) unique | 管理员账号 |
 | password_hash | varchar(255) | 密码哈希 |
 | display_name | varchar(64) | 显示名 |
+| role | varchar(16) | `SUPER_ADMIN/ADMIN` |
 | status | varchar(16) | `ACTIVE/DISABLED` |
 | last_login_at | datetime null | 最后登录时间 |
 | created_at | datetime | 创建时间 |
 | updated_at | datetime | 更新时间 |
 | deleted_at | datetime null | 软删除时间 |
 
-## 2.4 merchant_audit_logs（商家审核日志）
+初始化说明：
+1. 本期管理员由初始化脚本导入。
+2. 本期不提供管理员管理页面与相关业务接口。
+
+### 2.4 merchant_audit_logs（商家审核日志）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -92,7 +98,30 @@
 索引建议：
 1. `idx_merchant_created(merchant_id, created_at)`
 
-## 2.5 products（商品）
+### 2.5 categories（分类字典）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | bigint PK | 主键 |
+| parent_id | bigint null | 父分类 ID，一级分类为空 |
+| level | tinyint | `1/2` |
+| name | varchar(64) | 分类名称 |
+| status | varchar(16) | `ENABLED/DISABLED` |
+| sort | int | 排序值（越小越靠前） |
+| created_at | datetime | 创建时间 |
+| updated_at | datetime | 更新时间 |
+| deleted_at | datetime null | 软删除时间 |
+
+索引建议：
+1. `idx_parent(parent_id, sort)`
+2. `idx_level_status(level, status, sort)`
+3. `uk_parent_name(parent_id, name)`
+
+约束说明：
+1. 商品 `category_id` 必须引用二级分类（`level=2`）。
+2. 本期分类数据由初始化脚本维护，不通过后台页面维护。
+
+### 2.6 products（商品）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -101,13 +130,15 @@
 | merchant_id | bigint | 商家 ID |
 | title | varchar(128) | 标题 |
 | description | text | 描述 |
-| category_id | bigint null | 分类 ID（可选） |
+| category_id | bigint | 二级分类 ID |
 | price_cent | int | 售价（分） |
 | original_price_cent | int null | 原价（分） |
 | condition_level | varchar(16) | `LIKE_NEW/GOOD/FAIR/POOR` |
 | stock | int | 库存（本期建议默认 1） |
 | cover_file_id | bigint null | 封面图文件 ID |
-| status | varchar(16) | `DRAFT/ON_SHELF/OFF_SHELF/SOLD/CLOSED` |
+| status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` |
+| active_order_id | bigint null | 当前占用中的订单 ID（仅 `LOCKED` 时有值） |
+| locked_at | datetime null | 锁定时间 |
 | shelf_at | datetime null | 上架时间 |
 | off_shelf_at | datetime null | 下架时间 |
 | sold_at | datetime null | 成交时间 |
@@ -123,8 +154,9 @@
 1. `uk_product_no(product_no)`
 2. `idx_merchant_status(merchant_id, status, updated_at)`
 3. `idx_merchant_title(merchant_id, title)`
+4. `idx_active_order(active_order_id)`
 
-## 2.6 product_images（商品图片）
+### 2.7 product_images（商品图片）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -137,7 +169,7 @@
 索引建议：
 1. `idx_product_sort(product_id, sort_order)`
 
-## 2.7 orders（轻量订单）
+### 2.8 orders（轻量订单）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -148,6 +180,7 @@
 | deal_price_cent | int | 成交价（分） |
 | buyer_contact_masked | varchar(64) null | 买家联系方式（脱敏） |
 | status | varchar(16) | `CREATED/COMPLETED/CLOSED` |
+| is_active | tinyint | `1=CREATED`，`0=非CREATED`，用于唯一约束 |
 | close_reason | varchar(255) null | 关闭原因 |
 | created_by | bigint | 创建账号 ID |
 | completed_at | datetime null | 完成时间 |
@@ -160,8 +193,14 @@
 1. `uk_order_no(order_no)`
 2. `idx_merchant_status(merchant_id, status, created_at)`
 3. `idx_product_id(product_id)`
+4. `uk_product_active(product_id, is_active)`（确保同一商品仅一个活动订单）
 
-## 2.8 order_events（订单事件）
+实现说明：
+1. 创建订单时写入 `status=CREATED`、`is_active=1`。
+2. 完成/关闭订单时更新 `is_active=0`。
+3. 即便存在唯一索引，也要在事务中锁商品行，避免并发写入竞态。
+
+### 2.9 order_events（订单事件）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -178,7 +217,7 @@
 索引建议：
 1. `idx_order_created(order_id, created_at)`
 
-## 2.9 files（文件元数据）
+### 2.10 files（文件元数据）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -197,7 +236,7 @@
 1. `uk_object_key(object_key)`
 2. `idx_biz_type_created(biz_type, created_at)`
 
-## 2.10 operation_logs（操作审计日志）
+### 2.11 operation_logs（操作审计日志）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -224,7 +263,7 @@
 2. `idx_resource(resource_type, resource_id, created_at)`
 3. `idx_merchant_created(merchant_id, created_at)`
 
-## 2.11 auth_sessions（登录会话）
+### 2.12 auth_sessions（登录会话）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -244,29 +283,36 @@
 
 ## 3. 关键枚举定义
 
-## 3.1 商家审核状态
+### 3.1 商家审核状态
 - `PENDING`：待审核
 - `APPROVED`：审核通过
 - `REJECTED`：审核驳回
 - `DISABLED`：平台冻结
 
-## 3.2 商品状态
+### 3.2 商品状态
 - `DRAFT`
 - `ON_SHELF`
+- `LOCKED`
 - `OFF_SHELF`
 - `SOLD`
 - `CLOSED`
 
-## 3.3 订单状态
+### 3.3 订单状态
 - `CREATED`
 - `COMPLETED`
 - `CLOSED`
 
+### 3.4 管理员角色
+- `SUPER_ADMIN`
+- `ADMIN`
+
 ## 4. 一致性与事务规则
-1. 订单完成必须与商品 `SOLD` 更新在同一事务内。
-2. 任何状态变更必须同时写 `operation_logs`。
-3. 商品与订单的非法状态变更统一返回业务错误码 `10005`。
-4. 删除策略采用软删除；对账/审计相关表禁止物理删除。
+1. 创建订单必须与商品 `ON_SHELF -> LOCKED` 在同一事务中完成。
+2. 完成订单必须与商品 `LOCKED -> SOLD` 在同一事务中完成。
+3. 关闭订单必须与商品 `LOCKED -> OFF_SHELF` 在同一事务中完成。
+4. 任何状态变更必须同时写 `operation_logs`。
+5. 非法状态变更统一返回业务错误码 `10005`。
+6. 删除策略采用软删除；审核/审计相关表禁止物理删除。
 
 ## 5. 预留扩展（子账号与 RBAC）
 1. `merchant_accounts.role` 已支持 `STAFF`。
