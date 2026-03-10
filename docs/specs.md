@@ -3,7 +3,7 @@
 ## 默认假设
 1. 当前生效角色：`PlatformAdmin`（`SUPER_ADMIN/ADMIN`）、`MerchantOwner`。
 2. 订单为轻量交易记录，不承载支付、退款、售后。
-3. 商家审核通过是登录前置条件。
+3. 商家采用受限制登录（restricted login）：`PENDING/REJECTED` 可登录但只获得 `onboarding scope`，`APPROVED` 获得 `full scope`。
 4. 商品与订单状态机以本文为唯一准则。
 5. 商品支持订单占用状态 `LOCKED`，用于避免同一商品并发成交。
 6. 分类采用两级只读字典，本期不开放分类后台管理页面。
@@ -43,14 +43,26 @@
    - 提交后创建商家与主账号，审核状态 `PENDING`。
 2. 登录：
    - 请求需带 `login_type`（`ADMIN/MERCHANT`）。
-   - 商家仅 `APPROVED` 可登录。
-   - 返回 `access_token`、`refresh_token`、用户信息、权限集合。
+   - 商家 `PENDING/REJECTED` 允许登录，但只返回 `onboarding scope` token。
+   - 商家 `APPROVED` 登录返回 `full scope` token。
+   - 返回 `access_token`、`refresh_token`、`token_scope`、用户信息。
 3. 管理员账号：
    - 本期通过初始化脚本预置，不支持后台新增管理员。
    - 角色区分 `SUPER_ADMIN/ADMIN`，但本期无管理员管理页面。
 4. 令牌刷新与退出：
    - 支持刷新 token。
    - 退出后当前 refresh token 失效。
+
+restricted login 规则：
+1. `onboarding scope` 允许：
+   - `GET /merchant/profile`
+   - `POST /merchant/reapply`
+   - 入驻资质上传（`/files/presign`、`/files/confirm`，仅 `MERCHANT_LICENSE`）
+2. `onboarding scope` 禁止：
+   - 商品管理、订单管理、仪表盘、商家日志、账号设置等正式经营能力。
+3. 前端跳转：
+   - `PENDING/REJECTED` 登录成功后统一跳转 `/register/status`。
+   - `APPROVED` 登录成功后跳转 `/merchant/dashboard`。
 
 ### 3.2 商家审核
 1. 审核列表支持筛选：状态、时间区间、关键词（商家名/联系人/手机号）。
@@ -107,8 +119,9 @@
 
 ### 4.1 注册 -> 审核 -> 登录
 1. 商家提交注册后，系统返回“待审核”状态。
-2. 待审核与驳回状态禁止登录。
-3. 审核通过后登录成功并进入商家首页。
+2. 待审核与驳回状态允许登录，但仅返回 `onboarding scope`。
+3. `onboarding scope` 仅允许访问入驻流程接口，访问经营接口返回 `10006`。
+4. 审核通过后再次登录返回 `full scope`，进入商家首页。
 
 ### 4.2 发布商品 -> 上下架 -> 成交/关闭
 1. 商家创建商品默认 `DRAFT`。
@@ -177,14 +190,16 @@
 9. 可维护性：模块分层、统一 DTO、接口文档与实现同版本维护。
 
 ## 8. 验收标准（关键用例）
-1. Given 商家处于 `PENDING`，When 使用正确密码登录，Then 返回“审核未通过不可登录”错误码。
-2. Given 管理员审核通过商家，When 商家再次登录，Then 登录成功并返回 token。
-3. Given 商品为 `DRAFT` 且必填项不全，When 发起上架，Then 返回参数校验错误。
-4. Given 商品为 `ON_SHELF`，When 创建订单，Then 创建成功且商品变更为 `LOCKED`。
-5. Given 商品已 `LOCKED` 且有 `CREATED` 订单，When 再次创建订单，Then 返回并发冲突错误。
-6. Given 订单为 `CREATED`，When 完成订单，Then 订单为 `COMPLETED` 且商品为 `SOLD`。
-7. Given 订单为 `CREATED`，When 关闭订单，Then 订单为 `CLOSED` 且商品为 `OFF_SHELF`。
-8. Given `LOCKED/SOLD/CLOSED` 商品，When 调用商品编辑接口，Then 返回状态流转或字段限制错误。
+1. Given 商家处于 `PENDING`，When 使用正确密码登录，Then 登录成功且 `token_scope=onboarding`。
+2. Given 商家处于 `REJECTED`，When 使用正确密码登录，Then 登录成功且 `token_scope=onboarding`。
+3. Given `onboarding scope`，When 访问商品或订单接口，Then 返回 `10006`。
+4. Given 管理员审核通过商家，When 商家再次登录，Then 登录成功且 `token_scope=full`。
+5. Given 商品为 `DRAFT` 且必填项不全，When 发起上架，Then 返回参数校验错误。
+6. Given 商品为 `ON_SHELF`，When 创建订单，Then 创建成功且商品变更为 `LOCKED`。
+7. Given 商品已 `LOCKED` 且有 `CREATED` 订单，When 再次创建订单，Then 返回并发冲突错误。
+8. Given 订单为 `CREATED`，When 完成订单，Then 订单为 `COMPLETED` 且商品为 `SOLD`。
+9. Given 订单为 `CREATED`，When 关闭订单，Then 订单为 `CLOSED` 且商品为 `OFF_SHELF`。
+10. Given `LOCKED/SOLD/CLOSED` 商品，When 调用商品编辑接口，Then 返回状态流转或字段限制错误。
 
 ## 9. 版本边界
 1. 本期不做支付、退款、售后和买家订单展示。

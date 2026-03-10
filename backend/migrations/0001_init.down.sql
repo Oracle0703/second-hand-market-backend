@@ -1,0 +1,13 @@
+DROP TABLE IF EXISTS idempotency_records;
+DROP TABLE IF EXISTS auth_sessions;
+DROP TABLE IF EXISTS operation_logs;
+DROP TABLE IF EXISTS files;
+DROP TABLE IF EXISTS order_events;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS product_images;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS merchant_audit_logs;
+DROP TABLE IF EXISTS admin_users;
+DROP TABLE IF EXISTS merchant_accounts;
+DROP TABLE IF EXISTS merchants;

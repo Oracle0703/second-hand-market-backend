@@ -2,7 +2,7 @@
 
 ## 默认假设
 1. 前端为单应用（React + TypeScript + Vite），通过响应式布局同时支持 PC 和移动端。
-2. 页面按角色鉴权：未登录、平台管理员、商家主账号。
+2. 页面按角色与 scope 鉴权：未登录、平台管理员、商家主账号（`full/onboarding`）。
 3. 商品状态采用：`DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED`。
 4. 分类采用两级字典，页面通过分类查询接口动态加载。
 5. `stock` 在本期固定为 `1`，前端仅展示不允许修改。
@@ -37,7 +37,8 @@
 - 关键动作 -> 接口：
   - 登录：`POST /api/v1/auth/login`（携带 `login_type`）。
 - 核心状态展示：
-  - `10006` 显示“商家审核未通过，暂不可登录”并引导到状态页。
+  - `PENDING/REJECTED` 登录成功时，后端返回 `token_scope=onboarding`，前端直接跳转 `/register/status`。
+  - `APPROVED` 登录成功时，后端返回 `token_scope=full`，前端跳转 `/merchant/dashboard`。
 - PC/移动差异：
   - PC 为居中卡片。
   - 移动端按钮全宽、输入区放大触控面积。
@@ -63,6 +64,9 @@
 - 状态展示规则：
   - `PENDING`：显示等待审核。
   - `REJECTED`：显示驳回原因与重提按钮。
+- scope 规则：
+  - 仅允许 `onboarding` 与 `full` 商家 token 访问。
+  - `onboarding` token 在本页仅展示入驻相关动作，不展示商品/订单入口。
 
 ### 2.2 管理员区页面
 
@@ -232,7 +236,8 @@
 ### 4.2 通用行为
 1. 权限守卫：
    - 未登录访问受限页跳转登录。
-   - 商家审核未通过登录后统一跳转 `/register/status`。
+   - `token_scope=onboarding` 登录后统一跳转 `/register/status`。
+   - `token_scope=onboarding` 访问商品/订单/仪表盘/账号设置/商家日志路由时强制回跳 `/register/status`。
    - 管理员与商家路由互斥访问。
 2. 错误处理：
    - 401 统一触发登录失效逻辑。
@@ -245,6 +250,7 @@
 4. 上传体验：
    - 上传中、成功、失败状态可见。
    - 支持图片压缩预览（前端可选）。
+   - `onboarding` token 仅允许资质上传（`MERCHANT_LICENSE`），不允许商品图片上传。
 
 ## 5. 响应式适配策略
 1. 断点建议：

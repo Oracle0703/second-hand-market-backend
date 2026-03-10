@@ -23,7 +23,7 @@
 | 10003 | 无权限访问 |
 | 10004 | 资源不存在 |
 | 10005 | 状态流转非法 |
-| 10006 | 账号审核未通过 |
+| 10006 | 商家账号处于受限制登录态，仅可访问 onboarding 接口 |
 | 10007 | 账号已禁用 |
 | 10008 | 上传文件不合法 |
 | 10009 | 频率限制 |
@@ -35,6 +35,10 @@
 - `PUBLIC`：无需登录。
 - `ADMIN`：平台管理员。
 - `MERCHANT`：商家主账号（本期）。
+
+### 1.3.1 merchant token_scope
+- `full`：可访问全部商家经营能力。
+- `onboarding`：仅可访问入驻流程能力（profile/reapply/资质上传）。
 
 ### 1.4 并发与幂等策略
 1. 订单创建、订单完成、订单关闭、商品上架/下架/关闭属于关键写接口。
@@ -50,20 +54,22 @@
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
 | `/auth/register` | POST | 商家注册 | `merchant_name(R), contact_name(R), phone(R), username(R), password(R), license_file_id(R)` | `merchant_id, merchant_no, review_status` | PUBLIC |
-| `/auth/login` | POST | 登录 | `login_type(R: ADMIN/MERCHANT), username(R), password(R)` | `access_token, refresh_token, expires_in, user{id,role,merchant_id?}` | PUBLIC |
+| `/auth/login` | POST | 登录 | `login_type(R: ADMIN/MERCHANT), username(R), password(R)` | `access_token, refresh_token, expires_in, token_scope(full/onboarding), review_status, user{id,role,merchant_id?}` | PUBLIC |
 | `/auth/refresh` | POST | 刷新令牌 | `refresh_token(R)` | `access_token, refresh_token, expires_in` | PUBLIC |
 | `/auth/logout` | POST | 退出登录 | 无 | `success` | ADMIN/MERCHANT |
 
-失败场景：
-1. 商家 `PENDING/REJECTED` 登录返回 `10006`。
-2. 管理员或商家账号 `DISABLED` 返回 `10007`。
+restricted login 规则：
+1. 商家 `PENDING/REJECTED` 登录成功并返回 `token_scope=onboarding`。
+2. 商家 `APPROVED` 登录成功并返回 `token_scope=full`。
+3. `onboarding` token 访问经营接口（商品/订单/仪表盘/商家日志/账号设置）返回 `10006`。
+4. 管理员或商家账号 `DISABLED` 登录返回 `10007`。
 
 ## 3. 商家主体资料与审核状态模块（merchant-onboarding）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/profile` | GET | 获取当前商家资料与审核状态 | 无 | `merchant_info{id,name,contact,phone}, review_status, reject_reason` | MERCHANT |
-| `/merchant/reapply` | POST | 驳回后重新提交资料 | `merchant_name(O), contact_name(O), phone(O), license_file_id(O)` | `review_status` | MERCHANT |
+| `/merchant/profile` | GET | 获取当前商家资料与审核状态 | 无 | `merchant_info{id,name,contact,phone}, review_status, reject_reason` | MERCHANT(full/onboarding) |
+| `/merchant/reapply` | POST | 驳回后重新提交资料 | `merchant_name(O), contact_name(O), phone(O), license_file_id(O)` | `review_status` | MERCHANT(onboarding) |
 
 职责边界：
 1. `merchant/profile` 仅面向“商家主体 + 审核状态”，不返回账号安全信息。
@@ -72,12 +78,25 @@
 失败场景：
 1. 当前非 `REJECTED` 调用 `reapply` 返回 `10005`。
 
+onboarding scope 白名单：
+1. `GET /merchant/profile`
+2. `POST /merchant/reapply`
+3. `POST /files/presign`、`POST /files/confirm`（仅允许 `biz_type=MERCHANT_LICENSE`）
+
+onboarding scope 黑名单：
+1. `/merchant/account*`
+2. `/merchant/dashboard`
+3. `/merchant/categories`
+4. `/merchant/products*`
+5. `/merchant/orders*`
+6. `/merchant/logs`
+
 ## 4. 商家账号与安全设置模块（merchant-account）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/account` | GET | 获取当前登录账号资料与安全设置 | 无 | `account{id,username,role,status,last_login_at}, security{password_updated_at,mfa_enabled}` | MERCHANT |
-| `/merchant/account/password` | PUT | 修改当前登录账号密码 | `old_password(R), new_password(R)` | `success, password_updated_at` | MERCHANT |
+| `/merchant/account` | GET | 获取当前登录账号资料与安全设置 | 无 | `account{id,username,role,status,last_login_at}, security{password_updated_at,mfa_enabled}` | MERCHANT(full) |
+| `/merchant/account/password` | PUT | 修改当前登录账号密码 | `old_password(R), new_password(R)` | `success, password_updated_at` | MERCHANT(full) |
 
 失败场景：
 1. `old_password` 错误返回 `10001`（或业务子码）。
@@ -101,7 +120,7 @@
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/categories` | GET | 查询分类字典 | `level(O:1/2), parent_id(O), status(O)` | `items[{id,parent_id,level,name,status,sort}]` | MERCHANT |
+| `/merchant/categories` | GET | 查询分类字典 | `level(O:1/2), parent_id(O), status(O)` | `items[{id,parent_id,level,name,status,sort}]` | MERCHANT(full) |
 
 说明：
 1. 新建/编辑商品页面先请求一级分类，再根据 `parent_id` 请求二级分类。
@@ -111,13 +130,13 @@
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(O,仅允许1), image_file_ids(R[])` | `product_id, product_no, status, stock, created_at` | MERCHANT |
-| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), image_file_ids(O[])` | `product_id, status, stock, updated_at` | MERCHANT |
-| `/merchant/products/:id` | GET | 商品详情 | `id(path,R)` | `product{id,title,status,category,price_cent,condition_level,stock,images[],active_order_id}` | MERCHANT |
-| `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,updated_at}], total,page,page_size` | MERCHANT |
-| `/merchant/products/:id/on-shelf` | POST | 上架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT |
-| `/merchant/products/:id/off-shelf` | POST | 下架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT |
-| `/merchant/products/:id/close` | POST | 关闭商品 | `id(path,R), reason(O)` | `product_id, from_status, to_status, changed_at` | MERCHANT |
+| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(O,仅允许1), image_file_ids(R[])` | `product_id, product_no, status, stock, created_at` | MERCHANT(full) |
+| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), image_file_ids(O[])` | `product_id, status, stock, updated_at` | MERCHANT(full) |
+| `/merchant/products/:id` | GET | 商品详情 | `id(path,R)` | `product{id,title,status,category,price_cent,condition_level,stock,images[],active_order_id}` | MERCHANT(full) |
+| `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,updated_at}], total,page,page_size` | MERCHANT(full) |
+| `/merchant/products/:id/on-shelf` | POST | 上架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
+| `/merchant/products/:id/off-shelf` | POST | 下架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
+| `/merchant/products/:id/close` | POST | 关闭商品 | `id(path,R), reason(O)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 
 编辑约束：
 1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、图片），不含 `stock`。
@@ -138,11 +157,11 @@
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/orders` | POST | 创建订单 | `product_id(R), deal_price_cent(R), buyer_contact_masked(O), remark(O)` | `order_id, order_no, status, product_status` | MERCHANT |
-| `/merchant/orders` | GET | 订单列表 | `status(O), keyword(O), page(O), page_size(O)` | `items[{id,order_no,product_id,product_title,status,deal_price_cent,created_at}], total,page,page_size` | MERCHANT |
-| `/merchant/orders/:id` | GET | 订单详情 | `id(path,R)` | `order_detail{id,order_no,status,deal_price_cent,product}, events[]` | MERCHANT |
-| `/merchant/orders/:id/complete` | POST | 完成订单 | `id(path,R), note(O)` | `order_id, from_status, to_status, product_status, completed_at` | MERCHANT |
-| `/merchant/orders/:id/close` | POST | 关闭订单 | `id(path,R), reason(O)` | `order_id, from_status, to_status, product_status, closed_at` | MERCHANT |
+| `/merchant/orders` | POST | 创建订单 | `product_id(R), deal_price_cent(R), buyer_contact_masked(O), remark(O)` | `order_id, order_no, status, product_status` | MERCHANT(full) |
+| `/merchant/orders` | GET | 订单列表 | `status(O), keyword(O), page(O), page_size(O)` | `items[{id,order_no,product_id,product_title,status,deal_price_cent,created_at}], total,page,page_size` | MERCHANT(full) |
+| `/merchant/orders/:id` | GET | 订单详情 | `id(path,R)` | `order_detail{id,order_no,status,deal_price_cent,product}, events[]` | MERCHANT(full) |
+| `/merchant/orders/:id/complete` | POST | 完成订单 | `id(path,R), note(O)` | `order_id, from_status, to_status, product_status, completed_at` | MERCHANT(full) |
+| `/merchant/orders/:id/close` | POST | 关闭订单 | `id(path,R), reason(O)` | `order_id, from_status, to_status, product_status, closed_at` | MERCHANT(full) |
 
 联动规则：
 1. 创建订单：`product ON_SHELF -> LOCKED`。
@@ -167,19 +186,21 @@
 
 失败场景：
 1. MIME 或大小不合法返回 `10008`。
+2. `onboarding` token 上传 `PRODUCT_IMAGE` 返回 `10006`。
+3. `PUBLIC` 身份上传非资质类文件返回 `10003`。
 
 ## 10. 审计日志模块（operation-logs）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
 | `/admin/logs` | GET | 管理员查看全局日志 | `operator_type(O), action(O), resource_type(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,operator,action,resource_type,resource_id,from_status,to_status,result_code,created_at}], total,page,page_size` | ADMIN |
-| `/merchant/logs` | GET | 商家查看本商家日志 | `action(O), resource_type(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,action,resource_type,resource_id,from_status,to_status,result_code,created_at}], total,page,page_size` | MERCHANT |
+| `/merchant/logs` | GET | 商家查看本商家日志 | `action(O), resource_type(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,action,resource_type,resource_id,from_status,to_status,result_code,created_at}], total,page,page_size` | MERCHANT(full) |
 
 ## 11. Dashboard 模块
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/dashboard` | GET | 商家仪表盘统计 | 无 | `product_stats{draft,on_shelf,locked,off_shelf,sold,closed}, order_stats{created,completed,closed}` | MERCHANT |
+| `/merchant/dashboard` | GET | 商家仪表盘统计 | 无 | `product_stats{draft,on_shelf,locked,off_shelf,sold,closed}, order_stats{created,completed,closed}` | MERCHANT(full) |
 
 ## 12. 关键接口 JSON 示例
 
@@ -228,6 +249,8 @@
     "access_token": "eyJhbGciOi...",
     "refresh_token": "eyJhbGciOi...",
     "expires_in": 7200,
+    "token_scope": "onboarding",
+    "review_status": "PENDING",
     "user": {
       "id": 7001,
       "role": "OWNER",

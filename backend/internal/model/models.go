@@ -1,0 +1,244 @@
+package model
+
+import (
+	"time"
+
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+)
+
+const (
+	UserTypeAdmin    = "ADMIN"
+	UserTypeMerchant = "MERCHANT"
+	UserTypePublic   = "PUBLIC"
+
+	AdminRoleSuper = "SUPER_ADMIN"
+	AdminRoleAdmin = "ADMIN"
+
+	AccountRoleOwner = "OWNER"
+	AccountRoleStaff = "STAFF"
+
+	AccountStatusActive   = "ACTIVE"
+	AccountStatusDisabled = "DISABLED"
+
+	ReviewPending  = "PENDING"
+	ReviewApproved = "APPROVED"
+	ReviewRejected = "REJECTED"
+	ReviewDisabled = "DISABLED"
+
+	CategoryEnabled  = "ENABLED"
+	CategoryDisabled = "DISABLED"
+
+	ProductDraft    = "DRAFT"
+	ProductOnShelf  = "ON_SHELF"
+	ProductLocked   = "LOCKED"
+	ProductOffShelf = "OFF_SHELF"
+	ProductSold     = "SOLD"
+	ProductClosed   = "CLOSED"
+
+	OrderCreated   = "CREATED"
+	OrderCompleted = "COMPLETED"
+	OrderClosed    = "CLOSED"
+
+	FileScanPending = "PENDING"
+	FileScanPass    = "PASS"
+	FileScanBlocked = "BLOCKED"
+
+	FileBizMerchantLicense = "MERCHANT_LICENSE"
+	FileBizProductImage    = "PRODUCT_IMAGE"
+	FileBizOther           = "OTHER"
+)
+
+type Merchant struct {
+	ID            uint64  `gorm:"primaryKey"`
+	MerchantNo    string  `gorm:"size:32;uniqueIndex"`
+	MerchantName  string  `gorm:"size:128"`
+	ContactName   string  `gorm:"size:64"`
+	ContactPhone  string  `gorm:"size:20;index"`
+	ContactEmail  *string `gorm:"size:128"`
+	LicenseNo     *string `gorm:"size:64"`
+	LicenseFileID *uint64
+	ReviewStatus  string  `gorm:"size:16;index"`
+	RejectReason  *string `gorm:"size:255"`
+	ReviewedBy    *uint64
+	ReviewedAt    *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	DeletedAt     gorm.DeletedAt `gorm:"index"`
+}
+
+type MerchantAccount struct {
+	ID           uint64 `gorm:"primaryKey"`
+	MerchantID   uint64 `gorm:"index:idx_merchant_role,priority:1"`
+	Username     string `gorm:"size:64;uniqueIndex"`
+	PasswordHash string `gorm:"size:255"`
+	Role         string `gorm:"size:16;index:idx_merchant_role,priority:2"`
+	Status       string `gorm:"size:16;index"`
+	LastLoginAt  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	DeletedAt    gorm.DeletedAt `gorm:"index"`
+}
+
+type AdminUser struct {
+	ID           uint64 `gorm:"primaryKey"`
+	Username     string `gorm:"size:64;uniqueIndex"`
+	PasswordHash string `gorm:"size:255"`
+	DisplayName  string `gorm:"size:64"`
+	Role         string `gorm:"size:16"`
+	Status       string `gorm:"size:16;index"`
+	LastLoginAt  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	DeletedAt    gorm.DeletedAt `gorm:"index"`
+}
+
+type MerchantAuditLog struct {
+	ID           uint64  `gorm:"primaryKey"`
+	MerchantID   uint64  `gorm:"index"`
+	Action       string  `gorm:"size:32"`
+	FromStatus   string  `gorm:"size:16"`
+	ToStatus     string  `gorm:"size:16"`
+	Reason       *string `gorm:"size:255"`
+	OperatorType string  `gorm:"size:16"`
+	OperatorID   uint64
+	CreatedAt    time.Time `gorm:"index"`
+}
+
+type Category struct {
+	ID        uint64  `gorm:"primaryKey"`
+	ParentID  *uint64 `gorm:"index:idx_parent_sort,priority:1"`
+	Level     int8    `gorm:"index:idx_level_status_sort,priority:1"`
+	Name      string  `gorm:"size:64;uniqueIndex:uk_parent_name,priority:2"`
+	Status    string  `gorm:"size:16;index:idx_level_status_sort,priority:2"`
+	Sort      int     `gorm:"index:idx_parent_sort,priority:2;index:idx_level_status_sort,priority:3"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt gorm.DeletedAt `gorm:"index"`
+}
+
+func (c Category) TableName() string {
+	return "categories"
+}
+
+type Product struct {
+	ID                uint64 `gorm:"primaryKey"`
+	ProductNo         string `gorm:"size:32;uniqueIndex"`
+	MerchantID        uint64 `gorm:"index:idx_merchant_status_updated,priority:1;index:idx_merchant_title,priority:1"`
+	Title             string `gorm:"size:128;index:idx_merchant_title,priority:2"`
+	Description       string `gorm:"type:text"`
+	CategoryID        uint64
+	PriceCent         int
+	OriginalPriceCent *int
+	ConditionLevel    string `gorm:"size:16"`
+	Stock             int
+	CoverFileID       *uint64
+	Status            string  `gorm:"size:16;index:idx_merchant_status_updated,priority:2"`
+	ActiveOrderID     *uint64 `gorm:"index"`
+	LockedAt          *time.Time
+	ShelfAt           *time.Time
+	OffShelfAt        *time.Time
+	SoldAt            *time.Time
+	ClosedAt          *time.Time
+	CreatedBy         uint64
+	UpdatedBy         uint64
+	Version           int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time      `gorm:"index:idx_merchant_status_updated,priority:3"`
+	DeletedAt         gorm.DeletedAt `gorm:"index"`
+}
+
+type ProductImage struct {
+	ID        uint64 `gorm:"primaryKey"`
+	ProductID uint64 `gorm:"index:idx_product_sort,priority:1"`
+	FileID    uint64
+	SortOrder int `gorm:"index:idx_product_sort,priority:2"`
+	CreatedAt time.Time
+}
+
+type Order struct {
+	ID                 uint64 `gorm:"primaryKey"`
+	OrderNo            string `gorm:"size:32;uniqueIndex"`
+	MerchantID         uint64 `gorm:"index:idx_merchant_status_created,priority:1"`
+	ProductID          uint64 `gorm:"index;uniqueIndex:uk_product_active,priority:1"`
+	DealPriceCent      int
+	BuyerContactMasked *string `gorm:"size:64"`
+	Remark             *string `gorm:"size:255"`
+	Status             string  `gorm:"size:16;index:idx_merchant_status_created,priority:2"`
+	IsActive           bool    `gorm:"uniqueIndex:uk_product_active,priority:2"`
+	CloseReason        *string `gorm:"size:255"`
+	CreatedBy          uint64
+	CompletedAt        *time.Time
+	ClosedAt           *time.Time
+	CreatedAt          time.Time `gorm:"index:idx_merchant_status_created,priority:3"`
+	UpdatedAt          time.Time
+	DeletedAt          gorm.DeletedAt `gorm:"index"`
+}
+
+type OrderEvent struct {
+	ID           uint64  `gorm:"primaryKey"`
+	OrderID      uint64  `gorm:"index:idx_order_created,priority:1"`
+	EventType    string  `gorm:"size:32"`
+	FromStatus   *string `gorm:"size:16"`
+	ToStatus     string  `gorm:"size:16"`
+	OperatorType string  `gorm:"size:16"`
+	OperatorID   uint64
+	Note         *string   `gorm:"size:255"`
+	CreatedAt    time.Time `gorm:"index:idx_order_created,priority:2"`
+}
+
+type FileRecord struct {
+	ID           uint64 `gorm:"primaryKey"`
+	BizType      string `gorm:"size:32;index:idx_biz_type_created,priority:1"`
+	ObjectKey    string `gorm:"size:255;uniqueIndex"`
+	URL          string `gorm:"size:500"`
+	MimeType     string `gorm:"size:64"`
+	SizeBytes    int64
+	UploaderType string `gorm:"size:16"`
+	UploaderID   *uint64
+	ScanStatus   string    `gorm:"size:16"`
+	CreatedAt    time.Time `gorm:"index:idx_biz_type_created,priority:2"`
+}
+
+type OperationLog struct {
+	ID           uint64  `gorm:"primaryKey"`
+	RequestID    string  `gorm:"size:64"`
+	OperatorType string  `gorm:"size:16;index:idx_operator_created,priority:1"`
+	OperatorID   uint64  `gorm:"index:idx_operator_created,priority:2"`
+	MerchantID   *uint64 `gorm:"index:idx_merchant_created,priority:1"`
+	Action       string  `gorm:"size:64"`
+	ResourceType string  `gorm:"size:32;index:idx_resource_created,priority:1"`
+	ResourceID   uint64  `gorm:"index:idx_resource_created,priority:2"`
+	FromStatus   *string `gorm:"size:16"`
+	ToStatus     *string `gorm:"size:16"`
+	Method       string  `gorm:"size:8"`
+	Path         string  `gorm:"size:255"`
+	IP           string  `gorm:"size:64"`
+	UserAgent    string  `gorm:"size:255"`
+	ResultCode   int
+	DetailJSON   datatypes.JSON `gorm:"type:json"`
+	CreatedAt    time.Time      `gorm:"index:idx_operator_created,priority:3;index:idx_merchant_created,priority:2;index:idx_resource_created,priority:3"`
+}
+
+type AuthSession struct {
+	ID               uint64    `gorm:"primaryKey"`
+	UserType         string    `gorm:"size:16;index:idx_user_expired,priority:1"`
+	UserID           uint64    `gorm:"index:idx_user_expired,priority:2"`
+	RefreshTokenHash string    `gorm:"size:255;index"`
+	DeviceInfo       *string   `gorm:"size:255"`
+	IP               *string   `gorm:"size:64"`
+	ExpiredAt        time.Time `gorm:"index:idx_user_expired,priority:3"`
+	RevokedAt        *time.Time
+	CreatedAt        time.Time
+}
+
+type IdempotencyRecord struct {
+	ID          uint64 `gorm:"primaryKey"`
+	IdemKey     string `gorm:"size:128;uniqueIndex:uk_idem_scope,priority:1"`
+	OperatorID  uint64 `gorm:"uniqueIndex:uk_idem_scope,priority:2"`
+	Path        string `gorm:"size:255;uniqueIndex:uk_idem_scope,priority:3"`
+	RequestHash string `gorm:"size:64"`
+	ResultCode  int
+	ResponseRaw datatypes.JSON `gorm:"type:json"`
+	CreatedAt   time.Time
+}

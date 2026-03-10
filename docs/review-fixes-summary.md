@@ -103,3 +103,26 @@
 ### 7.4 当前可开工评估
 结论：经过本轮补丁，文档仍然满足并强化了“可直接进入开发实现”的标准。  
 本轮补丁主要消除了接口对齐缺口与职责歧义，降低联调误差。
+
+## 8. restricted login 收口（本轮冻结）
+
+### 8.1 冻结策略
+1. 商家 `PENDING/REJECTED` 允许登录，但返回 `token_scope=onboarding`。
+2. `onboarding` token 仅允许访问：
+   - `GET /merchant/profile`
+   - `POST /merchant/reapply`
+   - 入驻资质上传（`/files/presign`、`/files/confirm`，仅 `MERCHANT_LICENSE`）。
+3. 商品、订单、仪表盘、商家日志、账号设置等经营能力对 `onboarding` token 统一拒绝并返回 `10006`。
+4. 商家审核通过后，登录返回 `token_scope=full`。
+5. 前端在 `token_scope=onboarding` 登录后统一跳转 `/register/status`。
+
+### 8.2 本轮同步文档
+1. `docs/project-overview.md`
+2. `docs/specs.md`
+3. `docs/frontend-pages.md`
+4. `docs/backend-api-checklist.md`
+5. `docs/review-fixes-summary.md`
+
+### 8.3 风险变化
+1. 历史“审核未通过直接拒绝登录”语义已废弃，不再作为本期行为。
+2. 登录相关联调必须以 `token_scope` 为准，不能再用 `10006` 驱动登录失败分支。
