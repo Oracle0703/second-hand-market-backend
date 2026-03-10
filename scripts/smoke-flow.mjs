@@ -137,6 +137,58 @@ async function main() {
   })
   assert(completeOrder.code === 0, 'complete order failed', completeOrder)
 
+  const soldDetail = await req(`/merchant/products/${productID}`, {
+    headers: { Authorization: `Bearer ${merchantToken}` }
+  })
+  assert(soldDetail.code === 0 && soldDetail.data.product?.status === 'SOLD', 'completed order should set product SOLD', soldDetail)
+
+  const createProduct2 = await req('/merchant/products', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${merchantToken}` },
+    body: {
+      title: `smoke-product-close-${seed}`,
+      description: 'smoke close flow',
+      category_id: categoryID,
+      price_cent: 12500,
+      condition_level: 'GOOD',
+      stock: 1,
+      image_file_ids: [imgPresign.data.file_id]
+    }
+  })
+  assert(createProduct2.code === 0, 'create product for close flow failed', createProduct2)
+  const product2ID = createProduct2.data.product_id
+
+  const onShelf2 = await req(`/merchant/products/${product2ID}/on-shelf`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${merchantToken}` },
+    body: {}
+  })
+  assert(onShelf2.code === 0, 'second on shelf failed', onShelf2)
+
+  const createOrder2 = await req('/merchant/orders', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${merchantToken}` },
+    body: { product_id: product2ID, deal_price_cent: 12100 }
+  })
+  assert(createOrder2.code === 0, 'create second order failed', createOrder2)
+  const order2ID = createOrder2.data.order_id
+
+  const closeOrder = await req(`/merchant/orders/${order2ID}/close`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${merchantToken}` },
+    body: { reason: 'smoke close' }
+  })
+  assert(closeOrder.code === 0, 'close order failed', closeOrder)
+
+  const closedProductDetail = await req(`/merchant/products/${product2ID}`, {
+    headers: { Authorization: `Bearer ${merchantToken}` }
+  })
+  assert(
+    closedProductDetail.code === 0 && closedProductDetail.data.product?.status === 'OFF_SHELF',
+    'closed order should set product OFF_SHELF',
+    closedProductDetail
+  )
+
   console.log('[SMOKE][PASS] restricted login + 审核 + 商品 + 订单主链路通过')
 }
 

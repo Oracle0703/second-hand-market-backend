@@ -58,3 +58,8 @@
 - [ ] 后端测试：`cd backend && ... go test ./...`
 - [ ] 前端测试：`cd frontend && npm run test`
 - [ ] 前端构建：`cd frontend && npm run build`
+- [ ] 冒烟回归：`API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs`
+
+## 8. 发布前人工核对补充
+- [ ] 在 Chrome DevTools 切换到 `<768px` 宽度，逐项核对 restricted login / 商品 / 订单关键页面无横向溢出。
+- [ ] 在移动端关键操作按钮（上架/下架/完成订单/关闭订单）上执行一次点击回归，确认状态刷新正确。

@@ -114,6 +114,18 @@ func createAndOnShelfProduct(t *testing.T, srv *app.Server, merchantToken string
 	return productID
 }
 
+func createDraftProduct(t *testing.T, srv *app.Server, merchantToken string) uint64 {
+	t.Helper()
+	imgID, categoryID := productImageAndCategory(t, srv, merchantToken)
+	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
+		"title": "草稿商品", "description": "draft", "category_id": categoryID, "price_cent": 10000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
+	}, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if create.Code != 0 {
+		t.Fatalf("create draft product failed: %+v", create)
+	}
+	return numToUint64(create.Data["product_id"])
+}
+
 func TestRestrictedLoginScope(t *testing.T) {
 	srv := newTestServer(t)
 	merchantID, username, password := registerMerchant(t, srv, "restricted")
@@ -372,5 +384,116 @@ func TestOrderProductTransactionConsistency(t *testing.T) {
 	}
 	if closedProduct.Status != model.ProductOffShelf || closedProduct.ActiveOrderID != nil {
 		t.Fatalf("closed product mismatch: status=%s active_order_id=%v", closedProduct.Status, closedProduct.ActiveOrderID)
+	}
+}
+
+func TestProductLifecycleStatusTransitions(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "product_lifecycle")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createDraftProduct(t, srv, token)
+
+	onShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if onShelf.Code != 0 || str(onShelf.Data["to_status"]) != model.ProductOnShelf {
+		t.Fatalf("on shelf failed: %+v", onShelf)
+	}
+
+	offShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/off-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if offShelf.Code != 0 || str(offShelf.Data["to_status"]) != model.ProductOffShelf {
+		t.Fatalf("off shelf failed: %+v", offShelf)
+	}
+
+	onShelfAgain := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if onShelfAgain.Code != 0 || str(onShelfAgain.Data["to_status"]) != model.ProductOnShelf {
+		t.Fatalf("on shelf again failed: %+v", onShelfAgain)
+	}
+
+	closeResp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/close", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if closeResp.Code != 0 || str(closeResp.Data["to_status"]) != model.ProductClosed {
+		t.Fatalf("close product failed: %+v", closeResp)
+	}
+
+	reOnShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if reOnShelf.Code != 10005 {
+		t.Fatalf("closed product should not re-on-shelf: %+v", reOnShelf)
+	}
+}
+
+func TestProductEditRulesByStatus(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "product_edit_rules")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createDraftProduct(t, srv, token)
+
+	updateDraft := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPut,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		map[string]interface{}{"title": "草稿改名", "price_cent": 12000},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if updateDraft.Code != 0 {
+		t.Fatalf("draft update should be allowed: %+v", updateDraft)
+	}
+
+	onShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if onShelf.Code != 0 {
+		t.Fatalf("on shelf failed: %+v", onShelf)
+	}
+
+	updateOnShelfPrice := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPut,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		map[string]interface{}{"price_cent": 13000},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if updateOnShelfPrice.Code != 10005 {
+		t.Fatalf("on-shelf price update should be denied: %+v", updateOnShelfPrice)
+	}
+
+	updateOnShelfDescription := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPut,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		map[string]interface{}{"description": "on shelf desc"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if updateOnShelfDescription.Code != 0 {
+		t.Fatalf("on-shelf description update should be allowed: %+v", updateOnShelfDescription)
+	}
+
+	closeResp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/close", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if closeResp.Code != 0 {
+		t.Fatalf("close product failed: %+v", closeResp)
+	}
+
+	updateClosed := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPut,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		map[string]interface{}{"description": "closed desc"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if updateClosed.Code != 10005 {
+		t.Fatalf("closed product update should be denied: %+v", updateClosed)
 	}
 }
