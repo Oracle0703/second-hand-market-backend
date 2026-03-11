@@ -28,6 +28,11 @@
 | `JWT_ACCESS_SECRET` | `replace-access-secret` | Access Token 密钥 |
 | `JWT_REFRESH_SECRET` | `replace-refresh-secret` | Refresh Token 密钥 |
 | `AUTO_MIGRATE` | `true` | 启动时自动迁移 |
+| `BUYER_WECHAT_LOGIN_MODE` | `mock` | 买家微信登录模式（`mock/real`） |
+| `BUYER_WECHAT_APP_ID` | 空 | `real` 模式必填，微信 AppID |
+| `BUYER_WECHAT_APP_SECRET` | 空 | `real` 模式必填，微信 AppSecret |
+| `BUYER_WECHAT_CODE2SESSION_URL` | 微信官方地址 | `code2session` 请求地址 |
+| `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | `5` | 微信接口超时时间（秒） |
 
 前端：
 
@@ -36,12 +41,22 @@
 | `frontend/.env.development` | `VITE_API_BASE_URL=http://localhost:8080/api/v1` | 本地开发 API 地址 |
 | `frontend/.env.production` | `VITE_API_BASE_URL=/api/v1` | 生产环境 API 前缀 |
 
+买家小程序（`miniapp`）：
+
+| 变量 | 示例 | 说明 |
+| --- | --- | --- |
+| `TARO_APP_API_BASE_URL` | `http://localhost:8080/api/v1` | 小程序 API 地址（真机不能用 localhost） |
+
 ### 后端
 ```bash
 cd backend
 GOPROXY=https://goproxy.cn,direct go mod tidy
-go run ./cmd/server
+CGO_ENABLED=0 go run ./cmd/server
 ```
+
+说明：
+- 在 macOS 未同意 Xcode License 时，`go run` 可能因为 cgo 失败；可用 `CGO_ENABLED=0` 启动。
+- 如需真实微信登录，需额外设置 `BUYER_WECHAT_LOGIN_MODE=real` 与微信密钥变量。
 
 默认管理员账号（初始化自动写入）：
 - `admin / Admin@123456`
@@ -82,7 +97,14 @@ GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build GOPROXY=https://p
 # 4) 执行主链路冒烟
 cd ..
 API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs
+
+# 5) 买家页面级冒烟（需要后端已启动）
+API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mjs
 ```
+
+`smoke-miniapp-page-e2e.mjs` 前置条件：
+- 后端 `/healthz` 可用。
+- 如后端为 `BUYER_WECHAT_LOGIN_MODE=real`，需要额外传入 `BUYER_WECHAT_LOGIN_CODE=<wx.login 获取的临时 code>`。
 
 ## restricted login 边界
 

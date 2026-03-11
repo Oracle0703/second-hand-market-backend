@@ -339,9 +339,9 @@ func (s *Server) handleBuyerWechatLogin(c *gin.Context) {
 	}
 
 	now := time.Now()
-	openid := "mock_wx_" + strings.TrimSpace(req.Code)
-	if openid == "mock_wx_" {
-		common.Fail(c, common.ErrInvalidArgument)
+	openid, unionid, resolveErr := s.resolveWechatIdentity(req.Code)
+	if resolveErr != nil {
+		common.Fail(c, s.wrapWechatLoginError(resolveErr))
 		return
 	}
 
@@ -351,9 +351,10 @@ func (s *Server) handleBuyerWechatLogin(c *gin.Context) {
 		buyer = model.BuyerUser{
 			BuyerNo:   common.BuildBizNo("B"),
 			OpenID:    openid,
+			UnionID:   unionid,
 			Status:    model.BuyerStatusActive,
-			Nickname:  req.Nickname,
-			AvatarURL: req.AvatarURL,
+			Nickname:  trimOptional(req.Nickname),
+			AvatarURL: trimOptional(req.AvatarURL),
 		}
 		if err := s.DB.Create(&buyer).Error; err != nil {
 			common.Fail(c, common.ErrInternal)
@@ -368,22 +369,16 @@ func (s *Server) handleBuyerWechatLogin(c *gin.Context) {
 			return
 		}
 		updates := map[string]interface{}{"last_login_at": &now}
-		if req.Nickname != nil {
-			updates["nickname"] = req.Nickname
-		}
-		if req.AvatarURL != nil {
-			updates["avatar_url"] = req.AvatarURL
-		}
+		setOptionalUpdate(updates, "nickname", req.Nickname)
+		setOptionalUpdate(updates, "avatar_url", req.AvatarURL)
+		setOptionalUpdate(updates, "unionid", unionid)
 		if err := s.DB.Model(&model.BuyerUser{}).Where("id = ?", buyer.ID).Updates(updates).Error; err != nil {
 			common.Fail(c, common.ErrInternal)
 			return
 		}
-		if req.Nickname != nil {
-			buyer.Nickname = req.Nickname
-		}
-		if req.AvatarURL != nil {
-			buyer.AvatarURL = req.AvatarURL
-		}
+		setOptionalModelField(&buyer.Nickname, req.Nickname)
+		setOptionalModelField(&buyer.AvatarURL, req.AvatarURL)
+		setOptionalModelField(&buyer.UnionID, unionid)
 	}
 	_ = s.DB.Model(&model.BuyerUser{}).Where("id = ?", buyer.ID).Update("last_login_at", &now).Error
 

@@ -7,26 +7,36 @@ import (
 )
 
 type Config struct {
-	Addr             string
-	DBDriver         string
-	DBDSN            string
-	JWTAccessSecret  string
-	JWTRefreshSecret string
-	AccessTTL        time.Duration
-	RefreshTTL       time.Duration
-	AutoMigrate      bool
+	Addr                       string
+	DBDriver                   string
+	DBDSN                      string
+	JWTAccessSecret            string
+	JWTRefreshSecret           string
+	AccessTTL                  time.Duration
+	RefreshTTL                 time.Duration
+	AutoMigrate                bool
+	BuyerWechatLoginMode       string
+	BuyerWechatAppID           string
+	BuyerWechatAppSecret       string
+	BuyerWechatCode2SessionURL string
+	BuyerWechatHTTPTimeout     time.Duration
 }
 
 func LoadConfig() Config {
 	cfg := Config{
-		Addr:             getEnv("ADDR", ":8080"),
-		DBDriver:         getEnv("DB_DRIVER", "sqlite"),
-		DBDSN:            getEnv("DB_DSN", "file:app.db?cache=shared&_foreign_keys=on"),
-		JWTAccessSecret:  getEnv("JWT_ACCESS_SECRET", "dev-access-secret"),
-		JWTRefreshSecret: getEnv("JWT_REFRESH_SECRET", "dev-refresh-secret"),
-		AccessTTL:        2 * time.Hour,
-		RefreshTTL:       7 * 24 * time.Hour,
-		AutoMigrate:      getEnvBool("AUTO_MIGRATE", true),
+		Addr:                       getEnv("ADDR", ":8080"),
+		DBDriver:                   getEnv("DB_DRIVER", "sqlite"),
+		DBDSN:                      getEnv("DB_DSN", "file:app.db?cache=shared&_foreign_keys=on"),
+		JWTAccessSecret:            getEnv("JWT_ACCESS_SECRET", "dev-access-secret"),
+		JWTRefreshSecret:           getEnv("JWT_REFRESH_SECRET", "dev-refresh-secret"),
+		AccessTTL:                  2 * time.Hour,
+		RefreshTTL:                 7 * 24 * time.Hour,
+		AutoMigrate:                getEnvBool("AUTO_MIGRATE", true),
+		BuyerWechatLoginMode:       getEnv("BUYER_WECHAT_LOGIN_MODE", "mock"),
+		BuyerWechatAppID:           getEnv("BUYER_WECHAT_APP_ID", ""),
+		BuyerWechatAppSecret:       getEnv("BUYER_WECHAT_APP_SECRET", ""),
+		BuyerWechatCode2SessionURL: getEnv("BUYER_WECHAT_CODE2SESSION_URL", "https://api.weixin.qq.com/sns/jscode2session"),
+		BuyerWechatHTTPTimeout:     5 * time.Second,
 	}
 	if v := os.Getenv("ACCESS_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -36,6 +46,11 @@ func LoadConfig() Config {
 	if v := os.Getenv("REFRESH_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.RefreshTTL = time.Duration(n) * time.Second
+		}
+	}
+	if v := os.Getenv("BUYER_WECHAT_HTTP_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.BuyerWechatHTTPTimeout = time.Duration(n) * time.Second
 		}
 	}
 	return cfg
