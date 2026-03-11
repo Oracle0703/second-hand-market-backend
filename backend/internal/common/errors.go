@@ -41,6 +41,7 @@ var (
 	ErrReviewNotApproved = NewBizError(CodeReviewNotApproved, "review not approved", http.StatusForbidden)
 	ErrAccountDisabled   = NewBizError(CodeAccountDisabled, "account disabled", http.StatusForbidden)
 	ErrInvalidUpload     = NewBizError(CodeInvalidUpload, "invalid upload file", http.StatusBadRequest)
+	ErrRateLimit         = NewBizError(CodeRateLimit, "rate limit exceeded", http.StatusTooManyRequests)
 	ErrConflict          = NewBizError(CodeConflict, "conflict", http.StatusConflict)
 	ErrDuplicateSubmit   = NewBizError(CodeDuplicateSubmit, "duplicate submit", http.StatusConflict)
 	ErrInternal          = NewBizError(CodeInternal, "internal error", http.StatusInternalServerError)

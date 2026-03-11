@@ -21,9 +21,10 @@ import (
 )
 
 type Server struct {
-	cfg    Config
-	DB     *gorm.DB
-	Router *gin.Engine
+	cfg     Config
+	DB      *gorm.DB
+	Router  *gin.Engine
+	limiter *memoryRateLimiter
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -42,7 +43,7 @@ func NewServer(cfg Config) (*Server, error) {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret))
-	s := &Server{cfg: cfg, DB: db, Router: r}
+	s := &Server{cfg: cfg, DB: db, Router: r, limiter: newMemoryRateLimiter()}
 	s.registerRoutes()
 	return s, nil
 }
@@ -75,6 +76,11 @@ func migrate(db *gorm.DB) error {
 		&model.OperationLog{},
 		&model.AuthSession{},
 		&model.IdempotencyRecord{},
+		&model.BuyerUser{},
+		&model.BuyerDeviceBinding{},
+		&model.BuyerFavorite{},
+		&model.BuyerHistory{},
+		&model.BuyerIntent{},
 	)
 }
 
@@ -133,7 +139,7 @@ func (s *Server) registerRoutes() {
 		v1.POST("/files/presign", s.handlePresign)
 		v1.POST("/files/confirm", s.handleConfirmUpload)
 
-		v1.POST("/auth/logout", middleware.RequireAuth(model.UserTypeAdmin, model.UserTypeMerchant), s.handleLogout)
+		v1.POST("/auth/logout", middleware.RequireAuth(model.UserTypeAdmin, model.UserTypeMerchant, model.UserTypeBuyer), s.handleLogout)
 
 		merchant := v1.Group("/merchant")
 		merchant.Use(middleware.RequireAuth(model.UserTypeMerchant))
@@ -159,8 +165,41 @@ func (s *Server) registerRoutes() {
 			merchant.GET("/orders/:id", middleware.RequireFullMerchantScope(), s.handleOrderDetail)
 			merchant.POST("/orders/:id/complete", middleware.RequireFullMerchantScope(), s.handleOrderComplete)
 			merchant.POST("/orders/:id/close", middleware.RequireFullMerchantScope(), s.handleOrderClose)
+			merchant.GET("/intents", middleware.RequireFullMerchantScope(), s.handleMerchantIntentList)
+			merchant.GET("/intents/:id", middleware.RequireFullMerchantScope(), s.handleMerchantIntentDetail)
+			merchant.POST("/intents/:id/contacted", middleware.RequireFullMerchantScope(), s.handleMerchantIntentContacted)
+			merchant.POST("/intents/:id/close", middleware.RequireFullMerchantScope(), s.handleMerchantIntentClose)
 
 			merchant.GET("/logs", middleware.RequireFullMerchantScope(), s.handleMerchantLogs)
+		}
+
+		buyer := v1.Group("/buyer")
+		{
+			buyer.GET("/categories", s.handleBuyerCategories)
+			buyer.GET("/products", s.handleBuyerProducts)
+			buyer.GET("/products/:id", s.handleBuyerProductDetail)
+
+			buyer.POST("/auth/wechat-login", s.handleBuyerWechatLogin)
+			buyer.POST("/auth/refresh", s.handleRefresh)
+			buyer.POST("/auth/logout", middleware.RequireAuth(model.UserTypeBuyer), s.handleLogout)
+
+			buyer.GET("/favorites", s.handleBuyerFavoriteList)
+			buyer.POST("/favorites", s.handleBuyerFavoriteAdd)
+			buyer.DELETE("/favorites/:product_id", s.handleBuyerFavoriteDelete)
+
+			buyer.GET("/histories", s.handleBuyerHistoryList)
+			buyer.POST("/histories/views", s.handleBuyerHistoryView)
+			buyer.DELETE("/histories", s.handleBuyerHistoryDelete)
+			buyer.GET("/me/summary", s.handleBuyerSummary)
+		}
+
+		buyerAuth := v1.Group("/buyer")
+		buyerAuth.Use(middleware.RequireAuth(model.UserTypeBuyer))
+		{
+			buyerAuth.POST("/guest/merge", s.handleBuyerGuestMerge)
+			buyerAuth.POST("/intents", s.handleBuyerIntentCreate)
+			buyerAuth.GET("/intents", s.handleBuyerIntentList)
+			buyerAuth.GET("/intents/:id", s.handleBuyerIntentDetail)
 		}
 
 		admin := v1.Group("/admin")

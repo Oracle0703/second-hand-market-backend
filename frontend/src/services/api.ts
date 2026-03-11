@@ -87,6 +87,18 @@ export const api = {
   orderClose(orderId: string | number, reason?: string) {
     return http.post(`/merchant/orders/${orderId}/close`, reason ? { reason } : {})
   },
+  merchantIntents(params: Record<string, string | number> = {}) {
+    return http.get('/merchant/intents', { params })
+  },
+  merchantIntentDetail(intentId: string | number) {
+    return http.get(`/merchant/intents/${intentId}`)
+  },
+  merchantIntentContacted(intentId: string | number) {
+    return http.post(`/merchant/intents/${intentId}/contacted`, {})
+  },
+  merchantIntentClose(intentId: string | number, payload: { reason?: string; merchant_note?: string } = {}) {
+    return http.post(`/merchant/intents/${intentId}/close`, payload)
+  },
   adminMerchantReviews(params: Record<string, string | number> = {}) {
     return http.get('/admin/merchants', { params })
   },

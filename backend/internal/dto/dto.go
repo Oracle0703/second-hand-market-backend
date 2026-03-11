@@ -81,3 +81,36 @@ type ConfirmUploadRequest struct {
 	FileID    uint64 `json:"file_id" binding:"required"`
 	ObjectKey string `json:"object_key" binding:"required"`
 }
+
+type BuyerWechatLoginRequest struct {
+	Code      string  `json:"code" binding:"required"`
+	DeviceID  string  `json:"device_id" binding:"required,min=8,max=64"`
+	Nickname  *string `json:"nickname"`
+	AvatarURL *string `json:"avatar_url"`
+}
+
+type BuyerGuestMergeRequest struct {
+	DeviceID string `json:"device_id" binding:"required,min=8,max=64"`
+}
+
+type BuyerFavoriteRequest struct {
+	ProductID uint64 `json:"product_id" binding:"required"`
+}
+
+type BuyerHistoryViewRequest struct {
+	ProductID uint64  `json:"product_id" binding:"required"`
+	ViewedAt  *string `json:"viewed_at"`
+}
+
+type BuyerIntentCreateRequest struct {
+	ProductID     uint64  `json:"product_id" binding:"required"`
+	ContactName   *string `json:"contact_name"`
+	ContactPhone  *string `json:"contact_phone"`
+	ContactWechat *string `json:"contact_wechat"`
+	Message       *string `json:"message"`
+}
+
+type MerchantIntentCloseRequest struct {
+	Reason       *string `json:"reason"`
+	MerchantNote *string `json:"merchant_note"`
+}

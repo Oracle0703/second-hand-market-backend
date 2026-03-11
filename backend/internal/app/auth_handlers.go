@@ -187,7 +187,8 @@ func (s *Server) handleRefresh(c *gin.Context) {
 	role := ""
 	merchantID := uint64(0)
 	scope := "full"
-	if claims.UserType == model.UserTypeAdmin {
+	switch claims.UserType {
+	case model.UserTypeAdmin:
 		var admin model.AdminUser
 		if err := s.DB.Where("id = ?", claims.UserID).First(&admin).Error; err != nil {
 			common.Fail(c, common.ErrUnauthorized)
@@ -198,7 +199,7 @@ func (s *Server) handleRefresh(c *gin.Context) {
 			return
 		}
 		role = admin.Role
-	} else {
+	case model.UserTypeMerchant:
 		var acct model.MerchantAccount
 		if err := s.DB.Where("id = ?", claims.UserID).First(&acct).Error; err != nil {
 			common.Fail(c, common.ErrUnauthorized)
@@ -218,6 +219,20 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		if merchant.ReviewStatus != model.ReviewApproved {
 			scope = "onboarding"
 		}
+	case model.UserTypeBuyer:
+		var buyer model.BuyerUser
+		if err := s.DB.Where("id = ?", claims.UserID).First(&buyer).Error; err != nil {
+			common.Fail(c, common.ErrUnauthorized)
+			return
+		}
+		if buyer.Status == model.BuyerStatusDisabled {
+			common.Fail(c, common.ErrAccountDisabled)
+			return
+		}
+		role = model.UserTypeBuyer
+	default:
+		common.Fail(c, common.ErrUnauthorized)
+		return
 	}
 
 	newRefresh, refreshExp, err := auth.BuildRefreshToken(s.cfg.JWTRefreshSecret, auth.RefreshClaims{UserID: claims.UserID, UserType: claims.UserType, SessionID: session.ID}, s.cfg.RefreshTTL)

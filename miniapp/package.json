@@ -1,0 +1,31 @@
+{
+  "name": "second-hand-buyer-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev:weapp": "taro build --type weapp --watch",
+    "build:weapp": "taro build --type weapp",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.5",
+    "@tarojs/components": "3.6.34",
+    "@tarojs/react": "3.6.34",
+    "@tarojs/runtime": "3.6.34",
+    "@tarojs/taro": "3.6.34",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "babel-preset-taro": "3.6.34",
+    "@tarojs/cli": "3.6.34",
+    "@tarojs/plugin-framework-react": "3.6.34",
+    "@tarojs/webpack5-runner": "3.6.34",
+    "@types/node": "^22.18.8",
+    "@types/react": "^18.3.24",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

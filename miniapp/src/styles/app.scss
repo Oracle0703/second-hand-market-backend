@@ -1,0 +1,63 @@
+page {
+  background: linear-gradient(160deg, #f3f8f6 0%, #eef4f5 55%, #f9f7f2 100%);
+  color: #17342d;
+  font-family: 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+}
+
+.page {
+  padding: 24rpx;
+}
+
+.card {
+  background: #fff;
+  border-radius: 18rpx;
+  padding: 20rpx;
+  box-shadow: 0 8rpx 24rpx rgba(23, 52, 45, 0.08);
+}
+
+.title {
+  font-size: 34rpx;
+  font-weight: 600;
+  margin-bottom: 16rpx;
+}
+
+.list-item {
+  border-bottom: 1rpx solid #edf1ef;
+  padding: 16rpx 0;
+}
+
+.list-item:last-child {
+  border-bottom: none;
+}
+
+.btn-primary {
+  background: #1d5a4a;
+  color: #fff;
+  border: none;
+}
+
+.btn-secondary {
+  background: #edf4f1;
+  color: #1d5a4a;
+  border: none;
+}
+
+.btn-disabled {
+  background: #d8dedb;
+  color: #7d8b86;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 4rpx 12rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  background: #eef4f1;
+  color: #1d5a4a;
+}
+
+.empty {
+  text-align: center;
+  color: #6f7c77;
+  padding: 40rpx 0;
+}

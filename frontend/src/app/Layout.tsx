@@ -18,6 +18,7 @@ export function Layout() {
           <Link to="/merchant/dashboard">Dashboard</Link>
           <Link to="/merchant/products">商品</Link>
           <Link to="/merchant/orders">订单</Link>
+          <Link to="/merchant/intents">意向</Link>
           <Link to="/admin/merchants/reviews">审核</Link>
         </nav>
         <div>

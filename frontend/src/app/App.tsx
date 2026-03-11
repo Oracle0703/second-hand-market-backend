@@ -16,6 +16,8 @@ import { AdminMerchantReviewDetailPage } from '../pages/AdminMerchantReviewDetai
 import { MerchantLogsPage } from '../pages/MerchantLogsPage'
 import { MerchantAccountPage } from '../pages/MerchantAccountPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
+import { MerchantIntentsPage } from '../pages/MerchantIntentsPage'
+import { MerchantIntentDetailPage } from '../pages/MerchantIntentDetailPage'
 
 export function App() {
   return (
@@ -43,6 +45,8 @@ export function App() {
               <Route path="/merchant/products/:productId/edit" element={<MerchantProductEditPage />} />
               <Route path="/merchant/orders" element={<MerchantOrdersPage />} />
               <Route path="/merchant/orders/:orderId" element={<MerchantOrderDetailPage />} />
+              <Route path="/merchant/intents" element={<MerchantIntentsPage />} />
+              <Route path="/merchant/intents/:intentId" element={<MerchantIntentDetailPage />} />
               <Route path="/merchant/account" element={<MerchantAccountPage />} />
               <Route path="/merchant/logs" element={<MerchantLogsPage />} />
             </Route>
