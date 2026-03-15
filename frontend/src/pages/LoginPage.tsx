@@ -1,6 +1,6 @@
 import { LoginFormPage, ProFormSelect, ProFormText } from '@ant-design/pro-components'
-import { message } from 'antd'
-import { useNavigate } from 'react-router-dom'
+import { Button, Space, message } from 'antd'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../services/api'
 import { useAuthStore } from '../stores/auth-store'
 import type { LoginType } from '../types/auth'
@@ -51,6 +51,16 @@ export function LoginPage() {
           submitText: '登录'
         }
       }}
+      actions={
+        <Space size={8}>
+          <span>还没有商家账号？</span>
+          <Link to="/register">
+            <Button type="link" style={{ paddingInline: 0 }}>
+              去注册
+            </Button>
+          </Link>
+        </Space>
+      }
       containerStyle={{ backgroundColor: '#f5f7fa' }}
     >
       <ProFormSelect

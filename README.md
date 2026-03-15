@@ -34,6 +34,8 @@
 | `BUYER_WECHAT_CODE2SESSION_URL` | 微信官方地址 | `code2session` 请求地址 |
 | `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | `5` | 微信接口超时时间（秒） |
 
+生产（SQLite）可参考：`backend/configs/.env.production.sqlite.example`
+
 前端：
 
 | 文件 | 变量 | 说明 |
@@ -52,6 +54,15 @@
 ```bash
 cd backend
 GOPROXY=https://goproxy.cn,direct go mod tidy
+CGO_ENABLED=0 go run ./cmd/server
+```
+
+生产环境（SQLite 示例）：
+```bash
+cd backend
+cp configs/.env.production.sqlite.example .env.production
+# 修改 .env.production 里的 JWT 密钥与 DB_DSN 路径
+set -a && source .env.production && set +a
 CGO_ENABLED=0 go run ./cmd/server
 ```
 
