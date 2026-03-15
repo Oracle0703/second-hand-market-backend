@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | `ADDR` | `:8080` | 服务监听地址 |
 | `DB_DRIVER` | `mysql` | 数据库驱动（默认 mysql） |
-| `DB_DSN` | `shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...` | 数据库连接串 |
+| `DB_DSN` | `'shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...'` | 数据库连接串（建议带引号，便于 `source`） |
 | `JWT_ACCESS_SECRET` | `replace-access-secret` | Access Token 密钥 |
 | `JWT_REFRESH_SECRET` | `replace-refresh-secret` | Refresh Token 密钥 |
 | `AUTO_MIGRATE` | `true` | 启动时自动迁移 |
