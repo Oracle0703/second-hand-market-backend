@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { getStatusText, MERCHANT_REVIEW_STATUS_META } from '../constants/status'
 import { api } from '../services/api'
 
 export function RegisterStatusPage() {
@@ -21,7 +22,7 @@ export function RegisterStatusPage() {
     <section className="card">
       <h1>注册审核状态</h1>
       <p>商家：{data.merchant_info?.name}</p>
-      <p>状态：{data.review_status}</p>
+      <p>状态：{getStatusText(MERCHANT_REVIEW_STATUS_META, data.review_status)}</p>
       {data.reject_reason ? <p>驳回原因：{data.reject_reason}</p> : null}
       {data.review_status === 'REJECTED' ? (
         <button onClick={() => reapplyMutation.mutate()} disabled={reapplyMutation.isPending}>

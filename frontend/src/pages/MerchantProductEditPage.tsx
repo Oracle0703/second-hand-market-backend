@@ -1,90 +1,145 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  PageContainer,
+  ProCard,
+  ProForm,
+  ProFormDigit,
+  ProFormSelect,
+  ProFormText,
+  ProFormTextArea,
+  type ProFormInstance
+} from '@ant-design/pro-components'
+import { Alert, Button, Space, Tag, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
+import { getStatusText, PRODUCT_CONDITION_META, PRODUCT_STATUS_META, type ProductCondition, type ProductStatus } from '../constants/status'
 import { api } from '../services/api'
 
-const conditionOptions = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR'] as const
+const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
+
+type CategoryItem = {
+  ID?: number
+  id?: number
+  Name?: string
+  name?: string
+  ParentID?: number
+  parent_id?: number
+}
+
+type ProductDetail = {
+  id: number
+  title: string
+  description: string
+  status: ProductStatus
+  category_id: number
+  price_cent: number
+  condition_level: ProductCondition
+  images: number[]
+}
+
+type ProductEditValues = {
+  parent_id?: number
+  title: string
+  description: string
+  price_cent: number
+  condition_level: (typeof conditionOptions)[number]
+  category_id?: number
+}
+
+function categoryId(item: CategoryItem) {
+  return Number(item.ID ?? item.id ?? 0)
+}
+
+function categoryName(item: CategoryItem) {
+  return item.Name ?? item.name ?? ''
+}
 
 export function MerchantProductEditPage() {
   const { productId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const formRef = useRef<ProFormInstance<ProductEditValues>>()
   const [parentId, setParentID] = useState<number | ''>('')
-  const [form, setForm] = useState({
-    title: '',
-    description: '',
-    price_cent: 0,
-    condition_level: 'GOOD' as (typeof conditionOptions)[number],
-    category_id: 0,
-    image_file_ids: [] as number[]
-  })
+  const [imageIDs, setImageIDs] = useState<number[]>([])
 
   const detail = useQuery({
     queryKey: ['product-detail', productId],
-    queryFn: async () => (await api.productDetail(productId)).data.data.product as any
+    queryFn: async () => (await api.productDetail(productId)).data.data.product as ProductDetail
   })
 
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
-    queryFn: async () => (await api.categories(1)).data.data.items as any[]
+    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
   })
   const level2All = useQuery({
     queryKey: ['categories', 'level2-all'],
-    queryFn: async () => (await api.categories(2)).data.data.items as any[]
+    queryFn: async () => (await api.categories(2)).data.data.items as CategoryItem[]
   })
   const level2ByParent = useQuery({
     queryKey: ['categories', 'level2', parentId],
     enabled: !!parentId,
-    queryFn: async () => (await api.categories(2, Number(parentId))).data.data.items as any[]
+    queryFn: async () => (await api.categories(2, Number(parentId))).data.data.items as CategoryItem[]
   })
 
   useEffect(() => {
     if (!detail.data) return
-    setForm({
+    formRef.current?.setFieldsValue({
       title: detail.data.title,
       description: detail.data.description ?? '',
       price_cent: detail.data.price_cent,
       condition_level: detail.data.condition_level,
-      category_id: detail.data.category_id,
-      image_file_ids: detail.data.images ?? []
+      category_id: detail.data.category_id
     })
+    setImageIDs(detail.data.images ?? [])
   }, [detail.data])
 
   useEffect(() => {
     if (!detail.data || !level2All.data) return
-    const row = level2All.data.find((item: any) => Number(item.ID ?? item.id) === Number(detail.data.category_id))
+    const row = level2All.data.find((item) => categoryId(item) === Number(detail.data.category_id))
     if (!row) return
-    setParentID(Number(row.ParentID ?? row.parent_id))
+    const pid = Number(row.ParentID ?? row.parent_id ?? 0)
+    setParentID(pid)
+    formRef.current?.setFieldValue('parent_id', pid)
   }, [detail.data, level2All.data])
 
-  const status = detail.data?.status as string | undefined
+  const status = detail.data?.status
   const canEditAll = status === 'DRAFT' || status === 'OFF_SHELF'
   const canEditDescImages = canEditAll || status === 'ON_SHELF'
 
   const updateMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (values: ProductEditValues) => {
       if (!canEditDescImages) {
         throw new Error('当前状态不可编辑')
       }
+      if (imageIDs.length === 0) {
+        throw new Error('至少保留一张图片')
+      }
       if (canEditAll) {
+        if (!values.category_id) {
+          throw new Error('请选择二级分类')
+        }
         return api.updateProduct(productId, {
-          title: form.title,
-          description: form.description,
-          category_id: form.category_id,
-          price_cent: form.price_cent,
-          condition_level: form.condition_level,
-          image_file_ids: form.image_file_ids
+          title: values.title,
+          description: values.description,
+          category_id: values.category_id,
+          price_cent: Number(values.price_cent),
+          condition_level: values.condition_level,
+          image_file_ids: imageIDs
         })
       }
       return api.updateProduct(productId, {
-        description: form.description,
-        image_file_ids: form.image_file_ids
+        description: values.description,
+        image_file_ids: imageIDs
       })
     },
     onSuccess: async () => {
+      message.success('保存成功')
       await queryClient.invalidateQueries({ queryKey: ['product-detail', productId] })
       await queryClient.invalidateQueries({ queryKey: ['merchant-products'] })
       navigate(`/merchant/products/${productId}`)
+    },
+    onError: (err) => {
+      message.error((err as Error).message)
     }
   })
 
@@ -103,13 +158,17 @@ export function MerchantProductEditPage() {
       return presign.data.data.file_id as number
     },
     onSuccess: (fileID) => {
-      setForm((prev) => ({ ...prev, image_file_ids: [...prev.image_file_ids, fileID] }))
+      setImageIDs((prev) => [...prev, fileID])
+      message.success(`已添加图片 file_id=${fileID}`)
+    },
+    onError: (err) => {
+      message.error((err as Error).message)
     }
   })
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault()
-    updateMutation.mutate()
+  const onFinish = async (values: ProductEditValues) => {
+    await updateMutation.mutateAsync(values)
+    return true
   }
 
   const level2Options = useMemo(() => level2ByParent.data ?? [], [level2ByParent.data])
@@ -118,79 +177,85 @@ export function MerchantProductEditPage() {
   if (detail.error) return <p className="error">{(detail.error as Error).message}</p>
 
   return (
-    <form className="card" onSubmit={onSubmit}>
-      <h1>编辑商品</h1>
-      <p>当前状态: {status}</p>
+    <PageContainer title="编辑商品" subTitle={`当前状态: ${getStatusText(PRODUCT_STATUS_META, status)}`}>
+      {!canEditDescImages ? <Alert type="warning" showIcon message="该状态下不可编辑商品" style={{ marginBottom: 16 }} /> : null}
 
-      <label>
-        标题
-        <input disabled={!canEditAll} value={form.title} onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))} />
-      </label>
-      <label>
-        描述
-        <textarea disabled={!canEditDescImages} value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} />
-      </label>
-      <label>
-        价格(分)
-        <input disabled={!canEditAll} type="number" value={form.price_cent} onChange={(e) => setForm((prev) => ({ ...prev, price_cent: Number(e.target.value) }))} />
-      </label>
-      <label>
-        成色
-        <select disabled={!canEditAll} value={form.condition_level} onChange={(e) => setForm((prev) => ({ ...prev, condition_level: e.target.value as (typeof conditionOptions)[number] }))}>
-          {conditionOptions.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        一级分类
-        <select
+      <ProCard title="图片" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          {imageIDs.length > 0 ? (
+            imageIDs.map((id) => (
+              <Tag
+                key={id}
+                closable={canEditDescImages}
+                onClose={(e) => {
+                  e.preventDefault()
+                  if (!canEditDescImages) return
+                  setImageIDs((prev) => prev.filter((x) => x !== id))
+                }}
+              >
+                file_id: {id}
+              </Tag>
+            ))
+          ) : (
+            <span>暂无图片</span>
+          )}
+        </Space>
+        <div style={{ marginTop: 12 }}>
+          <Button type="dashed" onClick={() => uploadMutation.mutate()} loading={uploadMutation.isPending} disabled={!canEditDescImages}>
+            添加示例图片
+          </Button>
+        </div>
+      </ProCard>
+
+      <ProForm<ProductEditValues>
+        formRef={formRef}
+        layout="vertical"
+        onFinish={onFinish}
+        submitter={{
+          searchConfig: {
+            submitText: '保存'
+          },
+          submitButtonProps: {
+            loading: updateMutation.isPending,
+            disabled: !canEditDescImages || imageIDs.length === 0
+          }
+        }}
+      >
+        <ProFormText name="title" label="标题" disabled={!canEditAll} rules={[{ required: true, message: '请输入标题' }]} />
+        <ProFormTextArea name="description" label="描述" disabled={!canEditDescImages} rules={[{ required: true, message: '请输入描述' }]} />
+        <ProFormDigit name="price_cent" label="价格(分)" min={1} disabled={!canEditAll} fieldProps={{ precision: 0 }} rules={[{ required: true, message: '请输入价格' }]} />
+        <ProFormSelect
+          name="condition_level"
+          label="成色"
           disabled={!canEditAll}
-          value={parentId}
-          onChange={(e) => {
-            const raw = e.target.value
-            setParentID(raw ? Number(raw) : '')
-            setForm((prev) => ({ ...prev, category_id: 0 }))
+          options={conditionOptions.map((item) => ({ label: PRODUCT_CONDITION_META[item].text, value: item }))}
+          rules={[{ required: true, message: '请选择成色' }]}
+        />
+        <ProFormSelect
+          name="parent_id"
+          label="一级分类"
+          disabled={!canEditAll}
+          options={(level1.data ?? []).map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
+          fieldProps={{
+            value: parentId || undefined,
+            loading: level1.isLoading,
+            onChange: (value) => {
+              const nextParentID = value ? Number(value) : ''
+              setParentID(nextParentID)
+              formRef.current?.setFieldValue('category_id', undefined)
+            }
           }}
-        >
-          <option value="">请选择</option>
-          {(level1.data ?? []).map((item: any) => (
-            <option key={item.ID ?? item.id} value={item.ID ?? item.id}>
-              {item.Name ?? item.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        二级分类
-        <select
+          rules={canEditAll ? [{ required: true, message: '请选择一级分类' }] : []}
+        />
+        <ProFormSelect
+          name="category_id"
+          label="二级分类"
           disabled={!canEditAll}
-          value={form.category_id || ''}
-          onChange={(e) => setForm((prev) => ({ ...prev, category_id: e.target.value ? Number(e.target.value) : 0 }))}
-        >
-          <option value="">请选择</option>
-          {level2Options.map((item: any) => (
-            <option key={item.ID ?? item.id} value={item.ID ?? item.id}>
-              {item.Name ?? item.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <div className="toolbar">
-        <span>图片 file_ids: {form.image_file_ids.join(', ') || '无'}</span>
-        <button type="button" onClick={() => uploadMutation.mutate()} disabled={!canEditDescImages || uploadMutation.isPending}>
-          添加示例图片
-        </button>
-      </div>
-
-      {!canEditDescImages ? <p>该状态下不可编辑商品。</p> : null}
-      {updateMutation.error ? <p className="error">{(updateMutation.error as Error).message}</p> : null}
-      <button type="submit" disabled={updateMutation.isPending || !canEditDescImages || form.image_file_ids.length === 0 || (canEditAll && !form.category_id)}>
-        保存
-      </button>
-    </form>
+          options={level2Options.map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
+          fieldProps={{ loading: level2ByParent.isLoading }}
+          rules={canEditAll ? [{ required: true, message: '请选择二级分类' }] : []}
+        />
+      </ProForm>
+    </PageContainer>
   )
 }

@@ -111,6 +111,9 @@ export const api = {
   adminMerchantReject(merchantId: string | number, reason: string) {
     return http.post(`/admin/merchants/${merchantId}/reject`, { reason })
   },
+  adminLogs(params: Record<string, string | number> = {}) {
+    return http.get('/admin/logs', { params })
+  },
   merchantLogs(params: Record<string, string | number> = {}) {
     return http.get('/merchant/logs', { params })
   },

@@ -12,11 +12,21 @@ body {
   margin: 0;
 }
 
-.auth-page {
+#root {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 16px;
+}
+
+/* LoginFormPage defaults to a two-column layout with an empty notice column.
+   Collapse the notice column so the form stays horizontally centered. */
+.ant-pro-form-login-page .ant-pro-form-login-page-notice {
+  display: none;
+}
+
+.ant-pro-form-login-page .ant-pro-form-login-page-left {
+  flex: none;
+  width: 100%;
+  max-width: 550px;
+  margin-inline: auto;
 }
 
 .card {
@@ -32,21 +42,21 @@ form.card {
   gap: 12px;
 }
 
-label {
+form.card label {
   display: grid;
   gap: 6px;
 }
 
-input,
-textarea,
-select,
-button {
+form.card input,
+form.card textarea,
+form.card select,
+form.card button {
   padding: 10px;
   border-radius: 8px;
   border: 1px solid #d2d8e2;
 }
 
-button {
+form.card button {
   cursor: pointer;
   border: 0;
   background: #1d4ed8;
@@ -57,31 +67,13 @@ button {
   color: #b91c1c;
 }
 
-.layout header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: #fff;
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #e5e7eb;
-  padding: 12px 16px;
+.muted {
+  color: #6b7280;
 }
 
-.layout nav {
-  display: flex;
-  gap: 10px;
-}
-
-.layout nav a {
-  text-decoration: none;
-  color: #1f2937;
-}
-
-.layout main {
-  padding: 16px;
+.topbar-role {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .toolbar {
@@ -92,27 +84,15 @@ button {
   flex-wrap: wrap;
 }
 
-table {
+.card table {
   width: 100%;
   border-collapse: collapse;
 }
 
-th,
-td {
+.card th,
+.card td {
   border-bottom: 1px solid #e5e7eb;
   text-align: left;
   padding: 8px;
   vertical-align: top;
-}
-
-@media (max-width: 767px) {
-  .layout header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .layout nav {
-    width: 100%;
-    overflow-x: auto;
-  }
 }

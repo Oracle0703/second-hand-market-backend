@@ -3,8 +3,11 @@ import { Tag, message } from 'antd'
 import { getCommonStatusText } from '../constants/status'
 import { api } from '../services/api'
 
-type MerchantLogItem = {
+type AdminLogItem = {
   id: number
+  request_id: string
+  operator_type: string
+  operator_id: number
   action: string
   resource_type: string
   resource_id: number
@@ -12,18 +15,17 @@ type MerchantLogItem = {
   to_status?: string | null
   result_code: number
   created_at: string
-  request_id: string
 }
 
-type MerchantLogResp = {
-  items: MerchantLogItem[]
+type AdminLogResp = {
+  items: AdminLogItem[]
   total: number
   page: number
   page_size: number
 }
 
-export function MerchantLogsPage() {
-  const columns: ProColumns<MerchantLogItem>[] = [
+export function AdminLogsPage() {
+  const columns: ProColumns<AdminLogItem>[] = [
     {
       title: '时间',
       dataIndex: 'created_at',
@@ -32,9 +34,26 @@ export function MerchantLogsPage() {
       width: 180
     },
     {
+      title: '操作者类型',
+      dataIndex: 'operator_type',
+      valueType: 'select',
+      valueEnum: {
+        ADMIN: { text: 'ADMIN' },
+        MERCHANT: { text: 'MERCHANT' },
+        BUYER: { text: 'BUYER' }
+      },
+      width: 120
+    },
+    {
+      title: '操作者ID',
+      dataIndex: 'operator_id',
+      search: false,
+      width: 100
+    },
+    {
       title: '动作',
       dataIndex: 'action',
-      width: 200
+      width: 180
     },
     {
       title: '资源类型',
@@ -51,11 +70,7 @@ export function MerchantLogsPage() {
       title: '状态流转',
       key: 'status_flow',
       search: false,
-      render: (_, row) => (
-        <span>
-          {getCommonStatusText(row.from_status)} -&gt; {getCommonStatusText(row.to_status)}
-        </span>
-      )
+      render: (_, row) => `${getCommonStatusText(row.from_status)} -> ${getCommonStatusText(row.to_status)}`
     },
     {
       title: '结果码',
@@ -75,8 +90,8 @@ export function MerchantLogsPage() {
   ]
 
   return (
-    <PageContainer title="商家操作日志">
-      <ProTable<MerchantLogItem>
+    <PageContainer title="全局操作日志">
+      <ProTable<AdminLogItem>
         rowKey="id"
         columns={columns}
         pagination={{ pageSize: 20 }}
@@ -86,10 +101,11 @@ export function MerchantLogsPage() {
               page: params.current ?? 1,
               page_size: params.pageSize ?? 20
             }
+            if (params.operator_type) query.operator_type = params.operator_type as string
             if (params.action) query.action = String(params.action).trim()
             if (params.resource_type) query.resource_type = String(params.resource_type).trim()
-            const res = await api.merchantLogs(query)
-            const payload = res.data.data as MerchantLogResp
+            const res = await api.adminLogs(query)
+            const payload = res.data.data as AdminLogResp
             return {
               data: payload.items,
               total: payload.total,

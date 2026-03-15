@@ -14,9 +14,30 @@ export const http = axios.create({
   timeout: 15000
 })
 
+const AUTH_EXEMPT_PATHS = new Set([
+  '/auth/login',
+  '/auth/register',
+  '/auth/refresh',
+  '/buyer/auth/wechat-login',
+  '/buyer/auth/refresh'
+])
+
+function getPathname(url?: string) {
+  if (!url) return ''
+  try {
+    return new URL(url, 'http://localhost').pathname
+  } catch {
+    return url
+  }
+}
+
+function isAuthExempt(url?: string) {
+  return AUTH_EXEMPT_PATHS.has(getPathname(url))
+}
+
 http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().accessToken
-  if (token) {
+  if (token && !isAuthExempt(config.url)) {
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
@@ -32,6 +53,16 @@ http.interceptors.response.use(
     return response
   },
   (error) => {
+    const payload = error.response?.data as Partial<APIResponse<unknown>> | undefined
+    if (payload && typeof payload.code === 'number') {
+      const requestPath = getPathname(error.config?.url)
+      const isLoginRequest = requestPath === '/auth/login'
+      const msg = isLoginRequest && payload.code === 10002 ? '账号或密码错误' : (ERROR_MESSAGES[payload.code] ?? payload.message ?? error.message)
+      if (error.response?.status === 401) {
+        useAuthStore.getState().clear()
+      }
+      return Promise.reject(new Error(msg))
+    }
     if (error.response?.status === 401) {
       useAuthStore.getState().clear()
     }

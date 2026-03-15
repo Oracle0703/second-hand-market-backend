@@ -53,7 +53,7 @@ describe('LoginPage', () => {
 
     fireEvent.change(screen.getByLabelText('账号'), { target: { value: 'merchant_user' } })
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'Passw0rd!2026' } })
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: /登\s*录/ }))
 
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/register/status')

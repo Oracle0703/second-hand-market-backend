@@ -38,7 +38,8 @@
 
 | 文件 | 变量 | 说明 |
 | --- | --- | --- |
-| `frontend/.env.development` | `VITE_API_BASE_URL=http://localhost:8080/api/v1` | 本地开发 API 地址 |
+| `frontend/.env.development` | `VITE_API_BASE_URL=/api/v1` | 本地开发 API 前缀（由 Vite 代理到后端，避免 CORS） |
+| `frontend/.env.development` | `VITE_API_PROXY_TARGET=http://localhost:8080` | 本地开发代理目标地址（后端端口变化时修改） |
 | `frontend/.env.production` | `VITE_API_BASE_URL=/api/v1` | 生产环境 API 前缀 |
 
 买家小程序（`miniapp`）：
