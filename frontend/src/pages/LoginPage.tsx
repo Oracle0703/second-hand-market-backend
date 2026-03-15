@@ -45,7 +45,7 @@ export function LoginPage() {
       title="高端二手市场交易平台"
       subTitle="商家后台管理系统"
       onFinish={onFinish}
-      initialValues={{ login_type: 'MERCHANT', username: 'smoke_buyer_88607644', password: 'Passw0rd!2026' }}
+      initialValues={{ login_type: 'MERCHANT', username: 'yaner', password: '12345678' }}
       submitter={{
         searchConfig: {
           submitText: '登录'
