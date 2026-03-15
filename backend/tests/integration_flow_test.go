@@ -20,14 +20,16 @@ type apiResp struct {
 func newTestServer(t *testing.T) *app.Server {
 	t.Helper()
 	cfg := app.Config{
-		Addr:             ":0",
-		DBDriver:         "sqlite",
-		DBDSN:            fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
-		JWTAccessSecret:  "test-access",
-		JWTRefreshSecret: "test-refresh",
-		AccessTTL:        app.LoadConfig().AccessTTL,
-		RefreshTTL:       app.LoadConfig().RefreshTTL,
-		AutoMigrate:      true,
+		Addr:                ":0",
+		DBDriver:            "sqlite",
+		DBDSN:               fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
+		JWTAccessSecret:     "test-access",
+		JWTRefreshSecret:    "test-refresh",
+		AccessTTL:           app.LoadConfig().AccessTTL,
+		RefreshTTL:          app.LoadConfig().RefreshTTL,
+		AutoMigrate:         true,
+		FileStorageProvider: "local",
+		FileUploadLocalDir:  t.TempDir(),
 	}
 	srv, err := app.NewServer(cfg)
 	if err != nil {

@@ -42,7 +42,7 @@ export function LoginPage() {
 
   return (
     <LoginFormPage<LoginFormValues>
-      title="高端二手市场交易平台"
+      title="广汉市瑞扬家具经营部"
       subTitle="商家后台管理系统"
       onFinish={onFinish}
       initialValues={{ login_type: 'MERCHANT', username: 'yaner', password: '12345678' }}

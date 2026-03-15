@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -29,6 +30,12 @@ type Server struct {
 }
 
 func NewServer(cfg Config) (*Server, error) {
+	if strings.TrimSpace(cfg.FileStorageProvider) == "" {
+		cfg.FileStorageProvider = "local"
+	}
+	if strings.TrimSpace(cfg.FileUploadLocalDir) == "" {
+		cfg.FileUploadLocalDir = "uploads"
+	}
 	db, err := openDB(cfg)
 	if err != nil {
 		return nil, err
@@ -41,12 +48,25 @@ func NewServer(cfg Config) (*Server, error) {
 	if err := seedDefaults(db); err != nil {
 		return nil, err
 	}
+	if err := ensureUploadStorage(cfg); err != nil {
+		return nil, err
+	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret))
+	if strings.EqualFold(cfg.FileStorageProvider, "local") {
+		r.Static("/uploads", cfg.FileUploadLocalDir)
+	}
 	s := &Server{cfg: cfg, DB: db, Router: r, limiter: newMemoryRateLimiter()}
 	s.registerRoutes()
 	return s, nil
+}
+
+func ensureUploadStorage(cfg Config) error {
+	if !strings.EqualFold(cfg.FileStorageProvider, "local") {
+		return nil
+	}
+	return os.MkdirAll(cfg.FileUploadLocalDir, 0o755)
 }
 
 func openDB(cfg Config) (*gorm.DB, error) {
@@ -205,6 +225,7 @@ func (s *Server) registerRoutes() {
 		v1.POST("/auth/login", s.handleLogin)
 		v1.POST("/auth/refresh", s.handleRefresh)
 		v1.POST("/files/presign", s.handlePresign)
+		v1.POST("/files/upload", s.handleUploadFile)
 		v1.POST("/files/confirm", s.handleConfirmUpload)
 
 		v1.POST("/auth/logout", middleware.RequireAuth(model.UserTypeAdmin, model.UserTypeMerchant, model.UserTypeBuyer), s.handleLogout)

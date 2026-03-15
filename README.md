@@ -28,6 +28,9 @@
 | `JWT_ACCESS_SECRET` | `replace-access-secret` | Access Token 密钥 |
 | `JWT_REFRESH_SECRET` | `replace-refresh-secret` | Refresh Token 密钥 |
 | `AUTO_MIGRATE` | `true` | 启动时自动迁移 |
+| `FILE_STORAGE_PROVIDER` | `local` | 文件存储方式（当前支持 `local`，后续可扩展 OSS） |
+| `FILE_UPLOAD_LOCAL_DIR` | `uploads` | 本地上传落盘目录 |
+| `FILE_PUBLIC_BASE_URL` | 空 | 文件对外访问前缀；为空时默认 `/uploads` |
 | `BUYER_WECHAT_LOGIN_MODE` | `mock` | 买家微信登录模式（`mock/real`） |
 | `BUYER_WECHAT_APP_ID` | 空 | `real` 模式必填，微信 AppID |
 | `BUYER_WECHAT_APP_SECRET` | 空 | `real` 模式必填，微信 AppSecret |
@@ -69,6 +72,7 @@ CGO_ENABLED=0 go run ./cmd/server
 说明：
 - 在 macOS 未同意 Xcode License 时，`go run` 可能因为 cgo 失败；可用 `CGO_ENABLED=0` 启动。
 - 如需真实微信登录，需额外设置 `BUYER_WECHAT_LOGIN_MODE=real` 与微信密钥变量。
+- 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过 `/uploads/<object_key>` 提供访问（可通过 `FILE_PUBLIC_BASE_URL` 切换到 CDN/OSS 域名）。
 
 默认管理员账号（初始化自动写入）：
 - `admin / Admin@123456`

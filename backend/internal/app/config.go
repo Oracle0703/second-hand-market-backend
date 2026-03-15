@@ -15,6 +15,9 @@ type Config struct {
 	AccessTTL                  time.Duration
 	RefreshTTL                 time.Duration
 	AutoMigrate                bool
+	FileStorageProvider        string
+	FileUploadLocalDir         string
+	FilePublicBaseURL          string
 	BuyerWechatLoginMode       string
 	BuyerWechatAppID           string
 	BuyerWechatAppSecret       string
@@ -32,6 +35,9 @@ func LoadConfig() Config {
 		AccessTTL:                  2 * time.Hour,
 		RefreshTTL:                 7 * 24 * time.Hour,
 		AutoMigrate:                getEnvBool("AUTO_MIGRATE", true),
+		FileStorageProvider:        getEnv("FILE_STORAGE_PROVIDER", "local"),
+		FileUploadLocalDir:         getEnv("FILE_UPLOAD_LOCAL_DIR", "uploads"),
+		FilePublicBaseURL:          getEnv("FILE_PUBLIC_BASE_URL", ""),
 		BuyerWechatLoginMode:       getEnv("BUYER_WECHAT_LOGIN_MODE", "mock"),
 		BuyerWechatAppID:           getEnv("BUYER_WECHAT_APP_ID", ""),
 		BuyerWechatAppSecret:       getEnv("BUYER_WECHAT_APP_SECRET", ""),

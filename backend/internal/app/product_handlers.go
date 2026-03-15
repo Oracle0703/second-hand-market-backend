@@ -135,7 +135,7 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 			product.ConditionLevel = *req.ConditionLevel
 		}
 		if req.ImageFileIDs != nil {
-			if !allowed["image_file_ids"] || len(req.ImageFileIDs) == 0 || len(req.ImageFileIDs) > 9 {
+			if !allowed["image_file_ids"] || len(req.ImageFileIDs) == 0 || len(req.ImageFileIDs) > 5 {
 				return common.ErrInvalidTransition
 			}
 			cover := req.ImageFileIDs[0]

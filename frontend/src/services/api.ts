@@ -30,6 +30,13 @@ export const api = {
   presign(payload: { biz_type: string; file_name: string; file_size: number; mime_type: string }) {
     return http.post('/files/presign', payload)
   },
+  uploadFile(formData: FormData) {
+    return http.post('/files/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    })
+  },
   confirmUpload(payload: { file_id: number; object_key: string }) {
     return http.post('/files/confirm', payload)
   },

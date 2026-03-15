@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   PageContainer,
@@ -41,9 +41,22 @@ function categoryName(item: CategoryItem) {
   return item.Name ?? item.name ?? ''
 }
 
+function normalizeImageMIME(file: File) {
+  const raw = file.type?.toLowerCase()
+  if (raw === 'image/jpg') return 'image/jpeg'
+  if (raw) return raw
+  const name = file.name.toLowerCase()
+  if (name.endsWith('.png')) return 'image/png'
+  if (name.endsWith('.webp')) return 'image/webp'
+  if (name.endsWith('.heic')) return 'image/heic'
+  if (name.endsWith('.heif')) return 'image/heif'
+  return 'image/jpeg'
+}
+
 export function MerchantProductCreatePage() {
   const navigate = useNavigate()
   const formRef = useRef<ProFormInstance>()
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [parentId, setParentID] = useState<number | ''>('')
   const [categoryID, setCategoryID] = useState<number | ''>('')
   const [imageIDs, setImageIDs] = useState<number[]>([])
@@ -61,21 +74,23 @@ export function MerchantProductCreatePage() {
   const selectedLevel2 = useMemo(() => level2.data ?? [], [level2.data])
 
   const uploadMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (file: File) => {
+      const mimeType = normalizeImageMIME(file)
       const presign = await api.presign({
         biz_type: 'PRODUCT_IMAGE',
-        file_name: `product-${Date.now()}.jpg`,
-        file_size: 1024,
-        mime_type: 'image/jpeg'
+        file_name: file.name || `product-${Date.now()}.jpg`,
+        file_size: file.size,
+        mime_type: mimeType
       })
-      await api.confirmUpload({
-        file_id: presign.data.data.file_id,
-        object_key: presign.data.data.object_key
-      })
+      const formData = new FormData()
+      formData.append('file_id', String(presign.data.data.file_id))
+      formData.append('object_key', String(presign.data.data.object_key))
+      formData.append('file', file)
+      await api.uploadFile(formData)
       return presign.data.data.file_id as number
     },
     onSuccess: (fileID) => {
-      setImageIDs((prev) => [...prev, fileID])
+      setImageIDs((prev) => [...prev, fileID].slice(0, 5))
       message.success(`已添加图片 file_id=${fileID}`)
     },
     onError: (err) => {
@@ -116,6 +131,17 @@ export function MerchantProductCreatePage() {
     return true
   }
 
+  const onSelectImage = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (imageIDs.length >= 5) {
+      message.error('最多上传5张图片')
+      return
+    }
+    uploadMutation.mutate(file)
+  }
+
   return (
     <PageContainer title="新建商品">
       <ProCard title="图片" style={{ marginBottom: 16 }}>
@@ -123,8 +149,16 @@ export function MerchantProductCreatePage() {
           {imageIDs.length > 0 ? imageIDs.map((id) => <Tag key={id}>file_id: {id}</Tag>) : <span>暂无图片</span>}
         </Space>
         <div style={{ marginTop: 12 }}>
-          <Button type="dashed" loading={uploadMutation.isPending} onClick={() => uploadMutation.mutate()}>
-            添加示例图片
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*"
+            capture="environment"
+            style={{ display: 'none' }}
+            onChange={onSelectImage}
+          />
+          <Button type="dashed" loading={uploadMutation.isPending} onClick={() => fileInputRef.current?.click()}>
+            选择并上传图片
           </Button>
         </div>
       </ProCard>

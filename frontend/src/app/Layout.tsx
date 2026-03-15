@@ -41,7 +41,7 @@ export function Layout() {
 
   return (
     <ProLayout
-      title="高端二手交易平台"
+      title="广汉市瑞扬家具经营部"
       logo={false}
       layout="side"
       fixedHeader

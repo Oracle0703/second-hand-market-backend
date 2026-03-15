@@ -46,7 +46,7 @@ type CreateProductRequest struct {
 	PriceCent      int      `json:"price_cent" binding:"required,gt=0"`
 	ConditionLevel string   `json:"condition_level" binding:"required,oneof=LIKE_NEW GOOD FAIR POOR"`
 	Stock          *int     `json:"stock"`
-	ImageFileIDs   []uint64 `json:"image_file_ids" binding:"required,min=1,max=9,dive,gt=0"`
+	ImageFileIDs   []uint64 `json:"image_file_ids" binding:"required,min=1,max=5,dive,gt=0"`
 }
 
 type UpdateProductRequest struct {
