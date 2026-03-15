@@ -23,8 +23,8 @@
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `ADDR` | `:8080` | 服务监听地址 |
-| `DB_DRIVER` | `sqlite` | 数据库驱动（当前默认 sqlite） |
-| `DB_DSN` | `file:app.db?cache=shared&_foreign_keys=on` | 数据库连接串 |
+| `DB_DRIVER` | `mysql` | 数据库驱动（默认 mysql） |
+| `DB_DSN` | `shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...` | 数据库连接串 |
 | `JWT_ACCESS_SECRET` | `replace-access-secret` | Access Token 密钥 |
 | `JWT_REFRESH_SECRET` | `replace-refresh-secret` | Refresh Token 密钥 |
 | `AUTO_MIGRATE` | `true` | 启动时自动迁移 |
@@ -37,7 +37,8 @@
 | `BUYER_WECHAT_CODE2SESSION_URL` | 微信官方地址 | `code2session` 请求地址 |
 | `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | `5` | 微信接口超时时间（秒） |
 
-生产（SQLite）可参考：`backend/configs/.env.production.sqlite.example`
+生产（MySQL）可参考：`backend/configs/.env.production.mysql.example`  
+生产（SQLite，仅临时/单机）可参考：`backend/configs/.env.production.sqlite.example`
 
 前端：
 
@@ -65,6 +66,15 @@ CGO_ENABLED=0 go run ./cmd/server
 cd backend
 cp configs/.env.production.sqlite.example .env.production
 # 修改 .env.production 里的 JWT 密钥与 DB_DSN 路径
+set -a && source .env.production && set +a
+CGO_ENABLED=0 go run ./cmd/server
+```
+
+生产环境（MySQL 推荐）：
+```bash
+cd backend
+cp configs/.env.production.mysql.example .env.production
+# 修改 .env.production 里的 DB_DSN 和 JWT 密钥
 set -a && source .env.production && set +a
 CGO_ENABLED=0 go run ./cmd/server
 ```

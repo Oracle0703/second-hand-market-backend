@@ -28,8 +28,8 @@ type Config struct {
 func LoadConfig() Config {
 	cfg := Config{
 		Addr:                       getEnv("ADDR", ":8080"),
-		DBDriver:                   getEnv("DB_DRIVER", "sqlite"),
-		DBDSN:                      getEnv("DB_DSN", "file:app.db?cache=shared&_foreign_keys=on"),
+		DBDriver:                   getEnv("DB_DRIVER", "mysql"),
+		DBDSN:                      getEnv("DB_DSN", "shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"),
 		JWTAccessSecret:            getEnv("JWT_ACCESS_SECRET", "dev-access-secret"),
 		JWTRefreshSecret:           getEnv("JWT_REFRESH_SECRET", "dev-refresh-secret"),
 		AccessTTL:                  2 * time.Hour,
