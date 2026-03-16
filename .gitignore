@@ -1,5 +1,9 @@
 # Logs
 logs
+!frontend/src/pages/admin/logs/
+!frontend/src/pages/admin/logs/**
+!frontend/src/pages/merchant/logs/
+!frontend/src/pages/merchant/logs/**
 *.log
 npm-debug.log*
 yarn-debug.log*
