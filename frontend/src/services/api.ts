@@ -31,11 +31,7 @@ export const api = {
     return http.post('/files/presign', payload)
   },
   uploadFile(formData: FormData) {
-    return http.post('/files/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
-    })
+    return http.post('/files/upload', formData)
   },
   confirmUpload(payload: { file_id: number; object_key: string }) {
     return http.post('/files/confirm', payload)
