@@ -122,3 +122,17 @@ backend/*.db-wal
 backend/*.sqlite
 backend/*.sqlite-shm
 backend/*.sqlite-wal
+
+# Local deploy/runtime files (do not commit server-specific config)
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+!deploy/.env.production.example
+deploy/docker-compose.override.yml
+deploy/*.local.*
+runtime/
+uploads/
+backend/uploads/
+backend/app.db
+*.bak
+*.stable.*
