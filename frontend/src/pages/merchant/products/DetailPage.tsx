@@ -2,8 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions } from '@ant-design/pro-components'
 import { Alert, Button, Space, Tag, message } from 'antd'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getStatusColor, getStatusText, PRODUCT_STATUS_META, type ProductStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusColor, getStatusText, PRODUCT_STATUS_META, type ProductStatus } from '@/constants/status'
+import { api } from '@/services/api'
+import { centToYuanText } from '@/utils/price'
 
 type ProductDetail = {
   id: number
@@ -18,7 +19,7 @@ type ProductDetail = {
   active_order_id?: number
 }
 
-export function MerchantProductDetailPage() {
+export function DetailPage() {
   const { productId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -60,38 +61,55 @@ export function MerchantProductDetailPage() {
   if (!detail.data) return <p>暂无数据</p>
 
   const product = detail.data
+  const backToList = () => navigate('/merchant/products')
+  const actionButtons = [
+    <Button key="back-list" onClick={backToList}>
+      返回列表
+    </Button>,
+    (product.status === 'DRAFT' || product.status === 'OFF_SHELF') && (
+      <Button key="edit" onClick={() => navigate(`/merchant/products/${product.id}/edit`)}>
+        编辑
+      </Button>
+    ),
+    (product.status === 'DRAFT' || product.status === 'OFF_SHELF') && (
+      <Button key="on" type="primary" loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('on')}>
+        上架
+      </Button>
+    ),
+    product.status === 'ON_SHELF' && (
+      <Button key="off" loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('off')}>
+        下架
+      </Button>
+    ),
+    product.status === 'ON_SHELF' && (
+      <Button key="order" type="primary" loading={createOrderMutation.isPending} onClick={() => createOrderMutation.mutate()}>
+        创建订单
+      </Button>
+    ),
+    (product.status === 'DRAFT' || product.status === 'ON_SHELF' || product.status === 'OFF_SHELF') && (
+      <Button key="close" danger loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('close')}>
+        关闭商品
+      </Button>
+    )
+  ].filter(Boolean)
+
   return (
-    <PageContainer
-      title="商品详情"
-      subTitle={product.title}
-      extra={[
-        (product.status === 'DRAFT' || product.status === 'OFF_SHELF') && (
-          <Button key="edit" onClick={() => navigate(`/merchant/products/${product.id}/edit`)}>
-            编辑
-          </Button>
-        ),
-        (product.status === 'DRAFT' || product.status === 'OFF_SHELF') && (
-          <Button key="on" type="primary" loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('on')}>
-            上架
-          </Button>
-        ),
-        product.status === 'ON_SHELF' && (
-          <Button key="off" loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('off')}>
-            下架
-          </Button>
-        ),
-        product.status === 'ON_SHELF' && (
-          <Button key="order" type="primary" loading={createOrderMutation.isPending} onClick={() => createOrderMutation.mutate()}>
-            创建订单
-          </Button>
-        ),
-        (product.status === 'DRAFT' || product.status === 'ON_SHELF' || product.status === 'OFF_SHELF') && (
-          <Button key="close" danger loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('close')}>
-            关闭商品
-          </Button>
-        )
-      ].filter(Boolean)}
-    >
+    <PageContainer title="商品详情" subTitle={product.title} onBack={backToList} extra={actionButtons}>
+      {(product.status === 'DRAFT' || product.status === 'OFF_SHELF') ? (
+        <Alert
+          type="info"
+          showIcon
+          message="当前商品未上架，请点击“上架”后再对外展示。"
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+
+      {actionButtons.length > 0 ? (
+        <ProCard style={{ marginBottom: 16 }}>
+          <Space wrap>{actionButtons}</Space>
+        </ProCard>
+      ) : null}
+
       {(transitionMutation.error || createOrderMutation.error) ? <Alert type="error" showIcon message={((transitionMutation.error ?? createOrderMutation.error) as Error).message} style={{ marginBottom: 16 }} /> : null}
 
       <ProDescriptions<ProductDetail>
@@ -103,7 +121,7 @@ export function MerchantProductDetailPage() {
             dataIndex: 'status',
             render: (_, row) => <Tag color={getStatusColor(PRODUCT_STATUS_META, row.status)}>{getStatusText(PRODUCT_STATUS_META, row.status)}</Tag>
           },
-          { title: '价格(分)', dataIndex: 'price_cent' },
+          { title: '价格(元)', dataIndex: 'price_cent', render: (_, row) => centToYuanText(row.price_cent) },
           { title: '库存', dataIndex: 'stock' },
           { title: '成色', dataIndex: 'condition_level' },
           { title: '分类ID', dataIndex: 'category_id' },

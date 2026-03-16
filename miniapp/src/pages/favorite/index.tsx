@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Taro from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { listFavorites, removeFavorite } from '../../services/buyer'
+import { centToYuanText } from '../../utils/price'
 
 export default function FavoritePage() {
   const queryClient = useQueryClient()
@@ -28,7 +29,7 @@ export default function FavoritePage() {
           <View key={item.product_id} className="list-item">
             <View onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.product_id}` })}>
               <Text>{item.title}</Text>
-              <Text style={{ marginLeft: '12rpx', color: '#d24b2f' }}>¥{(item.price_cent / 100).toFixed(2)}</Text>
+              <Text style={{ marginLeft: '12rpx', color: '#d24b2f' }}>¥{centToYuanText(item.price_cent)}</Text>
             </View>
             <Button className="btn-secondary" size="mini" style={{ marginTop: '10rpx' }} onClick={() => removeMutation.mutate(item.product_id)}>
               取消收藏

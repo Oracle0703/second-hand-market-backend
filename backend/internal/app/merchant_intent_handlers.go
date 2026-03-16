@@ -36,8 +36,9 @@ func (s *Server) handleMerchantIntentList(c *gin.Context) {
 	page, size := parsePage(c)
 
 	query := s.DB.Table("buyer_intents AS i").
-		Select("i.id, i.intent_no, i.product_id, i.status, i.contact_name, i.contact_phone, i.contact_wechat, i.created_at, i.updated_at, p.title AS product_title").
 		Joins("LEFT JOIN products AS p ON p.id = i.product_id").
+		Joins("LEFT JOIN categories AS c2 ON c2.id = p.category_id").
+		Joins("LEFT JOIN categories AS c1 ON c1.id = c2.parent_id").
 		Where("i.merchant_id = ?", actor.MerchantID)
 	if v := strings.TrimSpace(c.Query("status")); v != "" {
 		query = query.Where("i.status = ?", v)
@@ -51,6 +52,9 @@ func (s *Server) handleMerchantIntentList(c *gin.Context) {
 	if et := strings.TrimSpace(c.Query("end_at")); et != "" {
 		query = query.Where("i.created_at <= ?", et)
 	}
+	if lv1 := strings.TrimSpace(c.Query("category_level1_id")); lv1 != "" {
+		query = query.Where("c1.id = ?", lv1)
+	}
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -59,19 +63,25 @@ func (s *Server) handleMerchantIntentList(c *gin.Context) {
 	}
 
 	type item struct {
-		ID            uint64    `json:"id"`
-		IntentNo      string    `json:"intent_no"`
-		ProductID     uint64    `json:"product_id"`
-		ProductTitle  string    `json:"product_title"`
-		Status        string    `json:"status"`
-		ContactName   *string   `json:"contact_name"`
-		ContactPhone  *string   `json:"contact_phone"`
-		ContactWechat *string   `json:"contact_wechat"`
-		CreatedAt     time.Time `json:"created_at"`
-		UpdatedAt     time.Time `json:"updated_at"`
+		ID                 uint64    `json:"id"`
+		IntentNo           string    `json:"intent_no"`
+		ProductID          uint64    `json:"product_id"`
+		ProductTitle       string    `json:"product_title"`
+		Status             string    `json:"status"`
+		ContactName        *string   `json:"contact_name"`
+		ContactPhone       *string   `json:"contact_phone"`
+		ContactWechat      *string   `json:"contact_wechat"`
+		CreatedAt          time.Time `json:"created_at"`
+		UpdatedAt          time.Time `json:"updated_at"`
+		CategoryLevel1ID   *uint64   `json:"category_level1_id"`
+		CategoryLevel1Name *string   `json:"category_level1_name"`
+		CategoryLevel2ID   *uint64   `json:"category_level2_id"`
+		CategoryLevel2Name *string   `json:"category_level2_name"`
 	}
 	items := make([]item, 0, size)
-	if err := query.Order("i.id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
+	if err := query.Select(
+		"i.id, i.intent_no, i.product_id, i.status, i.contact_name, i.contact_phone, i.contact_wechat, i.created_at, i.updated_at, p.title AS product_title, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+	).Order("i.id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}

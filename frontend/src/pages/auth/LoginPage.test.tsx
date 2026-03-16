@@ -2,12 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { LoginPage } from './LoginPage'
-import { useAuthStore } from '../stores/auth-store'
+import { useAuthStore } from '@/stores/auth-store'
 
 const mockNavigate = vi.fn()
 const mockLogin = vi.fn()
 
-vi.mock('../services/api', () => ({
+vi.mock('@/services/api', () => ({
   api: {
     login: (...args: unknown[]) => mockLogin(...args)
   }

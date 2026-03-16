@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -185,6 +186,29 @@ func (s *Server) handleProductDetail(c *gin.Context) {
 	for _, it := range imgs {
 		imgIDs = append(imgIDs, it.FileID)
 	}
+	urlMap := map[uint64]string{}
+	if len(imgIDs) > 0 {
+		var files []model.FileRecord
+		if err := s.DB.Where("id IN ?", imgIDs).Find(&files).Error; err != nil {
+			common.Fail(c, common.ErrInternal)
+			return
+		}
+		for _, file := range files {
+			url := strings.TrimSpace(file.URL)
+			if url == "" && strings.TrimSpace(file.ObjectKey) != "" {
+				url = s.publicFileURL(file.ObjectKey)
+			}
+			if url != "" {
+				urlMap[file.ID] = url
+			}
+		}
+	}
+	imgURLs := make([]string, 0, len(imgs))
+	for _, img := range imgs {
+		if url, ok := urlMap[img.FileID]; ok && strings.TrimSpace(url) != "" {
+			imgURLs = append(imgURLs, url)
+		}
+	}
 	common.Success(c, gin.H{"product": gin.H{
 		"id":              product.ID,
 		"title":           product.Title,
@@ -195,6 +219,7 @@ func (s *Server) handleProductDetail(c *gin.Context) {
 		"condition_level": product.ConditionLevel,
 		"stock":           product.Stock,
 		"images":          imgIDs,
+		"image_urls":      imgURLs,
 		"active_order_id": product.ActiveOrderID,
 	}})
 }
@@ -206,18 +231,24 @@ func (s *Server) handleProductList(c *gin.Context) {
 		return
 	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.Product{}).Where("merchant_id = ?", actor.MerchantID)
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
+	query := s.DB.Table("products AS p").
+		Joins("LEFT JOIN categories AS c2 ON c2.id = p.category_id").
+		Joins("LEFT JOIN categories AS c1 ON c1.id = c2.parent_id").
+		Where("p.merchant_id = ?", actor.MerchantID)
+	if v := strings.TrimSpace(c.Query("status")); v != "" {
+		query = query.Where("p.status = ?", v)
 	}
-	if kw := c.Query("keyword"); kw != "" {
-		query = query.Where("title LIKE ?", "%"+kw+"%")
+	if kw := strings.TrimSpace(c.Query("keyword")); kw != "" {
+		query = query.Where("p.title LIKE ?", "%"+kw+"%")
 	}
-	if st := c.Query("start_at"); st != "" {
-		query = query.Where("created_at >= ?", st)
+	if st := strings.TrimSpace(c.Query("start_at")); st != "" {
+		query = query.Where("p.created_at >= ?", st)
 	}
-	if et := c.Query("end_at"); et != "" {
-		query = query.Where("created_at <= ?", et)
+	if et := strings.TrimSpace(c.Query("end_at")); et != "" {
+		query = query.Where("p.created_at <= ?", et)
+	}
+	if lv1 := strings.TrimSpace(c.Query("category_level1_id")); lv1 != "" {
+		query = query.Where("c1.id = ?", lv1)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -225,21 +256,23 @@ func (s *Server) handleProductList(c *gin.Context) {
 		return
 	}
 	type item struct {
-		ID        uint64    `json:"id"`
-		Title     string    `json:"title"`
-		Status    string    `json:"status"`
-		PriceCent int       `json:"price_cent"`
-		Stock     int       `json:"stock"`
-		UpdatedAt time.Time `json:"updated_at"`
+		ID                 uint64    `json:"id"`
+		Title              string    `json:"title"`
+		Status             string    `json:"status"`
+		PriceCent          int       `json:"price_cent"`
+		Stock              int       `json:"stock"`
+		UpdatedAt          time.Time `json:"updated_at"`
+		CategoryLevel1ID   *uint64   `json:"category_level1_id"`
+		CategoryLevel1Name *string   `json:"category_level1_name"`
+		CategoryLevel2ID   *uint64   `json:"category_level2_id"`
+		CategoryLevel2Name *string   `json:"category_level2_name"`
 	}
-	var rows []model.Product
-	if err := query.Order("updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	items := make([]item, 0, size)
+	if err := query.Select(
+		"p.id, p.title, p.status, p.price_cent, p.stock, p.updated_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+	).Order("p.updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
-	}
-	items := make([]item, 0, len(rows))
-	for _, it := range rows {
-		items = append(items, item{ID: it.ID, Title: it.Title, Status: it.Status, PriceCent: it.PriceCent, Stock: it.Stock, UpdatedAt: it.UpdatedAt})
 	}
 	common.Success(c, common.PageResult[item]{Items: items, Total: total, Page: page, PageSize: size})
 }

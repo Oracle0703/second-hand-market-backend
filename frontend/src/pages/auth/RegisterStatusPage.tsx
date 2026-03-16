@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getStatusText, MERCHANT_REVIEW_STATUS_META } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusText, MERCHANT_REVIEW_STATUS_META } from '@/constants/status'
+import { api } from '@/services/api'
 
 export function RegisterStatusPage() {
   const queryClient = useQueryClient()

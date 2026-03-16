@@ -1,6 +1,7 @@
 import React from 'react'
 import { Image, Text, View } from '@tarojs/components'
 import { BuyerProduct } from '../services/buyer'
+import { centToYuanText } from '../utils/price'
 
 type Props = {
   product: BuyerProduct
@@ -15,7 +16,7 @@ export const ProductCard: React.FC<Props> = ({ product, onClick }) => {
         <Text>{product.title}</Text>
       </View>
       <View style={{ marginTop: '8rpx', display: 'flex', justifyContent: 'space-between' }}>
-        <Text style={{ color: '#d24b2f', fontWeight: 600 }}>¥{(product.price_cent / 100).toFixed(2)}</Text>
+        <Text style={{ color: '#d24b2f', fontWeight: 600 }}>¥{centToYuanText(product.price_cent)}</Text>
         <Text className="status-badge">{product.status}</Text>
       </View>
     </View>

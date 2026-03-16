@@ -2,8 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProDescriptions, ProTable, type ProColumns } from '@ant-design/pro-components'
 import { Alert, Button, Tag, message } from 'antd'
 import { Link, useParams } from 'react-router-dom'
-import { getCommonStatusText, getStatusColor, getStatusText, ORDER_STATUS_META, PRODUCT_STATUS_META, type OrderStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getCommonStatusText, getStatusColor, getStatusText, ORDER_STATUS_META, PRODUCT_STATUS_META, type OrderStatus } from '@/constants/status'
+import { api } from '@/services/api'
+import { centToYuanText } from '@/utils/price'
 
 type OrderDetail = {
   id: number
@@ -47,7 +48,7 @@ function normalizeEvent(raw: Record<string, unknown>): OrderEventRow {
   }
 }
 
-export function MerchantOrderDetailPage() {
+export function DetailPage() {
   const { orderId = '' } = useParams()
   const queryClient = useQueryClient()
   const detail = useQuery({
@@ -132,7 +133,7 @@ export function MerchantOrderDetailPage() {
             dataIndex: 'status',
             render: (_, row) => <Tag color={getStatusColor(ORDER_STATUS_META, row.status)}>{getStatusText(ORDER_STATUS_META, row.status)}</Tag>
           },
-          { title: '成交价(分)', dataIndex: 'deal_price_cent' },
+          { title: '成交价(元)', dataIndex: 'deal_price_cent', render: (_, row) => centToYuanText(row.deal_price_cent) },
           {
             title: '商品',
             key: 'product',

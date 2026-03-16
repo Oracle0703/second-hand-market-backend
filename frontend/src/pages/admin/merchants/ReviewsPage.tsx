@@ -1,8 +1,8 @@
 import { PageContainer, ProTable, type ProColumns } from '@ant-design/pro-components'
 import { Button, Tag, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { getStatusColor, getStatusText, MERCHANT_REVIEW_STATUS_META, toValueEnum, type MerchantReviewStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusColor, getStatusText, MERCHANT_REVIEW_STATUS_META, toValueEnum, type MerchantReviewStatus } from '@/constants/status'
+import { api } from '@/services/api'
 
 type AdminMerchantItem = {
   id: number
@@ -21,7 +21,7 @@ type AdminMerchantListResp = {
   page_size: number
 }
 
-export function AdminMerchantReviewsPage() {
+export function ReviewsPage() {
   const navigate = useNavigate()
   const columns: ProColumns<AdminMerchantItem>[] = [
     {

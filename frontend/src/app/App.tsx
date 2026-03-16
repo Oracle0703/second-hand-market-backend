@@ -3,23 +3,25 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { RequireAuth } from './guards'
 
 const Layout = lazy(() => import('./Layout').then((m) => ({ default: m.Layout })))
-const LoginPage = lazy(() => import('../pages/LoginPage').then((m) => ({ default: m.LoginPage })))
-const RegisterPage = lazy(() => import('../pages/RegisterPage').then((m) => ({ default: m.RegisterPage })))
-const RegisterStatusPage = lazy(() => import('../pages/RegisterStatusPage').then((m) => ({ default: m.RegisterStatusPage })))
-const AdminMerchantReviewsPage = lazy(() => import('../pages/AdminMerchantReviewsPage').then((m) => ({ default: m.AdminMerchantReviewsPage })))
-const MerchantDashboardPage = lazy(() => import('../pages/MerchantDashboardPage').then((m) => ({ default: m.MerchantDashboardPage })))
-const MerchantProductsPage = lazy(() => import('../pages/MerchantProductsPage').then((m) => ({ default: m.MerchantProductsPage })))
-const MerchantOrdersPage = lazy(() => import('../pages/MerchantOrdersPage').then((m) => ({ default: m.MerchantOrdersPage })))
-const MerchantProductCreatePage = lazy(() => import('../pages/MerchantProductCreatePage').then((m) => ({ default: m.MerchantProductCreatePage })))
-const MerchantProductEditPage = lazy(() => import('../pages/MerchantProductEditPage').then((m) => ({ default: m.MerchantProductEditPage })))
-const MerchantProductDetailPage = lazy(() => import('../pages/MerchantProductDetailPage').then((m) => ({ default: m.MerchantProductDetailPage })))
-const MerchantOrderDetailPage = lazy(() => import('../pages/MerchantOrderDetailPage').then((m) => ({ default: m.MerchantOrderDetailPage })))
-const AdminMerchantReviewDetailPage = lazy(() => import('../pages/AdminMerchantReviewDetailPage').then((m) => ({ default: m.AdminMerchantReviewDetailPage })))
-const AdminLogsPage = lazy(() => import('../pages/AdminLogsPage').then((m) => ({ default: m.AdminLogsPage })))
-const MerchantLogsPage = lazy(() => import('../pages/MerchantLogsPage').then((m) => ({ default: m.MerchantLogsPage })))
-const MerchantAccountPage = lazy(() => import('../pages/MerchantAccountPage').then((m) => ({ default: m.MerchantAccountPage })))
-const MerchantIntentsPage = lazy(() => import('../pages/MerchantIntentsPage').then((m) => ({ default: m.MerchantIntentsPage })))
-const MerchantIntentDetailPage = lazy(() => import('../pages/MerchantIntentDetailPage').then((m) => ({ default: m.MerchantIntentDetailPage })))
+const LoginPage = lazy(() => import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage })))
+const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage').then((m) => ({ default: m.RegisterPage })))
+const RegisterStatusPage = lazy(() => import('@/pages/auth/RegisterStatusPage').then((m) => ({ default: m.RegisterStatusPage })))
+const AdminReviewsPage = lazy(() => import('@/pages/admin/merchants/ReviewsPage').then((m) => ({ default: m.ReviewsPage })))
+const DashboardPage = lazy(() => import('@/pages/merchant/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })))
+const ProductListPage = lazy(() => import('@/pages/merchant/products/ListPage').then((m) => ({ default: m.ListPage })))
+const OrderListPage = lazy(() => import('@/pages/merchant/orders/ListPage').then((m) => ({ default: m.ListPage })))
+const ProductCreatePage = lazy(() => import('@/pages/merchant/products/CreatePage').then((m) => ({ default: m.CreatePage })))
+const ProductEditPage = lazy(() => import('@/pages/merchant/products/EditPage').then((m) => ({ default: m.EditPage })))
+const ProductDetailPage = lazy(() => import('@/pages/merchant/products/DetailPage').then((m) => ({ default: m.DetailPage })))
+const OrderDetailPage = lazy(() => import('@/pages/merchant/orders/DetailPage').then((m) => ({ default: m.DetailPage })))
+const AdminReviewDetailPage = lazy(() =>
+  import('@/pages/admin/merchants/ReviewDetailPage').then((m) => ({ default: m.ReviewDetailPage }))
+)
+const AdminLogsPage = lazy(() => import('@/pages/admin/logs/ListPage').then((m) => ({ default: m.ListPage })))
+const MerchantLogsPage = lazy(() => import('@/pages/merchant/logs/ListPage').then((m) => ({ default: m.ListPage })))
+const AccountPage = lazy(() => import('@/pages/merchant/account/AccountPage').then((m) => ({ default: m.AccountPage })))
+const IntentListPage = lazy(() => import('@/pages/merchant/intents/ListPage').then((m) => ({ default: m.ListPage })))
+const IntentDetailPage = lazy(() => import('@/pages/merchant/intents/DetailPage').then((m) => ({ default: m.DetailPage })))
 
 function loadable(node: ReactNode) {
   return <Suspense fallback={<p>加载中...</p>}>{node}</Suspense>
@@ -38,22 +40,22 @@ export function App() {
         <Route element={<RequireAuth />}>
           <Route element={loadable(<Layout />)}>
             <Route element={<RequireAuth role="ADMIN" />}>
-              <Route path="/admin/merchants/reviews" element={loadable(<AdminMerchantReviewsPage />)} />
-              <Route path="/admin/merchants/reviews/:merchantId" element={loadable(<AdminMerchantReviewDetailPage />)} />
+              <Route path="/admin/merchants/reviews" element={loadable(<AdminReviewsPage />)} />
+              <Route path="/admin/merchants/reviews/:merchantId" element={loadable(<AdminReviewDetailPage />)} />
               <Route path="/admin/logs" element={loadable(<AdminLogsPage />)} />
             </Route>
 
             <Route element={<RequireAuth role="MERCHANT" scope="full" />}>
-              <Route path="/merchant/dashboard" element={loadable(<MerchantDashboardPage />)} />
-              <Route path="/merchant/products" element={loadable(<MerchantProductsPage />)} />
-              <Route path="/merchant/products/new" element={loadable(<MerchantProductCreatePage />)} />
-              <Route path="/merchant/products/:productId" element={loadable(<MerchantProductDetailPage />)} />
-              <Route path="/merchant/products/:productId/edit" element={loadable(<MerchantProductEditPage />)} />
-              <Route path="/merchant/orders" element={loadable(<MerchantOrdersPage />)} />
-              <Route path="/merchant/orders/:orderId" element={loadable(<MerchantOrderDetailPage />)} />
-              <Route path="/merchant/intents" element={loadable(<MerchantIntentsPage />)} />
-              <Route path="/merchant/intents/:intentId" element={loadable(<MerchantIntentDetailPage />)} />
-              <Route path="/merchant/account" element={loadable(<MerchantAccountPage />)} />
+              <Route path="/merchant/dashboard" element={loadable(<DashboardPage />)} />
+              <Route path="/merchant/products" element={loadable(<ProductListPage />)} />
+              <Route path="/merchant/products/new" element={loadable(<ProductCreatePage />)} />
+              <Route path="/merchant/products/:productId" element={loadable(<ProductDetailPage />)} />
+              <Route path="/merchant/products/:productId/edit" element={loadable(<ProductEditPage />)} />
+              <Route path="/merchant/orders" element={loadable(<OrderListPage />)} />
+              <Route path="/merchant/orders/:orderId" element={loadable(<OrderDetailPage />)} />
+              <Route path="/merchant/intents" element={loadable(<IntentListPage />)} />
+              <Route path="/merchant/intents/:intentId" element={loadable(<IntentDetailPage />)} />
+              <Route path="/merchant/account" element={loadable(<AccountPage />)} />
               <Route path="/merchant/logs" element={loadable(<MerchantLogsPage />)} />
             </Route>
           </Route>

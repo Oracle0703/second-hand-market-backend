@@ -2,8 +2,8 @@ import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions, ProForm, ProFormText, type ProFormInstance } from '@ant-design/pro-components'
 import { Alert, message } from 'antd'
-import { getStatusText, ACCOUNT_STATUS_META } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusText, ACCOUNT_STATUS_META } from '@/constants/status'
+import { api } from '@/services/api'
 
 type MerchantAccountInfo = {
   id: number
@@ -28,7 +28,7 @@ type PasswordFormValues = {
   new_password: string
 }
 
-export function MerchantAccountPage() {
+export function AccountPage() {
   const queryClient = useQueryClient()
   const formRef = useRef<ProFormInstance<PasswordFormValues>>()
 

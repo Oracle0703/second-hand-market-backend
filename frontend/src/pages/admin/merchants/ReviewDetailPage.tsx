@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions, ProTable, type ProColumns } from '@ant-design/pro-components'
 import { Alert, Button, Input, Space, Tag, message } from 'antd'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getCommonStatusText, getStatusColor, getStatusText, MERCHANT_REVIEW_STATUS_META, type MerchantReviewStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getCommonStatusText, getStatusColor, getStatusText, MERCHANT_REVIEW_STATUS_META, type MerchantReviewStatus } from '@/constants/status'
+import { api } from '@/services/api'
 
 type MerchantDetail = {
   id: number
@@ -38,7 +38,7 @@ type AdminMerchantDetailResp = {
   audit_logs: AuditLogItem[]
 }
 
-export function AdminMerchantReviewDetailPage() {
+export function ReviewDetailPage() {
   const { merchantId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()

@@ -1,9 +1,10 @@
 import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Taro, { useRouter, useShareAppMessage } from '@tarojs/taro'
-import { Button, Image, Text, View } from '@tarojs/components'
+import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
 import { requireLoginFor } from '../../../hooks/useRequireLogin'
+import { centToYuanText } from '../../../utils/price'
 
 export default function ProductDetailPage() {
   const router = useRouter()
@@ -35,6 +36,7 @@ export default function ProductDetailPage() {
   })
 
   const product = detail.data?.product
+  const imageURLs = (product?.images || []).filter(Boolean)
 
   useShareAppMessage(() => ({
     title: product?.title || '二手好物',
@@ -59,23 +61,36 @@ export default function ProductDetailPage() {
         <View className="card">
           <View className="title">{product.title}</View>
           <View style={{ marginBottom: '12rpx' }}>
-            <Text style={{ color: '#d24b2f', fontWeight: 600 }}>¥{(product.price_cent / 100).toFixed(2)}</Text>
+            <Text style={{ color: '#d24b2f', fontWeight: 600 }}>¥{centToYuanText(product.price_cent)}</Text>
             <Text style={{ marginLeft: '16rpx' }} className="status-badge">
               {product.status}
             </Text>
           </View>
 
-          {(product.images || []).map((url, idx) =>
-            url ? (
-              <Image
-                key={`${url}-${idx}`}
-                src={url}
-                mode="widthFix"
-                style={{ width: '100%', borderRadius: '12rpx', marginBottom: '10rpx' }}
-                onClick={() => Taro.previewImage({ current: url, urls: product.images || [] })}
-              />
-            ) : null
-          )}
+          {imageURLs.length > 0 ? (
+            <Swiper
+              indicatorDots
+              circular
+              style={{ width: '100%', height: '420rpx', marginBottom: '12rpx' }}
+            >
+              {imageURLs.map((url, idx) => (
+                <SwiperItem key={`${url}-${idx}`}>
+                  <Image
+                    src={url}
+                    mode="aspectFill"
+                    style={{ width: '100%', height: '420rpx', borderRadius: '12rpx' }}
+                    onClick={() => Taro.previewImage({ current: url, urls: imageURLs })}
+                  />
+                </SwiperItem>
+              ))}
+            </Swiper>
+          ) : product.cover_url ? (
+            <Image
+              src={product.cover_url}
+              mode="aspectFill"
+              style={{ width: '100%', height: '420rpx', borderRadius: '12rpx', marginBottom: '12rpx' }}
+            />
+          ) : null}
 
           <Text>{product.description}</Text>
 

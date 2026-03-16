@@ -141,12 +141,28 @@ func (s *Server) handleMerchantChangePassword(c *gin.Context) {
 }
 
 func (s *Server) handleCategories(c *gin.Context) {
-	query := s.DB.Model(&model.Category{}).Where("status = ?", model.CategoryEnabled)
-	if v := c.Query("level"); v != "" {
-		query = query.Where("level = ?", v)
+	allowedRootNames := make([]string, 0, len(defaultCategorySeeds))
+	for _, seed := range defaultCategorySeeds {
+		name := strings.TrimSpace(seed.Name)
+		if name != "" {
+			allowedRootNames = append(allowedRootNames, name)
+		}
 	}
-	if v := c.Query("parent_id"); v != "" {
-		query = query.Where("parent_id = ?", v)
+
+	query := s.DB.Model(&model.Category{}).Where("status = ?", model.CategoryEnabled)
+	level := strings.TrimSpace(c.Query("level"))
+	parentID := strings.TrimSpace(c.Query("parent_id"))
+	if level != "" {
+		if level == "1" {
+			query = query.Where("name IN ?", allowedRootNames)
+		}
+		if level == "2" && parentID == "" {
+			query = query.Joins("JOIN categories AS p ON p.id = categories.parent_id").Where("p.name IN ?", allowedRootNames)
+		}
+		query = query.Where("level = ?", level)
+	}
+	if parentID != "" {
+		query = query.Where("parent_id = ?", parentID)
 	}
 	var items []model.Category
 	if err := query.Order("sort ASC, id ASC").Find(&items).Error; err != nil {
@@ -184,47 +200,48 @@ func (s *Server) handleMerchantLogs(c *gin.Context) {
 		return
 	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.OperationLog{}).Where("merchant_id = ?", actor.MerchantID)
-	if v := c.Query("action"); v != "" {
-		query = query.Where("action = ?", v)
+	query := s.DB.Table("operation_logs AS l").
+		Joins("LEFT JOIN orders AS o ON l.resource_type = 'order' AND o.id = l.resource_id").
+		Joins("LEFT JOIN buyer_intents AS i ON l.resource_type = 'intent' AND i.id = l.resource_id").
+		Joins("LEFT JOIN products AS p ON (l.resource_type = 'product' AND p.id = l.resource_id) OR (l.resource_type = 'order' AND p.id = o.product_id) OR (l.resource_type = 'intent' AND p.id = i.product_id)").
+		Joins("LEFT JOIN categories AS c2 ON c2.id = p.category_id").
+		Joins("LEFT JOIN categories AS c1 ON c1.id = c2.parent_id").
+		Where("l.merchant_id = ?", actor.MerchantID)
+	if v := strings.TrimSpace(c.Query("action")); v != "" {
+		query = query.Where("l.action = ?", v)
 	}
-	if v := c.Query("resource_type"); v != "" {
-		query = query.Where("resource_type = ?", v)
+	if v := strings.TrimSpace(c.Query("resource_type")); v != "" {
+		query = query.Where("l.resource_type = ?", v)
+	}
+	if lv1 := strings.TrimSpace(c.Query("category_level1_id")); lv1 != "" {
+		query = query.Where("c1.id = ?", lv1)
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	var items []model.OperationLog
-	if err := query.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
+	type item struct {
+		ID                 uint64    `json:"id"`
+		Action             string    `json:"action"`
+		ResourceType       string    `json:"resource_type"`
+		ResourceID         uint64    `json:"resource_id"`
+		FromStatus         *string   `json:"from_status"`
+		ToStatus           *string   `json:"to_status"`
+		ResultCode         int       `json:"result_code"`
+		CreatedAt          time.Time `json:"created_at"`
+		RequestID          string    `json:"request_id"`
+		CategoryLevel1ID   *uint64   `json:"category_level1_id"`
+		CategoryLevel1Name *string   `json:"category_level1_name"`
+		CategoryLevel2ID   *uint64   `json:"category_level2_id"`
+		CategoryLevel2Name *string   `json:"category_level2_name"`
+	}
+	out := make([]item, 0, size)
+	if err := query.Select(
+		"l.id, l.action, l.resource_type, l.resource_id, l.from_status, l.to_status, l.result_code, l.created_at, l.request_id, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+	).Order("l.id DESC").Offset((page - 1) * size).Limit(size).Find(&out).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
-	}
-	type item struct {
-		ID           uint64    `json:"id"`
-		Action       string    `json:"action"`
-		ResourceType string    `json:"resource_type"`
-		ResourceID   uint64    `json:"resource_id"`
-		FromStatus   *string   `json:"from_status"`
-		ToStatus     *string   `json:"to_status"`
-		ResultCode   int       `json:"result_code"`
-		CreatedAt    time.Time `json:"created_at"`
-		RequestID    string    `json:"request_id"`
-	}
-	out := make([]item, 0, len(items))
-	for _, it := range items {
-		out = append(out, item{
-			ID:           it.ID,
-			Action:       it.Action,
-			ResourceType: it.ResourceType,
-			ResourceID:   it.ResourceID,
-			FromStatus:   it.FromStatus,
-			ToStatus:     it.ToStatus,
-			ResultCode:   it.ResultCode,
-			CreatedAt:    it.CreatedAt,
-			RequestID:    it.RequestID,
-		})
 	}
 	common.Success(c, common.PageResult[item]{Items: out, Total: total, Page: page, PageSize: size})
 }

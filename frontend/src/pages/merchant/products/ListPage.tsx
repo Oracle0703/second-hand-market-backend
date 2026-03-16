@@ -1,10 +1,12 @@
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { PageContainer, ProTable, type ActionType, type ProColumns } from '@ant-design/pro-components'
-import { Button, Space, Tag, message } from 'antd'
-import { useRef } from 'react'
+import { Button, Empty, Image, Modal, Space, Spin, Tag, message } from 'antd'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getStatusColor, getStatusText, PRODUCT_STATUS_META, toValueEnum, type ProductStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusColor, getStatusText, PRODUCT_STATUS_META, toValueEnum, type ProductStatus } from '@/constants/status'
+import { api } from '@/services/api'
+import { centToYuanText } from '@/utils/price'
+import { resolveAssetURL } from '@/utils/url'
 
 type ProductItem = {
   id: number
@@ -13,6 +15,10 @@ type ProductItem = {
   price_cent: number
   stock: number
   updated_at: string
+  category_level1_id?: number | null
+  category_level1_name?: string | null
+  category_level2_id?: number | null
+  category_level2_name?: string | null
 }
 
 type ProductListResp = {
@@ -22,9 +28,40 @@ type ProductListResp = {
   page_size: number
 }
 
-export function MerchantProductsPage() {
+type ProductDetailPayload = {
+  id: number
+  title: string
+  images: number[]
+  image_urls?: string[]
+}
+
+type CategoryItem = {
+  ID?: number
+  id?: number
+  Name?: string
+  name?: string
+}
+
+function categoryId(item: CategoryItem) {
+  return Number(item.ID ?? item.id ?? 0)
+}
+
+function categoryName(item: CategoryItem) {
+  return item.Name ?? item.name ?? ''
+}
+
+export function ListPage() {
   const navigate = useNavigate()
   const actionRef = useRef<ActionType>()
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewTitle, setPreviewTitle] = useState('')
+  const [previewImageURLs, setPreviewImageURLs] = useState<string[]>([])
+  const [previewImageIDs, setPreviewImageIDs] = useState<number[]>([])
+  const level1 = useQuery({
+    queryKey: ['categories', 'level1'],
+    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
+  })
   const transitionMutation = useMutation({
     mutationFn: async ({ id, action }: { id: number; action: 'on' | 'off' | 'close' }) => {
       if (action === 'on') return api.productOnShelf(id)
@@ -48,46 +85,110 @@ export function MerchantProductsPage() {
     }
   })
 
+  const handleViewImages = async (row: ProductItem) => {
+    setPreviewOpen(true)
+    setPreviewLoading(true)
+    setPreviewTitle(row.title)
+    setPreviewImageURLs([])
+    setPreviewImageIDs([])
+    try {
+      const res = await api.productDetail(row.id)
+      const payload = res.data.data.product as ProductDetailPayload
+      setPreviewTitle(payload.title || row.title)
+      setPreviewImageURLs((payload.image_urls ?? []).map(resolveAssetURL).filter(Boolean))
+      setPreviewImageIDs(payload.images ?? [])
+    } catch (err) {
+      message.error((err as Error).message)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
   const columns: ProColumns<ProductItem>[] = [
     {
       title: 'ID',
       dataIndex: 'id',
       width: 80,
+      fixed: 'left',
+      hideInTable: true,
       search: false
     },
     {
-      title: '标题',
+      title: '商品名',
       dataIndex: 'title',
+      width: 120,
+      fixed: 'left',
       ellipsis: true,
       formItemProps: {
         label: '关键词'
       }
     },
     {
+      title: '上传图片',
+      key: 'images',
+      search: false,
+      width: 110,
+      render: (_, row) => (
+        <Button type="link" onClick={() => void handleViewImages(row)}>
+          查看
+        </Button>
+      )
+    },
+    {
+      title: '一级分类',
+      dataIndex: 'category_level1_id',
+      valueType: 'select',
+      hideInTable: true,
+      fieldProps: {
+        options: (level1.data ?? []).map((item) => ({ value: categoryId(item), label: categoryName(item) })),
+        loading: level1.isLoading,
+        showSearch: true,
+        optionFilterProp: 'label'
+      }
+    },
+    
+    {
+      title: '一级分类',
+      dataIndex: 'category_level1_name',
+      search: false,
+      width: 80,
+      render: (_, row) => row.category_level1_name || '-'
+    },
+    {
+      title: '二级分类',
+      dataIndex: 'category_level2_name',
+      search: false,
+      width: 80,
+      render: (_, row) => row.category_level2_name || '-'
+    },
+    {
+      title: '价格(元)',
+      dataIndex: 'price_cent',
+      search: false,
+      width: 100,
+      render: (_, row) => centToYuanText(row.price_cent)
+    },
+    {
       title: '状态',
       dataIndex: 'status',
+      width: 96,
       valueType: 'select',
       valueEnum: toValueEnum(PRODUCT_STATUS_META),
       render: (_, row) => <Tag color={getStatusColor(PRODUCT_STATUS_META, row.status)}>{getStatusText(PRODUCT_STATUS_META, row.status)}</Tag>
-    },
-    {
-      title: '价格(分)',
-      dataIndex: 'price_cent',
-      search: false,
-      width: 120
     },
     {
       title: '更新时间',
       dataIndex: 'updated_at',
       valueType: 'dateTime',
       search: false,
-      width: 180
+      width: 160
     },
     {
       title: '操作',
       key: 'actions',
       search: false,
-      width: 320,
+      width: 200,
+      fixed: 'right',
       render: (_, row) => (
         <Space size={0} wrap>
           <Button type="link" onClick={() => navigate(`/merchant/products/${row.id}`)}>
@@ -146,6 +247,7 @@ export function MerchantProductsPage() {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
+        scroll={{ x: 1400 }}
         pagination={{ pageSize: 20 }}
         request={async (params) => {
           try {
@@ -155,6 +257,7 @@ export function MerchantProductsPage() {
             }
             if (params.title) query.keyword = params.title
             if (params.status) query.status = params.status as string
+            if (params.category_level1_id) query.category_level1_id = Number(params.category_level1_id)
             const res = await api.products(query)
             const payload = res.data.data as ProductListResp
             return {
@@ -177,6 +280,35 @@ export function MerchantProductsPage() {
           </Button>
         ]}
       />
+      <Modal
+        title={`上传图片 - ${previewTitle}`}
+        open={previewOpen}
+        onCancel={() => setPreviewOpen(false)}
+        footer={null}
+        width={760}
+      >
+        {previewLoading ? (
+          <div style={{ padding: '24px 0', textAlign: 'center' }}>
+            <Spin />
+          </div>
+        ) : previewImageURLs.length > 0 ? (
+          <Space wrap size={12}>
+            <Image.PreviewGroup>
+              {previewImageURLs.map((url, idx) => (
+                <Image key={`${url}-${idx}`} width={120} height={120} src={url} style={{ objectFit: 'cover' }} />
+              ))}
+            </Image.PreviewGroup>
+          </Space>
+        ) : previewImageIDs.length > 0 ? (
+          <Space wrap>
+            {previewImageIDs.map((id) => (
+              <Tag key={id}>file_id: {id}</Tag>
+            ))}
+          </Space>
+        ) : (
+          <Empty description="当前商品暂无上传图片" />
+        )}
+      </Modal>
     </PageContainer>
   )
 }

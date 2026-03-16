@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProDescriptions } from '@ant-design/pro-components'
 import { Alert, Button, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
-import { getStatusColor, getStatusText, INTENT_STATUS_META, PRODUCT_STATUS_META, type IntentStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusColor, getStatusText, INTENT_STATUS_META, PRODUCT_STATUS_META, type IntentStatus } from '@/constants/status'
+import { api } from '@/services/api'
 
 type IntentDetail = {
   id: number
@@ -29,7 +29,7 @@ type IntentDetailResp = {
   intent: IntentDetail
 }
 
-export function MerchantIntentDetailPage() {
+export function DetailPage() {
   const { intentId = '' } = useParams()
   const queryClient = useQueryClient()
 

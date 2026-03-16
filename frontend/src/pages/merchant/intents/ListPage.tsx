@@ -1,8 +1,9 @@
+import { useQuery } from '@tanstack/react-query'
 import { PageContainer, ProTable, type ProColumns } from '@ant-design/pro-components'
 import { Button, Tag, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { getStatusColor, getStatusText, INTENT_STATUS_META, toValueEnum, type IntentStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusColor, getStatusText, INTENT_STATUS_META, toValueEnum, type IntentStatus } from '@/constants/status'
+import { api } from '@/services/api'
 
 type IntentItem = {
   id: number
@@ -15,6 +16,10 @@ type IntentItem = {
   contact_wechat?: string | null
   created_at: string
   updated_at: string
+  category_level1_id?: number | null
+  category_level1_name?: string | null
+  category_level2_id?: number | null
+  category_level2_name?: string | null
 }
 
 type IntentListResp = {
@@ -24,8 +29,27 @@ type IntentListResp = {
   page_size: number
 }
 
-export function MerchantIntentsPage() {
+type CategoryItem = {
+  ID?: number
+  id?: number
+  Name?: string
+  name?: string
+}
+
+function categoryId(item: CategoryItem) {
+  return Number(item.ID ?? item.id ?? 0)
+}
+
+function categoryName(item: CategoryItem) {
+  return item.Name ?? item.name ?? ''
+}
+
+export function ListPage() {
   const navigate = useNavigate()
+  const level1 = useQuery({
+    queryKey: ['categories', 'level1'],
+    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
+  })
   const columns: ProColumns<IntentItem>[] = [
     {
       title: 'ID',
@@ -45,13 +69,20 @@ export function MerchantIntentsPage() {
       ellipsis: true,
       search: false
     },
+  
     {
-      title: '状态',
-      dataIndex: 'status',
-      valueType: 'select',
-      valueEnum: toValueEnum(INTENT_STATUS_META),
-      render: (_, row) => <Tag color={getStatusColor(INTENT_STATUS_META, row.status)}>{getStatusText(INTENT_STATUS_META, row.status)}</Tag>,
-      width: 120
+      title: '一级分类',
+      dataIndex: 'category_level1_name',
+      search: false,
+      width: 120,
+      render: (_, row) => row.category_level1_name || '-'
+    },
+    {
+      title: '二级分类',
+      dataIndex: 'category_level2_name',
+      search: false,
+      width: 120,
+      render: (_, row) => row.category_level2_name || '-'
     },
     {
       title: '联系方式',
@@ -73,6 +104,26 @@ export function MerchantIntentsPage() {
       title: '关键词',
       dataIndex: 'keyword',
       hideInTable: true
+    },
+    {
+      title: '一级分类',
+      dataIndex: 'category_level1_id',
+      valueType: 'select',
+      hideInTable: true,
+      fieldProps: {
+        options: (level1.data ?? []).map((item) => ({ value: categoryId(item), label: categoryName(item) })),
+        loading: level1.isLoading,
+        showSearch: true,
+        optionFilterProp: 'label'
+      }
+    },
+      {
+      title: '状态',
+      dataIndex: 'status',
+      valueType: 'select',
+      valueEnum: toValueEnum(INTENT_STATUS_META),
+      render: (_, row) => <Tag color={getStatusColor(INTENT_STATUS_META, row.status)}>{getStatusText(INTENT_STATUS_META, row.status)}</Tag>,
+      width: 120
     },
     {
       title: '操作',
@@ -101,6 +152,7 @@ export function MerchantIntentsPage() {
             }
             if (params.status) query.status = params.status as string
             if (params.keyword) query.keyword = String(params.keyword).trim()
+            if (params.category_level1_id) query.category_level1_id = Number(params.category_level1_id)
             const res = await api.merchantIntents(query)
             const payload = res.data.data as IntentListResp
             return {

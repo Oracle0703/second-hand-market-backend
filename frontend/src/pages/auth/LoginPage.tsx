@@ -1,9 +1,9 @@
 import { LoginFormPage, ProFormSelect, ProFormText } from '@ant-design/pro-components'
 import { Button, Space, message } from 'antd'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '../services/api'
-import { useAuthStore } from '../stores/auth-store'
-import type { LoginType } from '../types/auth'
+import { api } from '@/services/api'
+import { useAuthStore } from '@/stores/auth-store'
+import type { LoginType } from '@/types/auth'
 
 type LoginFormValues = {
   login_type: LoginType

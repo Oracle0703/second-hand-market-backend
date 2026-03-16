@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import type { AuthUser } from '../types/auth'
 
 type AuthState = {
@@ -15,12 +16,20 @@ type AuthState = {
   clear: () => void
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
-  accessToken: '',
-  refreshToken: '',
-  tokenScope: '',
-  user: null,
-  setAuth: ({ accessToken, refreshToken, tokenScope = 'full', user }) =>
-    set({ accessToken, refreshToken, tokenScope, user }),
-  clear: () => set({ accessToken: '', refreshToken: '', tokenScope: '', user: null })
-}))
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set) => ({
+      accessToken: '',
+      refreshToken: '',
+      tokenScope: '',
+      user: null,
+      setAuth: ({ accessToken, refreshToken, tokenScope = 'full', user }) =>
+        set({ accessToken, refreshToken, tokenScope, user }),
+      clear: () => set({ accessToken: '', refreshToken: '', tokenScope: '', user: null })
+    }),
+    {
+      name: 'auth-store',
+      storage: createJSONStorage(() => localStorage)
+    }
+  )
+)

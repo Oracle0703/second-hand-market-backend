@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   PageContainer,
@@ -10,10 +10,11 @@ import {
   ProFormTextArea,
   type ProFormInstance
 } from '@ant-design/pro-components'
-import { Button, Space, Tag, message } from 'antd'
+import { Button, Image, Space, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { PRODUCT_CONDITION_META, type ProductCondition } from '../constants/status'
-import { api } from '../services/api'
+import { PRODUCT_CONDITION_META, type ProductCondition } from '@/constants/status'
+import { api } from '@/services/api'
+import { yuanToCent } from '@/utils/price'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
 
@@ -29,8 +30,14 @@ type ProductCreateValues = {
   category_id?: number
   title: string
   description: string
-  price_cent: number
+  price_yuan: number
   condition_level: ProductCondition
+}
+
+type UploadedImage = {
+  fileID: number
+  previewURL: string
+  fileName: string
 }
 
 function categoryId(item: CategoryItem) {
@@ -53,13 +60,14 @@ function normalizeImageMIME(file: File) {
   return 'image/jpeg'
 }
 
-export function MerchantProductCreatePage() {
+export function CreatePage() {
   const navigate = useNavigate()
   const formRef = useRef<ProFormInstance>()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const uploadedImagesRef = useRef<UploadedImage[]>([])
   const [parentId, setParentID] = useState<number | ''>('')
   const [categoryID, setCategoryID] = useState<number | ''>('')
-  const [imageIDs, setImageIDs] = useState<number[]>([])
+  const [uploadedImages, setUploadedImages] = useState<UploadedImage[]>([])
 
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
@@ -89,9 +97,16 @@ export function MerchantProductCreatePage() {
       await api.uploadFile(formData)
       return presign.data.data.file_id as number
     },
-    onSuccess: (fileID) => {
-      setImageIDs((prev) => [...prev, fileID].slice(0, 5))
-      message.success(`已添加图片 file_id=${fileID}`)
+    onSuccess: (fileID, file) => {
+      const previewURL = URL.createObjectURL(file)
+      setUploadedImages((prev) => {
+        if (prev.length >= 5) {
+          URL.revokeObjectURL(previewURL)
+          return prev
+        }
+        return [...prev, { fileID, previewURL, fileName: file.name || `image-${fileID}` }]
+      })
+      message.success(`已添加图片：${file.name || `file_id=${fileID}`}`)
     },
     onError: (err) => {
       message.error((err as Error).message)
@@ -104,13 +119,13 @@ export function MerchantProductCreatePage() {
         title: payload.title,
         description: payload.description,
         category_id: Number(categoryID),
-        price_cent: Number(payload.price_cent),
+        price_cent: yuanToCent(payload.price_yuan),
         condition_level: payload.condition_level,
         stock: 1,
-        image_file_ids: imageIDs
+        image_file_ids: uploadedImages.map((item) => item.fileID)
       }),
     onSuccess: (res) => {
-      message.success('商品创建成功')
+      message.success('商品创建成功，当前为草稿状态，请点击上架后在售')
       navigate(`/merchant/products/${res.data.data.product_id}`)
     },
     onError: (err) => {
@@ -123,7 +138,7 @@ export function MerchantProductCreatePage() {
       message.error('请选择二级分类')
       return false
     }
-    if (imageIDs.length === 0) {
+    if (uploadedImages.length === 0) {
       message.error('请先添加至少一张图片')
       return false
     }
@@ -135,25 +150,82 @@ export function MerchantProductCreatePage() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
-    if (imageIDs.length >= 5) {
+    if (uploadMutation.isPending) {
+      message.info('图片上传中，请稍候')
+      return
+    }
+    if (uploadedImages.length >= 5) {
       message.error('最多上传5张图片')
       return
     }
     uploadMutation.mutate(file)
   }
 
+  useEffect(() => {
+    uploadedImagesRef.current = uploadedImages
+  }, [uploadedImages])
+
+  useEffect(() => {
+    return () => {
+      uploadedImagesRef.current.forEach((item) => {
+        URL.revokeObjectURL(item.previewURL)
+      })
+    }
+  }, [])
+
+  const removeImage = (fileID: number) => {
+    setUploadedImages((prev) => {
+      const current = prev.find((item) => item.fileID === fileID)
+      if (current) {
+        URL.revokeObjectURL(current.previewURL)
+      }
+      return prev.filter((item) => item.fileID !== fileID)
+    })
+  }
+
+  const backToList = () => {
+    navigate('/merchant/products')
+  }
+
   return (
-    <PageContainer title="新建商品">
+    <PageContainer
+      title="新建商品"
+      onBack={backToList}
+      extra={[
+        <Button key="cancel" onClick={backToList}>
+          取消
+        </Button>
+      ]}
+    >
       <ProCard title="图片" style={{ marginBottom: 16 }}>
         <Space wrap>
-          {imageIDs.length > 0 ? imageIDs.map((id) => <Tag key={id}>file_id: {id}</Tag>) : <span>暂无图片</span>}
+          {uploadedImages.length > 0 ? (
+            uploadedImages.map((item) => (
+              <div key={item.fileID} style={{ width: 120 }}>
+                <Image
+                  width={120}
+                  height={120}
+                  src={item.previewURL}
+                  alt={item.fileName}
+                  style={{ objectFit: 'cover', borderRadius: 8 }}
+                />
+                <div style={{ marginTop: 6, fontSize: 12, color: '#666', wordBreak: 'break-all' }}>
+                  file_id: {item.fileID}
+                </div>
+                <Button type="link" danger size="small" style={{ padding: 0 }} onClick={() => removeImage(item.fileID)}>
+                  删除
+                </Button>
+              </div>
+            ))
+          ) : (
+            <span>暂无图片</span>
+          )}
         </Space>
         <div style={{ marginTop: 12 }}>
           <input
             ref={fileInputRef}
             type="file"
             accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*"
-            capture="environment"
             style={{ display: 'none' }}
             onChange={onSelectImage}
           />
@@ -169,7 +241,7 @@ export function MerchantProductCreatePage() {
         initialValues={{
           title: '',
           description: '',
-          price_cent: 100,
+          price_yuan: 1,
           condition_level: 'GOOD'
         }}
         onFinish={onFinish}
@@ -179,18 +251,24 @@ export function MerchantProductCreatePage() {
           },
           submitButtonProps: {
             loading: createMutation.isPending,
-            disabled: !categoryID || imageIDs.length === 0
-          }
+            disabled: !categoryID || uploadedImages.length === 0
+          },
+          render: (_, dom) => [
+            <Button key="form-cancel" onClick={backToList}>
+              取消
+            </Button>,
+            ...dom
+          ]
         }}
       >
         <ProFormText name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]} />
         <ProFormTextArea name="description" label="描述" rules={[{ required: true, message: '请输入描述' }]} />
         <ProFormDigit
-          name="price_cent"
-          label="价格(分)"
-          min={1}
+          name="price_yuan"
+          label="价格(元)"
+          min={0.01}
           rules={[{ required: true, message: '请输入价格' }]}
-          fieldProps={{ precision: 0 }}
+          fieldProps={{ precision: 2, step: 0.01 }}
         />
         <ProFormSelect
           name="condition_level"

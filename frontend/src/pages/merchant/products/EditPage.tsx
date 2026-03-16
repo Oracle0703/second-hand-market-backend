@@ -10,10 +10,12 @@ import {
   ProFormTextArea,
   type ProFormInstance
 } from '@ant-design/pro-components'
-import { Alert, Button, Space, Tag, message } from 'antd'
+import { Alert, Button, Image, Space, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getStatusText, PRODUCT_CONDITION_META, PRODUCT_STATUS_META, type ProductCondition, type ProductStatus } from '../constants/status'
-import { api } from '../services/api'
+import { getStatusText, PRODUCT_CONDITION_META, PRODUCT_STATUS_META, type ProductCondition, type ProductStatus } from '@/constants/status'
+import { api } from '@/services/api'
+import { centToYuanNumber, yuanToCent } from '@/utils/price'
+import { resolveAssetURL } from '@/utils/url'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
 
@@ -35,15 +37,23 @@ type ProductDetail = {
   price_cent: number
   condition_level: ProductCondition
   images: number[]
+  image_urls?: string[]
 }
 
 type ProductEditValues = {
   parent_id?: number
   title: string
   description: string
-  price_cent: number
+  price_yuan: number
   condition_level: (typeof conditionOptions)[number]
   category_id?: number
+}
+
+type EditableImage = {
+  fileID: number
+  previewURL: string
+  fileName: string
+  isLocal: boolean
 }
 
 function categoryId(item: CategoryItem) {
@@ -66,14 +76,15 @@ function normalizeImageMIME(file: File) {
   return 'image/jpeg'
 }
 
-export function MerchantProductEditPage() {
+export function EditPage() {
   const { productId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const formRef = useRef<ProFormInstance<ProductEditValues>>()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const imageItemsRef = useRef<EditableImage[]>([])
   const [parentId, setParentID] = useState<number | ''>('')
-  const [imageIDs, setImageIDs] = useState<number[]>([])
+  const [imageItems, setImageItems] = useState<EditableImage[]>([])
 
   const detail = useQuery({
     queryKey: ['product-detail', productId],
@@ -94,16 +105,33 @@ export function MerchantProductEditPage() {
     queryFn: async () => (await api.categories(2, Number(parentId))).data.data.items as CategoryItem[]
   })
 
+  const releaseLocalPreviews = (items: EditableImage[]) => {
+    items.forEach((item) => {
+      if (item.isLocal && item.previewURL) {
+        URL.revokeObjectURL(item.previewURL)
+      }
+    })
+  }
+
   useEffect(() => {
     if (!detail.data) return
     formRef.current?.setFieldsValue({
       title: detail.data.title,
       description: detail.data.description ?? '',
-      price_cent: detail.data.price_cent,
+      price_yuan: centToYuanNumber(detail.data.price_cent),
       condition_level: detail.data.condition_level,
       category_id: detail.data.category_id
     })
-    setImageIDs(detail.data.images ?? [])
+    const remoteImages = (detail.data.images ?? []).map((fileID, index) => ({
+      fileID,
+      previewURL: resolveAssetURL(detail.data.image_urls?.[index]),
+      fileName: `image-${fileID}`,
+      isLocal: false
+    }))
+    setImageItems((prev) => {
+      releaseLocalPreviews(prev)
+      return remoteImages
+    })
   }, [detail.data])
 
   useEffect(() => {
@@ -124,9 +152,10 @@ export function MerchantProductEditPage() {
       if (!canEditDescImages) {
         throw new Error('当前状态不可编辑')
       }
-      if (imageIDs.length === 0) {
+      if (imageItems.length === 0) {
         throw new Error('至少保留一张图片')
       }
+      const imageIDs = imageItems.map((item) => item.fileID)
       if (canEditAll) {
         if (!values.category_id) {
           throw new Error('请选择二级分类')
@@ -135,7 +164,7 @@ export function MerchantProductEditPage() {
           title: values.title,
           description: values.description,
           category_id: values.category_id,
-          price_cent: Number(values.price_cent),
+          price_cent: yuanToCent(values.price_yuan),
           condition_level: values.condition_level,
           image_file_ids: imageIDs
         })
@@ -172,9 +201,16 @@ export function MerchantProductEditPage() {
       await api.uploadFile(formData)
       return presign.data.data.file_id as number
     },
-    onSuccess: (fileID) => {
-      setImageIDs((prev) => [...prev, fileID].slice(0, 5))
-      message.success(`已添加图片 file_id=${fileID}`)
+    onSuccess: (fileID, file) => {
+      const previewURL = URL.createObjectURL(file)
+      setImageItems((prev) => {
+        if (prev.length >= 5) {
+          URL.revokeObjectURL(previewURL)
+          return prev
+        }
+        return [...prev, { fileID, previewURL, fileName: file.name || `image-${fileID}`, isLocal: true }]
+      })
+      message.success(`已添加图片：${file.name || `file_id=${fileID}`}`)
     },
     onError: (err) => {
       message.error((err as Error).message)
@@ -190,11 +226,40 @@ export function MerchantProductEditPage() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
-    if (imageIDs.length >= 5) {
+    if (!canEditDescImages) {
+      message.error('当前状态不可编辑图片')
+      return
+    }
+    if (uploadMutation.isPending) {
+      message.info('图片上传中，请稍候')
+      return
+    }
+    if (imageItems.length >= 5) {
       message.error('最多上传5张图片')
       return
     }
     uploadMutation.mutate(file)
+  }
+
+  useEffect(() => {
+    imageItemsRef.current = imageItems
+  }, [imageItems])
+
+  useEffect(() => {
+    return () => {
+      releaseLocalPreviews(imageItemsRef.current)
+    }
+  }, [])
+
+  const removeImage = (fileID: number) => {
+    if (!canEditDescImages) return
+    setImageItems((prev) => {
+      const current = prev.find((item) => item.fileID === fileID)
+      if (current?.isLocal) {
+        URL.revokeObjectURL(current.previewURL)
+      }
+      return prev.filter((item) => item.fileID !== fileID)
+    })
   }
 
   const level2Options = useMemo(() => level2ByParent.data ?? [], [level2ByParent.data])
@@ -208,19 +273,42 @@ export function MerchantProductEditPage() {
 
       <ProCard title="图片" style={{ marginBottom: 16 }}>
         <Space wrap>
-          {imageIDs.length > 0 ? (
-            imageIDs.map((id) => (
-              <Tag
-                key={id}
-                closable={canEditDescImages}
-                onClose={(e) => {
-                  e.preventDefault()
-                  if (!canEditDescImages) return
-                  setImageIDs((prev) => prev.filter((x) => x !== id))
-                }}
-              >
-                file_id: {id}
-              </Tag>
+          {imageItems.length > 0 ? (
+            imageItems.map((item) => (
+              <div key={item.fileID} style={{ width: 120 }}>
+                {item.previewURL ? (
+                  <Image
+                    width={120}
+                    height={120}
+                    src={item.previewURL}
+                    alt={item.fileName}
+                    style={{ objectFit: 'cover', borderRadius: 8 }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: 120,
+                      height: 120,
+                      borderRadius: 8,
+                      border: '1px solid #eee',
+                      background: '#fafafa',
+                      color: '#999',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 12
+                    }}
+                  >
+                    无预览
+                  </div>
+                )}
+                <div style={{ marginTop: 6, fontSize: 12, color: '#666', wordBreak: 'break-all' }}>file_id: {item.fileID}</div>
+                {canEditDescImages ? (
+                  <Button type="link" danger size="small" style={{ padding: 0 }} onClick={() => removeImage(item.fileID)}>
+                    删除
+                  </Button>
+                ) : null}
+              </div>
             ))
           ) : (
             <span>暂无图片</span>
@@ -231,7 +319,6 @@ export function MerchantProductEditPage() {
             ref={fileInputRef}
             type="file"
             accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*"
-            capture="environment"
             style={{ display: 'none' }}
             onChange={onSelectImage}
           />
@@ -256,13 +343,20 @@ export function MerchantProductEditPage() {
           },
           submitButtonProps: {
             loading: updateMutation.isPending,
-            disabled: !canEditDescImages || imageIDs.length === 0
+            disabled: !canEditDescImages || imageItems.length === 0
           }
         }}
       >
         <ProFormText name="title" label="标题" disabled={!canEditAll} rules={[{ required: true, message: '请输入标题' }]} />
         <ProFormTextArea name="description" label="描述" disabled={!canEditDescImages} rules={[{ required: true, message: '请输入描述' }]} />
-        <ProFormDigit name="price_cent" label="价格(分)" min={1} disabled={!canEditAll} fieldProps={{ precision: 0 }} rules={[{ required: true, message: '请输入价格' }]} />
+        <ProFormDigit
+          name="price_yuan"
+          label="价格(元)"
+          min={0.01}
+          disabled={!canEditAll}
+          fieldProps={{ precision: 2, step: 0.01 }}
+          rules={[{ required: true, message: '请输入价格' }]}
+        />
         <ProFormSelect
           name="condition_level"
           label="成色"
