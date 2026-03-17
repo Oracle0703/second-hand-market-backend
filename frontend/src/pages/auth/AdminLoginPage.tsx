@@ -1,6 +1,6 @@
 import { LoginFormPage, ProFormText } from '@ant-design/pro-components'
-import { Button, Space, message } from 'antd'
-import { Link, useNavigate } from 'react-router-dom'
+import { message } from 'antd'
+import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -9,14 +9,14 @@ type LoginFormValues = {
   password: string
 }
 
-export function LoginPage() {
+export function AdminLoginPage() {
   const navigate = useNavigate()
   const setAuth = useAuthStore((s) => s.setAuth)
 
   const onFinish = async (values: LoginFormValues) => {
     try {
       const res = await api.login({
-        login_type: 'MERCHANT',
+        login_type: 'ADMIN',
         username: values.username,
         password: values.password
       })
@@ -27,12 +27,7 @@ export function LoginPage() {
         tokenScope: data.token_scope ?? 'full',
         user: data.user
       })
-
-      if (data.token_scope === 'onboarding') {
-        navigate('/register/status')
-      } else {
-        navigate('/merchant/dashboard')
-      }
+      navigate('/admin/merchants/reviews')
       return true
     } catch (err) {
       message.error((err as Error).message)
@@ -42,25 +37,14 @@ export function LoginPage() {
 
   return (
     <LoginFormPage<LoginFormValues>
-      title="广汉市瑞扬家具经营部"
-      subTitle="商家后台管理系统"
+      title="系统管理入口"
+      subTitle="管理员登录"
       onFinish={onFinish}
-      initialValues={{ username: 'yaner', password: '12345678' }}
       submitter={{
         searchConfig: {
-          submitText: '登录'
+          submitText: '管理员登录'
         }
       }}
-      actions={
-        <Space size={8}>
-          <span>还没有商家账号？</span>
-          <Link to="/register">
-            <Button type="link" style={{ paddingInline: 0 }}>
-              去注册
-            </Button>
-          </Link>
-        </Space>
-      }
       containerStyle={{ backgroundColor: '#f5f7fa' }}
     >
       <ProFormText

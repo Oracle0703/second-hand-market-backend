@@ -66,6 +66,9 @@ export const api = {
   ) {
     return http.put(`/merchant/products/${productId}`, payload)
   },
+  deleteProduct(productId: string | number) {
+    return http.delete(`/merchant/products/${productId}`)
+  },
   productOnShelf(productId: string | number) {
     return http.post(`/merchant/products/${productId}/on-shelf`, {})
   },

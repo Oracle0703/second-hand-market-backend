@@ -4,6 +4,7 @@ import { RequireAuth } from './guards'
 
 const Layout = lazy(() => import('./Layout').then((m) => ({ default: m.Layout })))
 const LoginPage = lazy(() => import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage })))
+const AdminLoginPage = lazy(() => import('@/pages/auth/AdminLoginPage').then((m) => ({ default: m.AdminLoginPage })))
 const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage').then((m) => ({ default: m.RegisterPage })))
 const RegisterStatusPage = lazy(() => import('@/pages/auth/RegisterStatusPage').then((m) => ({ default: m.RegisterStatusPage })))
 const AdminReviewsPage = lazy(() => import('@/pages/admin/merchants/ReviewsPage').then((m) => ({ default: m.ReviewsPage })))
@@ -32,6 +33,7 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={loadable(<LoginPage />)} />
+        <Route path="/admin/login" element={loadable(<AdminLoginPage />)} />
         <Route path="/register" element={loadable(<RegisterPage />)} />
         <Route element={<RequireAuth role="MERCHANT" />}>
           <Route path="/register/status" element={loadable(<RegisterStatusPage />)} />

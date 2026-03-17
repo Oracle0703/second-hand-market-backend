@@ -84,6 +84,16 @@ export function ListPage() {
       message.error((err as Error).message)
     }
   })
+  const deleteMutation = useMutation({
+    mutationFn: async (productID: number) => api.deleteProduct(productID),
+    onSuccess: () => {
+      message.success('商品已删除')
+      actionRef.current?.reload()
+    },
+    onError: (err) => {
+      message.error((err as Error).message)
+    }
+  })
 
   const handleViewImages = async (row: ProductItem) => {
     setPreviewOpen(true)
@@ -102,6 +112,19 @@ export function ListPage() {
     } finally {
       setPreviewLoading(false)
     }
+  }
+
+  const handleDeleteProduct = (row: ProductItem) => {
+    Modal.confirm({
+      title: '删除商品',
+      content: '删除后不可恢复，并会清理该商品关联的图片文件。确定删除吗？',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteMutation.mutateAsync(row.id)
+      }
+    })
   }
 
   const columns: ProColumns<ProductItem>[] = [
@@ -187,7 +210,7 @@ export function ListPage() {
       title: '操作',
       key: 'actions',
       search: false,
-      width: 200,
+      width: 260,
       fixed: 'right',
       render: (_, row) => (
         <Space size={0} wrap>
@@ -234,6 +257,11 @@ export function ListPage() {
               onClick={() => transitionMutation.mutate({ id: row.id, action: 'close' })}
             >
               关闭
+            </Button>
+          )}
+          {(row.status === 'DRAFT' || row.status === 'OFF_SHELF' || row.status === 'CLOSED') && (
+            <Button type="link" danger loading={deleteMutation.isPending} onClick={() => handleDeleteProduct(row)}>
+              删除
             </Button>
           )}
         </Space>

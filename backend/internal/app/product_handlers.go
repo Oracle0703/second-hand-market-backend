@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"strings"
 	"time"
 
@@ -234,7 +235,7 @@ func (s *Server) handleProductList(c *gin.Context) {
 	query := s.DB.Table("products AS p").
 		Joins("LEFT JOIN categories AS c2 ON c2.id = p.category_id").
 		Joins("LEFT JOIN categories AS c1 ON c1.id = c2.parent_id").
-		Where("p.merchant_id = ?", actor.MerchantID)
+		Where("p.merchant_id = ? AND p.deleted_at IS NULL", actor.MerchantID)
 	if v := strings.TrimSpace(c.Query("status")); v != "" {
 		query = query.Where("p.status = ?", v)
 	}
@@ -286,6 +287,170 @@ func (s *Server) checkProductReadyForOnShelf(tx *gorm.DB, productID uint64) erro
 		return common.ErrInvalidArgument
 	}
 	return nil
+}
+
+func canDeleteProductByStatus(status string) bool {
+	return status == model.ProductDraft || status == model.ProductOffShelf || status == model.ProductClosed
+}
+
+func (s *Server) cleanupLocalFilesByObjectKeys(keys []string) {
+	if !strings.EqualFold(strings.TrimSpace(s.cfg.FileStorageProvider), "local") {
+		return
+	}
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		cleanKey := strings.TrimSpace(key)
+		if cleanKey == "" {
+			continue
+		}
+		if _, ok := seen[cleanKey]; ok {
+			continue
+		}
+		seen[cleanKey] = struct{}{}
+		path, err := s.localUploadPath(cleanKey)
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			continue
+		}
+		_ = os.Remove(path + ".tmp")
+	}
+}
+
+func (s *Server) handleDeleteProduct(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	actor, err := actorFromContext(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+
+	deletedFileIDs := make([]uint64, 0)
+	objectKeys := make([]string, 0)
+	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)
+		if err != nil {
+			return err
+		}
+		if !canDeleteProductByStatus(product.Status) || product.ActiveOrderID != nil {
+			return common.ErrInvalidTransition
+		}
+
+		var orderCount int64
+		if err := tx.Model(&model.Order{}).Where("product_id = ?", product.ID).Count(&orderCount).Error; err != nil {
+			return err
+		}
+		if orderCount > 0 {
+			return common.ErrInvalidTransition
+		}
+		var intentCount int64
+		if err := tx.Model(&model.BuyerIntent{}).Where("product_id = ?", product.ID).Count(&intentCount).Error; err != nil {
+			return err
+		}
+		if intentCount > 0 {
+			return common.ErrInvalidTransition
+		}
+
+		var productImages []model.ProductImage
+		if err := tx.Where("product_id = ?", product.ID).Find(&productImages).Error; err != nil {
+			return err
+		}
+		fileIDSet := map[uint64]struct{}{}
+		for _, img := range productImages {
+			if img.FileID > 0 {
+				fileIDSet[img.FileID] = struct{}{}
+			}
+		}
+		if product.CoverFileID != nil && *product.CoverFileID > 0 {
+			fileIDSet[*product.CoverFileID] = struct{}{}
+		}
+		fileIDs := make([]uint64, 0, len(fileIDSet))
+		for fileID := range fileIDSet {
+			fileIDs = append(fileIDs, fileID)
+		}
+
+		deletableFileIDs := make([]uint64, 0, len(fileIDs))
+		if len(fileIDs) > 0 {
+			type refRow struct {
+				FileID   uint64
+				RefCount int64
+			}
+			refs := make([]refRow, 0)
+			if err := tx.Model(&model.ProductImage{}).
+				Select("file_id, COUNT(*) AS ref_count").
+				Where("file_id IN ? AND product_id <> ?", fileIDs, product.ID).
+				Group("file_id").
+				Scan(&refs).Error; err != nil {
+				return err
+			}
+			referenced := make(map[uint64]struct{}, len(refs))
+			for _, row := range refs {
+				if row.RefCount > 0 {
+					referenced[row.FileID] = struct{}{}
+				}
+			}
+			for _, fileID := range fileIDs {
+				if _, inUse := referenced[fileID]; !inUse {
+					deletableFileIDs = append(deletableFileIDs, fileID)
+				}
+			}
+		}
+
+		if len(deletableFileIDs) > 0 {
+			files := make([]model.FileRecord, 0, len(deletableFileIDs))
+			if err := tx.Where(
+				"id IN ? AND biz_type = ? AND uploader_type = ? AND uploader_id = ?",
+				deletableFileIDs,
+				model.FileBizProductImage,
+				model.UserTypeMerchant,
+				actor.UserID,
+			).Find(&files).Error; err != nil {
+				return err
+			}
+			if len(files) > 0 {
+				ids := make([]uint64, 0, len(files))
+				for _, file := range files {
+					ids = append(ids, file.ID)
+					objectKey := strings.TrimSpace(file.ObjectKey)
+					if objectKey != "" {
+						objectKeys = append(objectKeys, objectKey)
+					}
+				}
+				if err := tx.Where("id IN ?", ids).Delete(&model.FileRecord{}).Error; err != nil {
+					return err
+				}
+				deletedFileIDs = append(deletedFileIDs, ids...)
+			}
+		}
+
+		if err := tx.Where("product_id = ?", product.ID).Delete(&model.ProductImage{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&product).Error; err != nil {
+			return err
+		}
+
+		s.writeOperationLog(c, tx, "product", product.ID, "product_delete", &product.Status, nil, common.CodeOK, &actor.MerchantID, gin.H{
+			"deleted_file_count": len(deletedFileIDs),
+		})
+		return nil
+	}); err != nil {
+		common.Fail(c, err)
+		return
+	}
+
+	s.cleanupLocalFilesByObjectKeys(objectKeys)
+	common.Success(c, gin.H{
+		"product_id":         id,
+		"deleted":            true,
+		"deleted_file_ids":   deletedFileIDs,
+		"deleted_file_count": len(deletedFileIDs),
+	})
 }
 
 func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, action string) {

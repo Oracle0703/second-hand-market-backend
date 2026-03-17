@@ -497,3 +497,112 @@ func TestProductEditRulesByStatus(t *testing.T) {
 		t.Fatalf("closed product update should be denied: %+v", updateClosed)
 	}
 }
+
+func TestProductDeleteRemovesImageRecords(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "product_delete")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createDraftProduct(t, srv, token)
+
+	var productImages []model.ProductImage
+	if err := srv.DB.Where("product_id = ?", productID).Find(&productImages).Error; err != nil {
+		t.Fatalf("query product images failed: %v", err)
+	}
+	if len(productImages) == 0 {
+		t.Fatalf("expected product images for product %d", productID)
+	}
+	fileID := productImages[0].FileID
+
+	del := requestJSON(
+		t,
+		srv.Router,
+		http.MethodDelete,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		nil,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if del.Code != 0 {
+		t.Fatalf("delete product failed: %+v", del)
+	}
+
+	detail := requestJSON(
+		t,
+		srv.Router,
+		http.MethodGet,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		nil,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if detail.Code != 10004 {
+		t.Fatalf("deleted product detail should be not found: %+v", detail)
+	}
+
+	var deletedProduct model.Product
+	if err := srv.DB.Unscoped().Where("id = ?", productID).First(&deletedProduct).Error; err != nil {
+		t.Fatalf("load deleted product failed: %v", err)
+	}
+	if !deletedProduct.DeletedAt.Valid {
+		t.Fatalf("expected deleted_at set for product %d", productID)
+	}
+
+	var imageCount int64
+	if err := srv.DB.Model(&model.ProductImage{}).Where("product_id = ?", productID).Count(&imageCount).Error; err != nil {
+		t.Fatalf("count product images failed: %v", err)
+	}
+	if imageCount != 0 {
+		t.Fatalf("expected product images removed, got %d", imageCount)
+	}
+
+	var fileCount int64
+	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", fileID).Count(&fileCount).Error; err != nil {
+		t.Fatalf("count file records failed: %v", err)
+	}
+	if fileCount != 0 {
+		t.Fatalf("expected file record removed, got %d", fileCount)
+	}
+}
+
+func TestProductDeleteDeniedWhenOnShelf(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "product_delete_deny")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createDraftProduct(t, srv, token)
+
+	onShelf := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID),
+		map[string]interface{}{},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if onShelf.Code != 0 {
+		t.Fatalf("on shelf failed: %+v", onShelf)
+	}
+
+	del := requestJSON(
+		t,
+		srv.Router,
+		http.MethodDelete,
+		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
+		nil,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if del.Code != 10005 {
+		t.Fatalf("on shelf product delete should be denied: %+v", del)
+	}
+}

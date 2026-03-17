@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions } from '@ant-design/pro-components'
-import { Alert, Button, Space, Tag, message } from 'antd'
+import { Alert, Button, Image, Space, Tag, message } from 'antd'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { getStatusColor, getStatusText, PRODUCT_STATUS_META, type ProductStatus } from '@/constants/status'
 import { api } from '@/services/api'
 import { centToYuanText } from '@/utils/price'
+import { resolveAssetURL } from '@/utils/url'
 
 type ProductDetail = {
   id: number
@@ -16,6 +17,7 @@ type ProductDetail = {
   condition_level: string
   stock: number
   images: number[]
+  image_urls?: string[]
   active_order_id?: number
 }
 
@@ -130,13 +132,43 @@ export function DetailPage() {
             title: '图片',
             dataIndex: 'images',
             span: 2,
-            render: (_, row) => (
+            render: (_, row) => {
+              const urls = (row.image_urls ?? []).map(resolveAssetURL)
+              return (
               <Space wrap>
-                {(row.images ?? []).map((id) => (
-                  <Tag key={id}>file_id: {id}</Tag>
-                ))}
+                {(row.images ?? []).map((id, index) => {
+                  const url = urls[index] || ''
+                  return (
+                    <div key={id} style={{ width: 120 }}>
+                      {url ? (
+                        <Image width={120} height={120} src={url} alt={`product-${id}`} style={{ objectFit: 'cover', borderRadius: 8 }} />
+                      ) : (
+                        <div
+                          style={{
+                            width: 120,
+                            height: 120,
+                            borderRadius: 8,
+                            border: '1px solid #eee',
+                            background: '#fafafa',
+                            color: '#999',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 12
+                          }}
+                        >
+                          无预览
+                        </div>
+                      )}
+                      <div style={{ marginTop: 6 }}>
+                        <Tag>file_id: {id}</Tag>
+                      </div>
+                    </div>
+                  )
+                })}
               </Space>
-            )
+              )
+            }
           }
         ]}
         dataSource={product}
