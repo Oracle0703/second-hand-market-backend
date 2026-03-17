@@ -129,6 +129,7 @@ http.interceptors.response.use(
     const requestPath = getPathname(error.config?.url)
     const status = error.response?.status
     const originalConfig = error.config as (typeof error.config & { _retry?: boolean }) | undefined
+    const isTimeout = error.code === 'ECONNABORTED' || (typeof error.message === 'string' && error.message.toLowerCase().includes('timeout'))
 
     if (status === 401 && originalConfig && !originalConfig._retry && !isAuthExempt(originalConfig.url) && requestPath !== '/auth/refresh') {
       originalConfig._retry = true
@@ -144,6 +145,11 @@ http.interceptors.response.use(
         return http(originalConfig)
       }
       return Promise.reject(new Error('登录已过期，请重新登录'))
+    }
+
+    if (isTimeout) {
+      const msg = requestPath === '/files/upload' ? '上传超时，请检查网络后重试' : '请求超时，请稍后重试'
+      return Promise.reject(new Error(msg))
     }
 
     if (payload && typeof payload.code === 'number') {
