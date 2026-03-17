@@ -149,23 +149,23 @@ func (s *Server) handleCategories(c *gin.Context) {
 		}
 	}
 
-	query := s.DB.Model(&model.Category{}).Where("status = ?", model.CategoryEnabled)
+	query := s.DB.Model(&model.Category{}).Where("categories.status = ?", model.CategoryEnabled)
 	level := strings.TrimSpace(c.Query("level"))
 	parentID := strings.TrimSpace(c.Query("parent_id"))
 	if level != "" {
 		if level == "1" {
-			query = query.Where("name IN ?", allowedRootNames)
+			query = query.Where("categories.name IN ?", allowedRootNames)
 		}
 		if level == "2" && parentID == "" {
 			query = query.Joins("JOIN categories AS p ON p.id = categories.parent_id").Where("p.name IN ?", allowedRootNames)
 		}
-		query = query.Where("level = ?", level)
+		query = query.Where("categories.level = ?", level)
 	}
 	if parentID != "" {
-		query = query.Where("parent_id = ?", parentID)
+		query = query.Where("categories.parent_id = ?", parentID)
 	}
 	var items []model.Category
-	if err := query.Order("sort ASC, id ASC").Find(&items).Error; err != nil {
+	if err := query.Order("categories.sort ASC, categories.id ASC").Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}

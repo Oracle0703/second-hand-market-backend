@@ -1,10 +1,6 @@
 import { http, type APIResponse } from './http'
 import type { LoginResponse, LoginType } from '../types/auth'
 
-const DEFAULT_UPLOAD_TIMEOUT_MS = 120000
-const uploadTimeoutMs = Number(import.meta.env.VITE_UPLOAD_TIMEOUT_MS)
-const UPLOAD_TIMEOUT_MS = Number.isFinite(uploadTimeoutMs) && uploadTimeoutMs > 0 ? uploadTimeoutMs : DEFAULT_UPLOAD_TIMEOUT_MS
-
 export const api = {
   login(payload: { login_type: LoginType; username: string; password: string }) {
     return http.post<APIResponse<LoginResponse>>('/auth/login', payload)
@@ -35,9 +31,7 @@ export const api = {
     return http.post('/files/presign', payload)
   },
   uploadFile(formData: FormData) {
-    return http.post('/files/upload', formData, {
-      timeout: UPLOAD_TIMEOUT_MS
-    })
+    return http.post('/files/upload', formData)
   },
   confirmUpload(payload: { file_id: number; object_key: string }) {
     return http.post('/files/confirm', payload)

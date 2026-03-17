@@ -93,16 +93,15 @@ export function EditPage() {
 
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
-    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
+    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[],
+    staleTime: 5 * 60 * 1000,
+    retry: 1
   })
   const level2All = useQuery({
     queryKey: ['categories', 'level2-all'],
-    queryFn: async () => (await api.categories(2)).data.data.items as CategoryItem[]
-  })
-  const level2ByParent = useQuery({
-    queryKey: ['categories', 'level2', parentId],
-    enabled: !!parentId,
-    queryFn: async () => (await api.categories(2, Number(parentId))).data.data.items as CategoryItem[]
+    queryFn: async () => (await api.categories(2)).data.data.items as CategoryItem[],
+    staleTime: 5 * 60 * 1000,
+    retry: 1
   })
 
   const releaseLocalPreviews = (items: EditableImage[]) => {
@@ -115,12 +114,17 @@ export function EditPage() {
 
   useEffect(() => {
     if (!detail.data) return
+    const selectedCategoryID = Number(detail.data.category_id)
+    const matchedLevel2 = (level2All.data ?? []).find((item) => categoryId(item) === selectedCategoryID)
+    const pid = matchedLevel2 ? Number(matchedLevel2.ParentID ?? matchedLevel2.parent_id ?? 0) : ''
+    setParentID(pid)
     formRef.current?.setFieldsValue({
       title: detail.data.title,
       description: detail.data.description ?? '',
       price_yuan: centToYuanNumber(detail.data.price_cent),
       condition_level: detail.data.condition_level,
-      category_id: detail.data.category_id
+      parent_id: pid || undefined,
+      category_id: selectedCategoryID
     })
     const remoteImages = (detail.data.images ?? []).map((fileID, index) => ({
       fileID,
@@ -132,15 +136,6 @@ export function EditPage() {
       releaseLocalPreviews(prev)
       return remoteImages
     })
-  }, [detail.data])
-
-  useEffect(() => {
-    if (!detail.data || !level2All.data) return
-    const row = level2All.data.find((item) => categoryId(item) === Number(detail.data.category_id))
-    if (!row) return
-    const pid = Number(row.ParentID ?? row.parent_id ?? 0)
-    setParentID(pid)
-    formRef.current?.setFieldValue('parent_id', pid)
   }, [detail.data, level2All.data])
 
   const status = detail.data?.status
@@ -262,7 +257,11 @@ export function EditPage() {
     })
   }
 
-  const level2Options = useMemo(() => level2ByParent.data ?? [], [level2ByParent.data])
+  const level2Options = useMemo(() => {
+    const pid = Number(parentId)
+    if (!pid) return []
+    return (level2All.data ?? []).filter((item) => Number(item.ParentID ?? item.parent_id ?? 0) === pid)
+  }, [parentId, level2All.data])
 
   if (detail.isLoading) return <p>加载中...</p>
   if (detail.error) return <p className="error">{(detail.error as Error).message}</p>
@@ -375,7 +374,14 @@ export function EditPage() {
             onChange: (value) => {
               const nextParentID = value ? Number(value) : ''
               setParentID(nextParentID)
-              formRef.current?.setFieldValue('category_id', undefined)
+              const currentCategoryID = Number(formRef.current?.getFieldValue('category_id') ?? 0)
+              const stillValid = (level2All.data ?? []).some(
+                (item) =>
+                  Number(item.ParentID ?? item.parent_id ?? 0) === Number(nextParentID) && categoryId(item) === currentCategoryID
+              )
+              if (!stillValid) {
+                formRef.current?.setFieldValue('category_id', undefined)
+              }
             }
           }}
           rules={canEditAll ? [{ required: true, message: '请选择一级分类' }] : []}
@@ -385,7 +391,7 @@ export function EditPage() {
           label="二级分类"
           disabled={!canEditAll}
           options={level2Options.map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
-          fieldProps={{ loading: level2ByParent.isLoading }}
+          fieldProps={{ loading: level2All.isLoading }}
           rules={canEditAll ? [{ required: true, message: '请选择二级分类' }] : []}
         />
       </ProForm>

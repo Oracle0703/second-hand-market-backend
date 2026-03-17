@@ -3,6 +3,16 @@ import { useAuthStore } from '../stores/auth-store'
 import { ERROR_MESSAGES } from '../constants/error-codes'
 import type { AuthUser } from '../types/auth'
 
+const DEFAULT_HTTP_TIMEOUT_MS = 15000
+const DEFAULT_UPLOAD_TIMEOUT_MS = 300000
+const DEFAULT_REFRESH_TIMEOUT_MS = 60000
+const parsedUploadTimeout = Number(import.meta.env.VITE_UPLOAD_TIMEOUT_MS)
+const parsedRefreshTimeout = Number(import.meta.env.VITE_REFRESH_TIMEOUT_MS)
+const UPLOAD_TIMEOUT_MS =
+  Number.isFinite(parsedUploadTimeout) && parsedUploadTimeout > 0 ? parsedUploadTimeout : DEFAULT_UPLOAD_TIMEOUT_MS
+const REFRESH_TIMEOUT_MS =
+  Number.isFinite(parsedRefreshTimeout) && parsedRefreshTimeout > 0 ? parsedRefreshTimeout : DEFAULT_REFRESH_TIMEOUT_MS
+
 export type APIResponse<T> = {
   code: number
   message: string
@@ -12,11 +22,11 @@ export type APIResponse<T> = {
 
 export const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api/v1',
-  timeout: 15000
+  timeout: DEFAULT_HTTP_TIMEOUT_MS
 })
 const refreshClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080/api/v1',
-  timeout: 15000
+  timeout: REFRESH_TIMEOUT_MS
 })
 
 const AUTH_EXEMPT_PATHS = new Set([
@@ -111,6 +121,9 @@ http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().accessToken
   if (token && !isAuthExempt(config.url)) {
     config.headers.Authorization = `Bearer ${token}`
+  }
+  if (getPathname(config.url) === '/files/upload') {
+    config.timeout = UPLOAD_TIMEOUT_MS
   }
   return config
 })
