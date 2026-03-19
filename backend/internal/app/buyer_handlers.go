@@ -221,15 +221,17 @@ func (s *Server) handleBuyerProducts(c *gin.Context) {
 	items := make([]gin.H, 0, len(rows))
 	for _, it := range rows {
 		items = append(items, gin.H{
-			"id":              it.ID,
-			"title":           it.Title,
-			"price_cent":      it.PriceCent,
-			"condition_level": it.ConditionLevel,
-			"cover_url":       coverMap[it.ID],
-			"status":          it.Status,
-			"merchant_id":     it.MerchantID,
-			"merchant_name":   merchantMap[it.MerchantID],
-			"is_favorited":    favorited[it.ID],
+			"id":                  it.ID,
+			"title":               it.Title,
+			"price_cent":          it.PriceCent,
+			"original_price_cent": it.OriginalPriceCent,
+			"stock":               it.Stock,
+			"condition_level":     it.ConditionLevel,
+			"cover_url":           coverMap[it.ID],
+			"status":              it.Status,
+			"merchant_id":         it.MerchantID,
+			"merchant_name":       merchantMap[it.MerchantID],
+			"is_favorited":        favorited[it.ID],
 		})
 	}
 	common.Success(c, common.PageResult[gin.H]{Items: items, Total: total, Page: page, PageSize: size})
@@ -299,16 +301,18 @@ func (s *Server) handleBuyerProductDetail(c *gin.Context) {
 	}
 
 	common.Success(c, gin.H{"product": gin.H{
-		"id":                product.ID,
-		"title":             product.Title,
-		"description":       product.Description,
-		"price_cent":        product.PriceCent,
-		"condition_level":   product.ConditionLevel,
-		"status":            product.Status,
-		"images":            images,
-		"merchant":          gin.H{"id": merchant.ID, "name": merchant.MerchantName},
-		"is_favorited":      isFavorited,
-		"can_submit_intent": product.Status == model.ProductOnShelf,
+		"id":                  product.ID,
+		"title":               product.Title,
+		"description":         product.Description,
+		"price_cent":          product.PriceCent,
+		"original_price_cent": product.OriginalPriceCent,
+		"stock":               product.Stock,
+		"condition_level":     product.ConditionLevel,
+		"status":              product.Status,
+		"images":              images,
+		"merchant":            gin.H{"id": merchant.ID, "name": merchant.MerchantName},
+		"is_favorited":        isFavorited,
+		"can_submit_intent":   product.Status == model.ProductOnShelf,
 	}})
 }
 
@@ -565,10 +569,12 @@ func (s *Server) handleBuyerFavoriteList(c *gin.Context) {
 	coverMap, _ := s.loadProductCoverURLMap(productIDs)
 
 	type productRow struct {
-		ID        uint64
-		Title     string
-		PriceCent int
-		Status    string
+		ID                uint64
+		Title             string
+		PriceCent         int
+		OriginalPriceCent *int
+		Stock             int
+		Status            string
 	}
 	rows := make([]productRow, 0, len(productIDs))
 	if len(productIDs) > 0 {
@@ -591,12 +597,14 @@ func (s *Server) handleBuyerFavoriteList(c *gin.Context) {
 			continue
 		}
 		items = append(items, gin.H{
-			"product_id":   fav.ProductID,
-			"title":        p.Title,
-			"cover_url":    coverMap[fav.ProductID],
-			"price_cent":   p.PriceCent,
-			"status":       p.Status,
-			"favorited_at": fav.CreatedAt,
+			"product_id":          fav.ProductID,
+			"title":               p.Title,
+			"cover_url":           coverMap[fav.ProductID],
+			"price_cent":          p.PriceCent,
+			"original_price_cent": p.OriginalPriceCent,
+			"stock":               p.Stock,
+			"status":              p.Status,
+			"favorited_at":        fav.CreatedAt,
 		})
 	}
 	common.Success(c, common.PageResult[gin.H]{Items: items, Total: total, Page: page, PageSize: size})
@@ -788,10 +796,12 @@ func (s *Server) handleBuyerHistoryList(c *gin.Context) {
 	}
 	coverMap, _ := s.loadProductCoverURLMap(productIDs)
 	type productRow struct {
-		ID        uint64
-		Title     string
-		PriceCent int
-		Status    string
+		ID                uint64
+		Title             string
+		PriceCent         int
+		OriginalPriceCent *int
+		Stock             int
+		Status            string
 	}
 	rows := make([]productRow, 0, len(productIDs))
 	if len(productIDs) > 0 {
@@ -814,13 +824,15 @@ func (s *Server) handleBuyerHistoryList(c *gin.Context) {
 			continue
 		}
 		items = append(items, gin.H{
-			"product_id":     it.ProductID,
-			"title":          p.Title,
-			"cover_url":      coverMap[it.ProductID],
-			"price_cent":     p.PriceCent,
-			"status":         p.Status,
-			"last_viewed_at": it.LastViewedAt,
-			"view_count":     it.ViewCount,
+			"product_id":          it.ProductID,
+			"title":               p.Title,
+			"cover_url":           coverMap[it.ProductID],
+			"price_cent":          p.PriceCent,
+			"original_price_cent": p.OriginalPriceCent,
+			"stock":               p.Stock,
+			"status":              p.Status,
+			"last_viewed_at":      it.LastViewedAt,
+			"view_count":          it.ViewCount,
 		})
 	}
 	common.Success(c, common.PageResult[gin.H]{Items: items, Total: total, Page: page, PageSize: size})

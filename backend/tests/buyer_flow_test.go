@@ -73,9 +73,30 @@ func TestBuyerGuestProductsBrowse(t *testing.T) {
 	if list.Code != 0 {
 		t.Fatalf("buyer guest products list failed: %+v", list)
 	}
+	listItems, ok := list.Data["items"].([]interface{})
+	if !ok || len(listItems) == 0 {
+		t.Fatalf("buyer guest products list should not be empty: %+v", list)
+	}
+	firstListItem := listItems[0].(map[string]interface{})
+	if numToUint64(firstListItem["stock"]) == 0 {
+		t.Fatalf("buyer products list stock should be returned: %+v", list)
+	}
+	if numToUint64(firstListItem["original_price_cent"]) == 0 {
+		t.Fatalf("buyer products list original_price_cent should be returned: %+v", list)
+	}
 	detail := requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d", productID), nil, headers)
 	if detail.Code != 0 {
 		t.Fatalf("buyer guest products detail failed: %+v", detail)
+	}
+	detailProduct, ok := detail.Data["product"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("buyer product detail missing product: %+v", detail)
+	}
+	if numToUint64(detailProduct["stock"]) == 0 {
+		t.Fatalf("buyer product detail stock should be returned: %+v", detail)
+	}
+	if numToUint64(detailProduct["original_price_cent"]) == 0 {
+		t.Fatalf("buyer product detail original_price_cent should be returned: %+v", detail)
 	}
 }
 
@@ -101,6 +122,13 @@ func TestBuyerFavoritesCRUD(t *testing.T) {
 	items1, ok := list1.Data["items"].([]interface{})
 	if !ok || len(items1) != 1 {
 		t.Fatalf("favorite list should have one item: %+v", list1)
+	}
+	firstFavorite := items1[0].(map[string]interface{})
+	if numToUint64(firstFavorite["stock"]) == 0 {
+		t.Fatalf("favorite list stock should be returned: %+v", list1)
+	}
+	if numToUint64(firstFavorite["original_price_cent"]) == 0 {
+		t.Fatalf("favorite list original_price_cent should be returned: %+v", list1)
 	}
 
 	del := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/buyer/favorites/%d", productID), nil, headers)
@@ -155,6 +183,12 @@ func TestBuyerHistoriesDedupAndClear(t *testing.T) {
 	first := items[0].(map[string]interface{})
 	if numToUint64(first["view_count"]) != 2 {
 		t.Fatalf("history view_count mismatch: %+v", list)
+	}
+	if numToUint64(first["stock"]) == 0 {
+		t.Fatalf("history stock should be returned: %+v", list)
+	}
+	if numToUint64(first["original_price_cent"]) == 0 {
+		t.Fatalf("history original_price_cent should be returned: %+v", list)
 	}
 
 	clear := requestJSON(t, srv.Router, http.MethodDelete, "/api/v1/buyer/histories", nil, headers)

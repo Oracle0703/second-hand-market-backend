@@ -37,6 +37,7 @@ export default function ProductDetailPage() {
 
   const product = detail.data?.product
   const imageURLs = (product?.images || []).filter(Boolean)
+  const originalPriceCent = product?.original_price_cent ?? product?.price_cent ?? 0
 
   useShareAppMessage(() => ({
     title: product?.title || '二手好物',
@@ -61,10 +62,14 @@ export default function ProductDetailPage() {
         <View className="card">
           <View className="title">{product.title}</View>
           <View style={{ marginBottom: '12rpx' }}>
-            <Text style={{ color: '#d24b2f', fontWeight: 600 }}>¥{centToYuanText(product.price_cent)}</Text>
-            <Text style={{ marginLeft: '16rpx' }} className="status-badge">
-              {product.status}
-            </Text>
+            <View style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Text style={{ color: '#d24b2f', fontWeight: 600 }}>售价 ¥{centToYuanText(product.price_cent)}</Text>
+              <Text style={{ marginLeft: '12rpx', color: '#8a9691', textDecoration: 'line-through' }}>原价 ¥{centToYuanText(originalPriceCent)}</Text>
+            </View>
+            <View style={{ marginTop: '8rpx', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ color: '#6f7c77' }}>仅剩 {product.stock} 件</Text>
+              <Text className="status-badge">{product.status}</Text>
+            </View>
           </View>
 
           {imageURLs.length > 0 ? (

@@ -2,7 +2,8 @@ import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Taro from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
-import { clearHistories, listHistories } from '../../services/buyer'
+import { BuyerHistoryItem, clearHistories, listHistories } from '../../services/buyer'
+import { centToYuanText } from '../../utils/price'
 
 export default function HistoryPage() {
   const queryClient = useQueryClient()
@@ -27,10 +28,17 @@ export default function HistoryPage() {
       {query.error ? <Text>{(query.error as Error).message}</Text> : null}
 
       <View className="card">
-        {(query.data?.items || []).map((item: any) => (
+        {(query.data?.items || []).map((item: BuyerHistoryItem) => (
           <View key={item.product_id} className="list-item" onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.product_id}` })}>
             <Text>{item.title}</Text>
-            <Text style={{ marginLeft: '12rpx', color: '#6f7c77' }}>浏览 {item.view_count} 次</Text>
+            <View style={{ marginTop: '8rpx', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Text style={{ color: '#d24b2f' }}>售价 ¥{centToYuanText(item.price_cent)}</Text>
+              <Text style={{ marginLeft: '12rpx', color: '#8a9691', textDecoration: 'line-through' }}>
+                原价 ¥{centToYuanText(item.original_price_cent ?? item.price_cent)}
+              </Text>
+              <Text style={{ marginLeft: '12rpx', color: '#6f7c77' }}>仅剩 {item.stock} 件</Text>
+              <Text style={{ marginLeft: '12rpx', color: '#6f7c77' }}>浏览 {item.view_count} 次</Text>
+            </View>
           </View>
         ))}
         {(query.data?.items || []).length === 0 && !query.isLoading ? <View className="empty">暂无浏览记录</View> : null}

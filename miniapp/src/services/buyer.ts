@@ -5,6 +5,8 @@ export type BuyerProduct = {
   title: string
   description?: string
   price_cent: number
+  original_price_cent?: number | null
+  stock: number
   condition_level: string
   cover_url: string
   status: string
@@ -12,6 +14,29 @@ export type BuyerProduct = {
   merchant_name: string
   is_favorited: boolean
   can_submit_intent?: boolean
+}
+
+export type BuyerFavoriteItem = {
+  product_id: number
+  title: string
+  cover_url: string
+  price_cent: number
+  original_price_cent?: number | null
+  stock: number
+  status: string
+  favorited_at: string
+}
+
+export type BuyerHistoryItem = {
+  product_id: number
+  title: string
+  cover_url: string
+  price_cent: number
+  original_price_cent?: number | null
+  stock: number
+  status: string
+  last_viewed_at: string
+  view_count: number
 }
 
 export type BuyerIntent = {
@@ -69,7 +94,7 @@ export function mergeGuest(deviceID: string) {
 }
 
 export function listFavorites(page = 1, pageSize = 20) {
-  return apiRequest<{ items: any[]; total: number; page: number; page_size: number }>({
+  return apiRequest<{ items: BuyerFavoriteItem[]; total: number; page: number; page_size: number }>({
     method: 'GET',
     path: '/buyer/favorites',
     data: { page, page_size: pageSize }
@@ -100,7 +125,7 @@ export function reportView(productID: number) {
 }
 
 export function listHistories(page = 1, pageSize = 20) {
-  return apiRequest<{ items: any[]; total: number; page: number; page_size: number }>({
+  return apiRequest<{ items: BuyerHistoryItem[]; total: number; page: number; page_size: number }>({
     method: 'GET',
     path: '/buyer/histories',
     data: { page, page_size: pageSize }
