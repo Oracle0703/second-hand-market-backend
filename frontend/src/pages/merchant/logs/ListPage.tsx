@@ -56,6 +56,7 @@ const actionValueEnum: Record<string, { text: string }> = {
   product_on_shelf: { text: '商品上架' },
   product_off_shelf: { text: '商品下架' },
   product_close: { text: '关闭商品' },
+  product_delete: { text: '删除商品' },
   product_lock: { text: '商品锁定' },
   product_order_link: { text: '商品关联订单' },
   order_create: { text: '创建订单' },

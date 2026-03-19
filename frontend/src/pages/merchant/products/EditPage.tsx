@@ -35,6 +35,8 @@ type ProductDetail = {
   status: ProductStatus
   category_id: number
   price_cent: number
+  original_price_cent?: number | null
+  stock: number
   condition_level: ProductCondition
   images: number[]
   image_urls?: string[]
@@ -45,6 +47,8 @@ type ProductEditValues = {
   title: string
   description: string
   price_yuan: number
+  original_price_yuan: number
+  stock: number
   condition_level: (typeof conditionOptions)[number]
   category_id?: number
 }
@@ -122,6 +126,8 @@ export function EditPage() {
       title: detail.data.title,
       description: detail.data.description ?? '',
       price_yuan: centToYuanNumber(detail.data.price_cent),
+      original_price_yuan: centToYuanNumber(detail.data.original_price_cent ?? detail.data.price_cent),
+      stock: Number(detail.data.stock ?? 1),
       condition_level: detail.data.condition_level,
       parent_id: pid || undefined,
       category_id: selectedCategoryID
@@ -155,11 +161,19 @@ export function EditPage() {
         if (!values.category_id) {
           throw new Error('请选择二级分类')
         }
+        if (Number(values.original_price_yuan) < Number(values.price_yuan)) {
+          throw new Error('原价不能低于价格')
+        }
+        if (Number(values.stock) <= 0) {
+          throw new Error('库存数量必须大于0')
+        }
         return api.updateProduct(productId, {
           title: values.title,
           description: values.description,
           category_id: values.category_id,
           price_cent: yuanToCent(values.price_yuan),
+          original_price_cent: yuanToCent(values.original_price_yuan),
+          stock: Math.max(1, Math.floor(Number(values.stock))),
           condition_level: values.condition_level,
           image_file_ids: imageIDs
         })
@@ -265,9 +279,19 @@ export function EditPage() {
 
   if (detail.isLoading) return <p>加载中...</p>
   if (detail.error) return <p className="error">{(detail.error as Error).message}</p>
+  const backToDetail = () => navigate(`/merchant/products/${productId}`)
 
   return (
-    <PageContainer title="编辑商品" subTitle={`当前状态: ${getStatusText(PRODUCT_STATUS_META, status)}`}>
+    <PageContainer
+      title="编辑商品"
+      subTitle={`当前状态: ${getStatusText(PRODUCT_STATUS_META, status)}`}
+      onBack={backToDetail}
+      extra={[
+        <Button key="cancel-top" onClick={backToDetail}>
+          取消
+        </Button>
+      ]}
+    >
       {!canEditDescImages ? <Alert type="warning" showIcon message="该状态下不可编辑商品" style={{ marginBottom: 16 }} /> : null}
 
       <ProCard title="图片" style={{ marginBottom: 16 }}>
@@ -343,7 +367,13 @@ export function EditPage() {
           submitButtonProps: {
             loading: updateMutation.isPending,
             disabled: !canEditDescImages || imageItems.length === 0
-          }
+          },
+          render: (_, dom) => [
+            <Button key="cancel-bottom" onClick={backToDetail}>
+              取消
+            </Button>,
+            ...dom
+          ]
         }}
       >
         <ProFormText name="title" label="标题" disabled={!canEditAll} rules={[{ required: true, message: '请输入标题' }]} />
@@ -355,6 +385,22 @@ export function EditPage() {
           disabled={!canEditAll}
           fieldProps={{ precision: 2, step: 0.01 }}
           rules={[{ required: true, message: '请输入价格' }]}
+        />
+        <ProFormDigit
+          name="original_price_yuan"
+          label="原价(元)"
+          min={0.01}
+          disabled={!canEditAll}
+          fieldProps={{ precision: 2, step: 0.01 }}
+          rules={[{ required: true, message: '请输入原价' }]}
+        />
+        <ProFormDigit
+          name="stock"
+          label="库存数量"
+          min={1}
+          disabled={!canEditAll}
+          fieldProps={{ precision: 0, step: 1 }}
+          rules={[{ required: true, message: '请输入库存数量' }]}
         />
         <ProFormSelect
           name="condition_level"
