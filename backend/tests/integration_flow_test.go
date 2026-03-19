@@ -138,7 +138,7 @@ func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
 	}
 
 	product := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
-		"title": "iPhone 14", "description": "正常", "category_id": categoryID, "price_cent": 320000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
+		"title": "iPhone 14", "description": "正常", "category_id": categoryID, "price_cent": 320000, "original_price_cent": 350000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
 	}, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if product.Code != 0 {
 		t.Fatalf("create product failed: %+v", product)

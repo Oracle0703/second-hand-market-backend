@@ -117,6 +117,7 @@ async function setupMerchantAndProduct(runSeed) {
       description: 'miniapp page e2e smoke product',
       category_id: categoryID,
       price_cent: 56800,
+      original_price_cent: 59900,
       condition_level: 'GOOD',
       stock: 1,
       image_file_ids: [image.data.file_id]

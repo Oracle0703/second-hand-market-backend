@@ -47,8 +47,9 @@ export const api = {
     description: string
     category_id: number
     price_cent: number
+    original_price_cent: number
     condition_level: 'LIKE_NEW' | 'GOOD' | 'FAIR' | 'POOR'
-    stock?: number
+    stock: number
     image_file_ids: number[]
   }) {
     return http.post('/merchant/products', payload)
@@ -60,7 +61,9 @@ export const api = {
       description: string
       category_id: number
       price_cent: number
+      original_price_cent: number
       condition_level: 'LIKE_NEW' | 'GOOD' | 'FAIR' | 'POOR'
+      stock: number
       image_file_ids: number[]
     }>
   ) {

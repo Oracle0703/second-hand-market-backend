@@ -31,6 +31,8 @@ type ProductCreateValues = {
   title: string
   description: string
   price_yuan: number
+  original_price_yuan: number
+  stock: number
   condition_level: ProductCondition
 }
 
@@ -120,8 +122,9 @@ export function CreatePage() {
         description: payload.description,
         category_id: Number(categoryID),
         price_cent: yuanToCent(payload.price_yuan),
+        original_price_cent: yuanToCent(payload.original_price_yuan),
         condition_level: payload.condition_level,
-        stock: 1,
+        stock: Math.max(1, Math.floor(Number(payload.stock))),
         image_file_ids: uploadedImages.map((item) => item.fileID)
       }),
     onSuccess: (res) => {
@@ -140,6 +143,14 @@ export function CreatePage() {
     }
     if (uploadedImages.length === 0) {
       message.error('请先添加至少一张图片')
+      return false
+    }
+    if (Number(values.original_price_yuan) < Number(values.price_yuan)) {
+      message.error('原价不能低于价格')
+      return false
+    }
+    if (Number(values.stock) <= 0) {
+      message.error('库存数量必须大于0')
       return false
     }
     await createMutation.mutateAsync(values)
@@ -242,6 +253,8 @@ export function CreatePage() {
           title: '',
           description: '',
           price_yuan: 1,
+          original_price_yuan: 1,
+          stock: 1,
           condition_level: 'GOOD'
         }}
         onFinish={onFinish}
@@ -269,6 +282,20 @@ export function CreatePage() {
           min={0.01}
           rules={[{ required: true, message: '请输入价格' }]}
           fieldProps={{ precision: 2, step: 0.01 }}
+        />
+        <ProFormDigit
+          name="original_price_yuan"
+          label="原价(元)"
+          min={0.01}
+          rules={[{ required: true, message: '请输入原价' }]}
+          fieldProps={{ precision: 2, step: 0.01 }}
+        />
+        <ProFormDigit
+          name="stock"
+          label="库存数量"
+          min={1}
+          rules={[{ required: true, message: '请输入库存数量' }]}
+          fieldProps={{ precision: 0, step: 1 }}
         />
         <ProFormSelect
           name="condition_level"

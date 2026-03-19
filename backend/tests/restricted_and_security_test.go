@@ -101,7 +101,7 @@ func createAndOnShelfProduct(t *testing.T, srv *app.Server, merchantToken string
 	t.Helper()
 	imgID, categoryID := productImageAndCategory(t, srv, merchantToken)
 	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
-		"title": "测试商品", "description": "desc", "category_id": categoryID, "price_cent": 10000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
+		"title": "测试商品", "description": "desc", "category_id": categoryID, "price_cent": 10000, "original_price_cent": 12000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
 	}, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if create.Code != 0 {
 		t.Fatalf("create product failed: %+v", create)
@@ -118,7 +118,7 @@ func createDraftProduct(t *testing.T, srv *app.Server, merchantToken string) uin
 	t.Helper()
 	imgID, categoryID := productImageAndCategory(t, srv, merchantToken)
 	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
-		"title": "草稿商品", "description": "draft", "category_id": categoryID, "price_cent": 10000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
+		"title": "草稿商品", "description": "draft", "category_id": categoryID, "price_cent": 10000, "original_price_cent": 12000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
 	}, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if create.Code != 0 {
 		t.Fatalf("create draft product failed: %+v", create)
@@ -604,5 +604,94 @@ func TestProductDeleteDeniedWhenOnShelf(t *testing.T) {
 	)
 	if del.Code != 10005 {
 		t.Fatalf("on shelf product delete should be denied: %+v", del)
+	}
+}
+
+func TestDashboardStatsExcludeDeletedProducts(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "dashboard_deleted")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+
+	keepProductID := createDraftProduct(t, srv, token)
+	deleteProductID := createDraftProduct(t, srv, token)
+
+	del := requestJSON(
+		t,
+		srv.Router,
+		http.MethodDelete,
+		fmt.Sprintf("/api/v1/merchant/products/%d", deleteProductID),
+		nil,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if del.Code != 0 {
+		t.Fatalf("delete product failed: %+v", del)
+	}
+
+	dashboard := requestJSON(
+		t,
+		srv.Router,
+		http.MethodGet,
+		"/api/v1/merchant/dashboard",
+		nil,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if dashboard.Code != 0 {
+		t.Fatalf("dashboard request failed: %+v", dashboard)
+	}
+
+	productStats, ok := dashboard.Data["product_stats"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dashboard product_stats format invalid: %+v", dashboard.Data["product_stats"])
+	}
+	draftCnt, ok := productStats["draft"].(float64)
+	if !ok {
+		t.Fatalf("dashboard draft count missing: %+v", productStats)
+	}
+	if int64(draftCnt) != 1 {
+		t.Fatalf("deleted products should be excluded from dashboard stats, expected draft=1 got=%v (keep=%d deleted=%d)", draftCnt, keepProductID, deleteProductID)
+	}
+}
+
+func TestDashboardOnShelfTotalAmount(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "dashboard_amount")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+
+	_ = createAndOnShelfProduct(t, srv, token)
+	_ = createAndOnShelfProduct(t, srv, token)
+	_ = createDraftProduct(t, srv, token)
+
+	dashboard := requestJSON(
+		t,
+		srv.Router,
+		http.MethodGet,
+		"/api/v1/merchant/dashboard",
+		nil,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if dashboard.Code != 0 {
+		t.Fatalf("dashboard request failed: %+v", dashboard)
+	}
+
+	onShelfAmount, ok := dashboard.Data["on_shelf_total_amount_cent"].(float64)
+	if !ok {
+		t.Fatalf("dashboard on_shelf_total_amount_cent missing: %+v", dashboard.Data)
+	}
+	if int64(onShelfAmount) != 20000 {
+		t.Fatalf("on_shelf_total_amount_cent mismatch: expected=20000 got=%v", onShelfAmount)
 	}
 }

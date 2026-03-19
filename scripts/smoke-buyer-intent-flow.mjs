@@ -93,6 +93,7 @@ async function setupMerchantAndProduct(seed) {
       description: 'smoke buyer flow product',
       category_id: categoryID,
       price_cent: 45600,
+      original_price_cent: 49900,
       condition_level: 'GOOD',
       stock: 1,
       image_file_ids: [image.data.file_id]

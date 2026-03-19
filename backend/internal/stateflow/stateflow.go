@@ -64,7 +64,7 @@ func EditableFieldsByProductStatus(status string) map[string]bool {
 	switch status {
 	case model.ProductDraft, model.ProductOffShelf:
 		return map[string]bool{
-			"title": true, "description": true, "category_id": true, "price_cent": true, "condition_level": true, "image_file_ids": true,
+			"title": true, "description": true, "category_id": true, "price_cent": true, "original_price_cent": true, "condition_level": true, "stock": true, "image_file_ids": true,
 		}
 	case model.ProductOnShelf:
 		return map[string]bool{"description": true, "image_file_ids": true}

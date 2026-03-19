@@ -182,14 +182,25 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		res := map[string]int64{}
 		for _, st := range statuses {
 			var n int64
-			_ = s.DB.Table(table).Where("merchant_id = ? AND "+statusField+" = ?", actor.MerchantID, st).Count(&n).Error
+			_ = s.DB.Table(table).Where("merchant_id = ? AND "+statusField+" = ? AND deleted_at IS NULL", actor.MerchantID, st).Count(&n).Error
 			res[strings.ToLower(st)] = n
 		}
 		return res
 	}
+
+	var onShelfTotalAmountCent int64
+	if err := s.DB.Table("products").
+		Select("COALESCE(SUM(price_cent * stock), 0)").
+		Where("merchant_id = ? AND status = ? AND deleted_at IS NULL", actor.MerchantID, model.ProductOnShelf).
+		Scan(&onShelfTotalAmountCent).Error; err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+
 	common.Success(c, gin.H{
-		"product_stats": countByStatus("products", "status", []string{model.ProductDraft, model.ProductOnShelf, model.ProductLocked, model.ProductOffShelf, model.ProductSold, model.ProductClosed}),
-		"order_stats":   countByStatus("orders", "status", []string{model.OrderCreated, model.OrderCompleted, model.OrderClosed}),
+		"product_stats":              countByStatus("products", "status", []string{model.ProductDraft, model.ProductOnShelf, model.ProductLocked, model.ProductOffShelf, model.ProductSold, model.ProductClosed}),
+		"order_stats":                countByStatus("orders", "status", []string{model.OrderCreated, model.OrderCompleted, model.OrderClosed}),
+		"on_shelf_total_amount_cent": onShelfTotalAmountCent,
 	})
 }
 

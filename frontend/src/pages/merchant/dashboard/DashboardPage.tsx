@@ -3,12 +3,14 @@ import { PageContainer, ProCard } from '@ant-design/pro-components'
 import { Statistic, Table } from 'antd'
 import { ORDER_STATUS_META, PRODUCT_STATUS_META, getStatusText } from '@/constants/status'
 import { http } from '@/services/http'
+import { centToYuanNumber } from '@/utils/price'
 
 type StatMap = Record<string, number>
 
 type MerchantDashboard = {
   product_stats: StatMap
   order_stats: StatMap
+  on_shelf_total_amount_cent?: number
 }
 
 type StatusRow = {
@@ -99,14 +101,17 @@ export function DashboardPage() {
   return (
     <PageContainer title="全局" subTitle="当前商家经营数据总览">
       <ProCard gutter={[16, 16]} wrap>
-        <ProCard colSpan={{ xs: 24, md: 8 }} bordered>
+        <ProCard colSpan={{ xs: 24, md: 6 }} bordered>
           <Statistic title="商品总数" value={sumStats(productStats)} />
         </ProCard>
-        <ProCard colSpan={{ xs: 24, md: 8 }} bordered>
+        <ProCard colSpan={{ xs: 24, md: 6 }} bordered>
           <Statistic title="在售商品" value={productStats.on_shelf ?? 0} />
         </ProCard>
-        <ProCard colSpan={{ xs: 24, md: 8 }} bordered>
+        <ProCard colSpan={{ xs: 24, md: 6 }} bordered>
           <Statistic title="待处理订单" value={orderStats.created ?? 0} />
+        </ProCard>
+        <ProCard colSpan={{ xs: 24, md: 6 }} bordered>
+          <Statistic title="在售总金额" prefix="¥" value={centToYuanNumber(data?.on_shelf_total_amount_cent ?? 0)} precision={2} />
         </ProCard>
       </ProCard>
 

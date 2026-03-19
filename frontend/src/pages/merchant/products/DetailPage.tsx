@@ -14,6 +14,7 @@ type ProductDetail = {
   status: ProductStatus
   category_id: number
   price_cent: number
+  original_price_cent?: number | null
   condition_level: string
   stock: number
   images: number[]
@@ -124,6 +125,7 @@ export function DetailPage() {
             render: (_, row) => <Tag color={getStatusColor(PRODUCT_STATUS_META, row.status)}>{getStatusText(PRODUCT_STATUS_META, row.status)}</Tag>
           },
           { title: '价格(元)', dataIndex: 'price_cent', render: (_, row) => centToYuanText(row.price_cent) },
+          { title: '原价(元)', dataIndex: 'original_price_cent', render: (_, row) => (row.original_price_cent ? centToYuanText(row.original_price_cent) : '-') },
           { title: '库存', dataIndex: 'stock' },
           { title: '成色', dataIndex: 'condition_level' },
           { title: '分类ID', dataIndex: 'category_id' },

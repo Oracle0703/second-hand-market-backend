@@ -107,6 +107,7 @@ async function main() {
       description: 'smoke',
       category_id: categoryID,
       price_cent: 12345,
+      original_price_cent: 14500,
       condition_level: 'GOOD',
       stock: 1,
       image_file_ids: [imgPresign.data.file_id]
@@ -150,6 +151,7 @@ async function main() {
       description: 'smoke close flow',
       category_id: categoryID,
       price_cent: 12500,
+      original_price_cent: 14800,
       condition_level: 'GOOD',
       stock: 1,
       image_file_ids: [imgPresign.data.file_id]

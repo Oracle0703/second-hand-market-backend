@@ -36,7 +36,7 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	if req.Stock != nil && *req.Stock != 1 {
+	if req.OriginalPriceCent < req.PriceCent || req.Stock <= 0 {
 		common.Fail(c, common.ErrInvalidArgument)
 		return
 	}
@@ -45,18 +45,19 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		return
 	}
 	product := model.Product{
-		ProductNo:      common.BuildBizNo("P"),
-		MerchantID:     actor.MerchantID,
-		Title:          req.Title,
-		Description:    req.Description,
-		CategoryID:     req.CategoryID,
-		PriceCent:      req.PriceCent,
-		ConditionLevel: req.ConditionLevel,
-		Stock:          1,
-		Status:         model.ProductDraft,
-		CreatedBy:      actor.UserID,
-		UpdatedBy:      actor.UserID,
-		Version:        1,
+		ProductNo:         common.BuildBizNo("P"),
+		MerchantID:        actor.MerchantID,
+		Title:             req.Title,
+		Description:       req.Description,
+		CategoryID:        req.CategoryID,
+		PriceCent:         req.PriceCent,
+		OriginalPriceCent: &req.OriginalPriceCent,
+		ConditionLevel:    req.ConditionLevel,
+		Stock:             req.Stock,
+		Status:            model.ProductDraft,
+		CreatedBy:         actor.UserID,
+		UpdatedBy:         actor.UserID,
+		Version:           1,
 	}
 	if len(req.ImageFileIDs) > 0 {
 		cover := req.ImageFileIDs[0]
@@ -78,7 +79,14 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, gin.H{"product_id": product.ID, "product_no": product.ProductNo, "status": product.Status, "stock": product.Stock, "created_at": product.CreatedAt})
+	common.Success(c, gin.H{
+		"product_id":          product.ID,
+		"product_no":          product.ProductNo,
+		"status":              product.Status,
+		"stock":               product.Stock,
+		"original_price_cent": product.OriginalPriceCent,
+		"created_at":          product.CreatedAt,
+	})
 }
 
 func (s *Server) handleUpdateProduct(c *gin.Context) {
@@ -130,11 +138,26 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 			}
 			product.PriceCent = *req.PriceCent
 		}
+		if req.OriginalPriceCent != nil {
+			if !allowed["original_price_cent"] || *req.OriginalPriceCent <= 0 {
+				return common.ErrInvalidTransition
+			}
+			product.OriginalPriceCent = req.OriginalPriceCent
+		}
 		if req.ConditionLevel != nil {
 			if !allowed["condition_level"] {
 				return common.ErrInvalidTransition
 			}
 			product.ConditionLevel = *req.ConditionLevel
+		}
+		if req.Stock != nil {
+			if !allowed["stock"] || *req.Stock <= 0 {
+				return common.ErrInvalidTransition
+			}
+			product.Stock = *req.Stock
+		}
+		if product.OriginalPriceCent != nil && *product.OriginalPriceCent < product.PriceCent {
+			return common.ErrInvalidArgument
 		}
 		if req.ImageFileIDs != nil {
 			if !allowed["image_file_ids"] || len(req.ImageFileIDs) == 0 || len(req.ImageFileIDs) > 5 {
@@ -211,17 +234,18 @@ func (s *Server) handleProductDetail(c *gin.Context) {
 		}
 	}
 	common.Success(c, gin.H{"product": gin.H{
-		"id":              product.ID,
-		"title":           product.Title,
-		"description":     product.Description,
-		"status":          product.Status,
-		"category_id":     product.CategoryID,
-		"price_cent":      product.PriceCent,
-		"condition_level": product.ConditionLevel,
-		"stock":           product.Stock,
-		"images":          imgIDs,
-		"image_urls":      imgURLs,
-		"active_order_id": product.ActiveOrderID,
+		"id":                  product.ID,
+		"title":               product.Title,
+		"description":         product.Description,
+		"status":              product.Status,
+		"category_id":         product.CategoryID,
+		"price_cent":          product.PriceCent,
+		"original_price_cent": product.OriginalPriceCent,
+		"condition_level":     product.ConditionLevel,
+		"stock":               product.Stock,
+		"images":              imgIDs,
+		"image_urls":          imgURLs,
+		"active_order_id":     product.ActiveOrderID,
 	}})
 }
 
@@ -261,6 +285,7 @@ func (s *Server) handleProductList(c *gin.Context) {
 		Title              string    `json:"title"`
 		Status             string    `json:"status"`
 		PriceCent          int       `json:"price_cent"`
+		OriginalPriceCent  *int      `json:"original_price_cent"`
 		Stock              int       `json:"stock"`
 		UpdatedAt          time.Time `json:"updated_at"`
 		CategoryLevel1ID   *uint64   `json:"category_level1_id"`
@@ -270,7 +295,7 @@ func (s *Server) handleProductList(c *gin.Context) {
 	}
 	items := make([]item, 0, size)
 	if err := query.Select(
-		"p.id, p.title, p.status, p.price_cent, p.stock, p.updated_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+		"p.id, p.title, p.status, p.price_cent, p.original_price_cent, p.stock, p.updated_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
 	).Order("p.updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return

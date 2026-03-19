@@ -40,22 +40,25 @@ type UpdatePasswordRequest struct {
 }
 
 type CreateProductRequest struct {
-	Title          string   `json:"title" binding:"required,min=2,max=128"`
-	Description    string   `json:"description" binding:"required,min=2,max=5000"`
-	CategoryID     uint64   `json:"category_id" binding:"required"`
-	PriceCent      int      `json:"price_cent" binding:"required,gt=0"`
-	ConditionLevel string   `json:"condition_level" binding:"required,oneof=LIKE_NEW GOOD FAIR POOR"`
-	Stock          *int     `json:"stock"`
-	ImageFileIDs   []uint64 `json:"image_file_ids" binding:"required,min=1,max=5,dive,gt=0"`
+	Title             string   `json:"title" binding:"required,min=2,max=128"`
+	Description       string   `json:"description" binding:"required,min=2,max=5000"`
+	CategoryID        uint64   `json:"category_id" binding:"required"`
+	PriceCent         int      `json:"price_cent" binding:"required,gt=0"`
+	OriginalPriceCent int      `json:"original_price_cent" binding:"required,gt=0"`
+	ConditionLevel    string   `json:"condition_level" binding:"required,oneof=LIKE_NEW GOOD FAIR POOR"`
+	Stock             int      `json:"stock" binding:"required,gt=0"`
+	ImageFileIDs      []uint64 `json:"image_file_ids" binding:"required,min=1,max=5,dive,gt=0"`
 }
 
 type UpdateProductRequest struct {
-	Title          *string  `json:"title"`
-	Description    *string  `json:"description"`
-	CategoryID     *uint64  `json:"category_id"`
-	PriceCent      *int     `json:"price_cent"`
-	ConditionLevel *string  `json:"condition_level"`
-	ImageFileIDs   []uint64 `json:"image_file_ids"`
+	Title             *string  `json:"title"`
+	Description       *string  `json:"description"`
+	CategoryID        *uint64  `json:"category_id"`
+	PriceCent         *int     `json:"price_cent"`
+	OriginalPriceCent *int     `json:"original_price_cent"`
+	ConditionLevel    *string  `json:"condition_level"`
+	Stock             *int     `json:"stock"`
+	ImageFileIDs      []uint64 `json:"image_file_ids"`
 }
 
 type CreateOrderRequest struct {

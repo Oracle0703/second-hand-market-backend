@@ -13,6 +13,7 @@ type ProductItem = {
   title: string
   status: ProductStatus
   price_cent: number
+  original_price_cent?: number | null
   stock: number
   updated_at: string
   category_level1_id?: number | null
@@ -190,6 +191,19 @@ export function ListPage() {
       search: false,
       width: 100,
       render: (_, row) => centToYuanText(row.price_cent)
+    },
+    {
+      title: '原价(元)',
+      dataIndex: 'original_price_cent',
+      search: false,
+      width: 100,
+      render: (_, row) => (row.original_price_cent ? centToYuanText(row.original_price_cent) : '-')
+    },
+    {
+      title: '库存',
+      dataIndex: 'stock',
+      search: false,
+      width: 80
     },
     {
       title: '状态',
