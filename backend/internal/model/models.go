@@ -117,15 +117,15 @@ type MerchantAuditLog struct {
 }
 
 type Category struct {
-	ID        uint64  `gorm:"primaryKey"`
-	ParentID  *uint64 `gorm:"index:idx_parent_sort,priority:1"`
-	Level     int8    `gorm:"index:idx_level_status_sort,priority:1"`
-	Name      string  `gorm:"size:64;uniqueIndex:uk_parent_name,priority:2"`
-	Status    string  `gorm:"size:16;index:idx_level_status_sort,priority:2"`
-	Sort      int     `gorm:"index:idx_parent_sort,priority:2;index:idx_level_status_sort,priority:3"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
+	ID        uint64         `gorm:"primaryKey" json:"id"`
+	ParentID  *uint64        `gorm:"index:idx_parent_sort,priority:1" json:"parent_id"`
+	Level     int8           `gorm:"index:idx_level_status_sort,priority:1" json:"level"`
+	Name      string         `gorm:"size:64;uniqueIndex:uk_parent_name,priority:2" json:"name"`
+	Status    string         `gorm:"size:16;index:idx_level_status_sort,priority:2" json:"status"`
+	Sort      int            `gorm:"index:idx_parent_sort,priority:2;index:idx_level_status_sort,priority:3" json:"sort"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
 func (c Category) TableName() string {
@@ -244,18 +244,19 @@ type AuthSession struct {
 }
 
 type BuyerUser struct {
-	ID          uint64  `gorm:"primaryKey"`
-	BuyerNo     string  `gorm:"size:32;uniqueIndex"`
-	OpenID      string  `gorm:"column:openid;size:64;uniqueIndex"`
-	UnionID     *string `gorm:"column:unionid;size:64;index"`
-	Nickname    *string `gorm:"size:64"`
-	AvatarURL   *string `gorm:"size:500"`
-	Phone       *string `gorm:"size:20"`
-	Status      string  `gorm:"size:16;index:idx_status_created,priority:1"`
-	LastLoginAt *time.Time
-	CreatedAt   time.Time `gorm:"index:idx_status_created,priority:2"`
-	UpdatedAt   time.Time
-	DeletedAt   gorm.DeletedAt `gorm:"index"`
+	ID           uint64  `gorm:"primaryKey"`
+	BuyerNo      string  `gorm:"size:32;uniqueIndex"`
+	AuthProvider string  `gorm:"column:auth_provider;size:16;default:wechat;uniqueIndex:uk_buyer_provider_openid,priority:1"`
+	OpenID       string  `gorm:"column:openid;size:64;uniqueIndex:uk_buyer_provider_openid,priority:2"`
+	UnionID      *string `gorm:"column:unionid;size:64;index"`
+	Nickname     *string `gorm:"size:64"`
+	AvatarURL    *string `gorm:"size:500"`
+	Phone        *string `gorm:"size:20"`
+	Status       string  `gorm:"size:16;index:idx_status_created,priority:1"`
+	LastLoginAt  *time.Time
+	CreatedAt    time.Time `gorm:"index:idx_status_created,priority:2"`
+	UpdatedAt    time.Time
+	DeletedAt    gorm.DeletedAt `gorm:"index"`
 }
 
 type BuyerDeviceBinding struct {

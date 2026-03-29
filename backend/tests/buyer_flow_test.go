@@ -16,6 +16,16 @@ func buyerLogin(t *testing.T, srv interface{ Router() http.Handler }, code, devi
 	}, nil)
 }
 
+func buyerMiniappLogin(t *testing.T, srv interface{ Router() http.Handler }, provider, code, deviceID string) apiResp {
+	t.Helper()
+	return requestJSON(t, srv.Router(), http.MethodPost, "/api/v1/buyer/auth/miniapp-login", map[string]interface{}{
+		"provider":  provider,
+		"code":      code,
+		"device_id": deviceID,
+		"nickname":  provider + "-" + code,
+	}, nil)
+}
+
 // adapter keeps helper ergonomic without changing existing test helpers.
 type serverAdapter struct{ h http.Handler }
 
@@ -59,6 +69,39 @@ func TestBuyerAuthRefreshLogout(t *testing.T) {
 	}
 }
 
+func TestBuyerMiniappLoginSupportsDouyinAndProviderIsolation(t *testing.T) {
+	srv := newTestServer(t)
+
+	douyinLogin := buyerMiniappLogin(t, serverAdapter{h: srv.Router}, "douyin", "shared-code-001", "dev-tt-001")
+	if douyinLogin.Code != 0 {
+		t.Fatalf("douyin miniapp login failed: %+v", douyinLogin)
+	}
+	douyinUser, _ := douyinLogin.Data["user"].(map[string]interface{})
+	if str(douyinUser["auth_provider"]) != "douyin" {
+		t.Fatalf("douyin auth_provider mismatch: %+v", douyinLogin)
+	}
+
+	douyinAgain := buyerMiniappLogin(t, serverAdapter{h: srv.Router}, "douyin", "shared-code-001", "dev-tt-002")
+	if douyinAgain.Code != 0 {
+		t.Fatalf("repeat douyin miniapp login failed: %+v", douyinAgain)
+	}
+	if numToUint64(douyinUser["id"]) != numToUint64(douyinAgain.Data["user"].(map[string]interface{})["id"]) {
+		t.Fatalf("same douyin code should map to same buyer: first=%+v second=%+v", douyinLogin, douyinAgain)
+	}
+
+	wechatLogin := buyerMiniappLogin(t, serverAdapter{h: srv.Router}, "wechat", "shared-code-001", "dev-wx-001")
+	if wechatLogin.Code != 0 {
+		t.Fatalf("wechat miniapp login failed: %+v", wechatLogin)
+	}
+	wechatUser, _ := wechatLogin.Data["user"].(map[string]interface{})
+	if str(wechatUser["auth_provider"]) != "wechat" {
+		t.Fatalf("wechat auth_provider mismatch: %+v", wechatLogin)
+	}
+	if numToUint64(douyinUser["id"]) == numToUint64(wechatUser["id"]) {
+		t.Fatalf("same code across providers should not reuse buyer: douyin=%+v wechat=%+v", douyinLogin, wechatLogin)
+	}
+}
+
 func TestBuyerGuestProductsBrowse(t *testing.T) {
 	srv := newTestServer(t)
 	adminToken := adminAccessToken(t, srv)
@@ -84,6 +127,9 @@ func TestBuyerGuestProductsBrowse(t *testing.T) {
 	if numToUint64(firstListItem["original_price_cent"]) == 0 {
 		t.Fatalf("buyer products list original_price_cent should be returned: %+v", list)
 	}
+	if str(firstListItem["cover_url"]) == "" {
+		t.Fatalf("buyer products list cover_url should be returned: %+v", list)
+	}
 	detail := requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d", productID), nil, headers)
 	if detail.Code != 0 {
 		t.Fatalf("buyer guest products detail failed: %+v", detail)
@@ -97,6 +143,31 @@ func TestBuyerGuestProductsBrowse(t *testing.T) {
 	}
 	if numToUint64(detailProduct["original_price_cent"]) == 0 {
 		t.Fatalf("buyer product detail original_price_cent should be returned: %+v", detail)
+	}
+}
+
+func TestBuyerCategoriesUseLowercaseFields(t *testing.T) {
+	srv := newTestServer(t)
+	resp := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/categories?level=1", nil, map[string]string{"X-Device-Id": "dev-cat-001"})
+	if resp.Code != 0 {
+		t.Fatalf("buyer categories failed: %+v", resp)
+	}
+	items, ok := resp.Data["items"].([]interface{})
+	if !ok || len(items) == 0 {
+		t.Fatalf("buyer categories should not be empty: %+v", resp)
+	}
+	first, ok := items[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("buyer categories item invalid: %+v", resp)
+	}
+	if _, exists := first["id"]; !exists {
+		t.Fatalf("buyer categories should use lowercase id: %+v", resp)
+	}
+	if _, exists := first["name"]; !exists {
+		t.Fatalf("buyer categories should use lowercase name: %+v", resp)
+	}
+	if _, exists := first["level"]; !exists {
+		t.Fatalf("buyer categories should use lowercase level: %+v", resp)
 	}
 }
 

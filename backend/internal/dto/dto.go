@@ -85,7 +85,8 @@ type ConfirmUploadRequest struct {
 	ObjectKey string `json:"object_key" binding:"required"`
 }
 
-type BuyerWechatLoginRequest struct {
+type BuyerMiniProgramLoginRequest struct {
+	Provider  string  `json:"provider"`
 	Code      string  `json:"code" binding:"required"`
 	DeviceID  string  `json:"device_id" binding:"required,min=8,max=64"`
 	Nickname  *string `json:"nickname"`

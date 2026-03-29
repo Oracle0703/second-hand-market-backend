@@ -269,6 +269,7 @@ func (s *Server) registerRoutes() {
 			buyer.GET("/products", s.handleBuyerProducts)
 			buyer.GET("/products/:id", s.handleBuyerProductDetail)
 
+			buyer.POST("/auth/miniapp-login", s.handleBuyerMiniProgramLogin)
 			buyer.POST("/auth/wechat-login", s.handleBuyerWechatLogin)
 			buyer.POST("/auth/refresh", s.handleRefresh)
 			buyer.POST("/auth/logout", middleware.RequireAuth(model.UserTypeBuyer), s.handleLogout)

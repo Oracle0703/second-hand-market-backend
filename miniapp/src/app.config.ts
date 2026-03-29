@@ -26,19 +26,27 @@ const config = {
     list: [
       {
         pagePath: 'pages/home/index',
-        text: '首页'
+        text: '首页',
+        iconPath: 'assets/tabbar/home.png',
+        selectedIconPath: 'assets/tabbar/home-active.png'
       },
       {
         pagePath: 'pages/category/index',
-        text: '分类'
+        text: '分类',
+        iconPath: 'assets/tabbar/category.png',
+        selectedIconPath: 'assets/tabbar/category-active.png'
       },
       {
         pagePath: 'pages/favorite/index',
-        text: '收藏'
+        text: '收藏',
+        iconPath: 'assets/tabbar/favorite.png',
+        selectedIconPath: 'assets/tabbar/favorite-active.png'
       },
       {
         pagePath: 'pages/me/index',
-        text: '我的'
+        text: '我的',
+        iconPath: 'assets/tabbar/me.png',
+        selectedIconPath: 'assets/tabbar/me-active.png'
       }
     ]
   }

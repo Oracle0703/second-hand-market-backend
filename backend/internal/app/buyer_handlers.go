@@ -97,20 +97,85 @@ func (s *Server) loadProductCoverURLMap(productIDs []uint64) (map[uint64]string,
 	if len(productIDs) == 0 {
 		return result, nil
 	}
-	type row struct {
-		ID  uint64
-		URL string
-	}
-	rows := make([]row, 0, len(productIDs))
-	if err := s.DB.Table("products AS p").
-		Select("p.id, COALESCE(f.url, '') AS url").
-		Joins("LEFT JOIN files AS f ON f.id = p.cover_file_id").
-		Where("p.id IN ?", productIDs).
-		Find(&rows).Error; err != nil {
+
+	products := make([]model.Product, 0, len(productIDs))
+	if err := s.DB.Select("id", "cover_file_id").Where("id IN ?", productIDs).Find(&products).Error; err != nil {
 		return nil, err
 	}
-	for _, it := range rows {
-		result[it.ID] = it.URL
+
+	coverFileIDs := make([]uint64, 0, len(products))
+	productByCoverID := map[uint64][]uint64{}
+	for _, product := range products {
+		if product.CoverFileID == nil || *product.CoverFileID == 0 {
+			continue
+		}
+		coverFileIDs = append(coverFileIDs, *product.CoverFileID)
+		productByCoverID[*product.CoverFileID] = append(productByCoverID[*product.CoverFileID], product.ID)
+	}
+
+	if len(coverFileIDs) > 0 {
+		var files []model.FileRecord
+		if err := s.DB.Where("id IN ?", coverFileIDs).Find(&files).Error; err != nil {
+			return nil, err
+		}
+		for _, file := range files {
+			url := strings.TrimSpace(file.URL)
+			if url == "" && strings.TrimSpace(file.ObjectKey) != "" {
+				url = s.publicFileURL(file.ObjectKey)
+			}
+			if url == "" {
+				continue
+			}
+			for _, productID := range productByCoverID[file.ID] {
+				result[productID] = url
+			}
+		}
+	}
+
+	missing := make([]uint64, 0)
+	for _, productID := range productIDs {
+		if strings.TrimSpace(result[productID]) == "" {
+			missing = append(missing, productID)
+		}
+	}
+	if len(missing) == 0 {
+		return result, nil
+	}
+
+	var productImages []model.ProductImage
+	if err := s.DB.Where("product_id IN ?", missing).Order("product_id ASC, sort_order ASC, id ASC").Find(&productImages).Error; err != nil {
+		return nil, err
+	}
+
+	fileIDs := make([]uint64, 0, len(productImages))
+	for _, image := range productImages {
+		fileIDs = append(fileIDs, image.FileID)
+	}
+	fileURLMap := map[uint64]string{}
+	if len(fileIDs) > 0 {
+		var files []model.FileRecord
+		if err := s.DB.Where("id IN ?", fileIDs).Find(&files).Error; err != nil {
+			return nil, err
+		}
+		for _, file := range files {
+			url := strings.TrimSpace(file.URL)
+			if url == "" && strings.TrimSpace(file.ObjectKey) != "" {
+				url = s.publicFileURL(file.ObjectKey)
+			}
+			if url != "" {
+				fileURLMap[file.ID] = url
+			}
+		}
+	}
+
+	for _, image := range productImages {
+		if strings.TrimSpace(result[image.ProductID]) != "" {
+			continue
+		}
+		url := strings.TrimSpace(fileURLMap[image.FileID])
+		if url != "" {
+			result[image.ProductID] = url
+		}
 	}
 	return result, nil
 }
@@ -327,58 +392,70 @@ func (s *Server) loadBuyerVisibleProduct(productID uint64) (model.Product, error
 	return product, nil
 }
 
-func (s *Server) handleBuyerWechatLogin(c *gin.Context) {
-	var req dto.BuyerWechatLoginRequest
+func (s *Server) handleBuyerMiniProgramLogin(c *gin.Context) {
+	var req dto.BuyerMiniProgramLoginRequest
 	if err := bindJSON(c, &req); err != nil {
 		common.Fail(c, err)
 		return
 	}
-	if err := s.checkRateLimit("buyer:wechat_login:device", req.DeviceID, 20, time.Minute); err != nil {
+	if err := s.handleBuyerMiniProgramLoginRequest(c, req); err != nil {
+		common.Fail(c, err)
+	}
+}
+
+func (s *Server) handleBuyerWechatLogin(c *gin.Context) {
+	var req dto.BuyerMiniProgramLoginRequest
+	if err := bindJSON(c, &req); err != nil {
 		common.Fail(c, err)
 		return
 	}
-	if err := s.checkRateLimit("buyer:wechat_login:ip", c.ClientIP(), 120, time.Minute); err != nil {
+	req.Provider = miniProgramProviderWechat
+	if err := s.handleBuyerMiniProgramLoginRequest(c, req); err != nil {
 		common.Fail(c, err)
-		return
+	}
+}
+
+func (s *Server) handleBuyerMiniProgramLoginRequest(c *gin.Context, req dto.BuyerMiniProgramLoginRequest) error {
+	if err := s.checkRateLimit("buyer:miniapp_login:device", req.DeviceID, 20, time.Minute); err != nil {
+		return err
+	}
+	if err := s.checkRateLimit("buyer:miniapp_login:ip", c.ClientIP(), 120, time.Minute); err != nil {
+		return err
 	}
 
 	now := time.Now()
-	openid, unionid, resolveErr := s.resolveWechatIdentity(req.Code)
+	provider, openid, unionid, resolveErr := s.resolveMiniProgramIdentity(req.Provider, req.Code)
 	if resolveErr != nil {
-		common.Fail(c, s.wrapWechatLoginError(resolveErr))
-		return
+		return s.wrapMiniProgramLoginError(resolveErr)
 	}
 
 	var buyer model.BuyerUser
-	err := s.DB.Where("openid = ?", openid).First(&buyer).Error
+	err := s.DB.Where("auth_provider = ? AND openid = ?", provider, openid).First(&buyer).Error
 	if err == gorm.ErrRecordNotFound {
 		buyer = model.BuyerUser{
-			BuyerNo:   common.BuildBizNo("B"),
-			OpenID:    openid,
-			UnionID:   unionid,
-			Status:    model.BuyerStatusActive,
-			Nickname:  trimOptional(req.Nickname),
-			AvatarURL: trimOptional(req.AvatarURL),
+			BuyerNo:      common.BuildBizNo("B"),
+			AuthProvider: provider,
+			OpenID:       openid,
+			UnionID:      unionid,
+			Status:       model.BuyerStatusActive,
+			Nickname:     trimOptional(req.Nickname),
+			AvatarURL:    trimOptional(req.AvatarURL),
 		}
 		if err := s.DB.Create(&buyer).Error; err != nil {
-			common.Fail(c, common.ErrInternal)
-			return
+			return common.ErrInternal
 		}
 	} else if err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
+		return common.ErrInternal
 	} else {
 		if buyer.Status == model.BuyerStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
+			return common.ErrAccountDisabled
 		}
 		updates := map[string]interface{}{"last_login_at": &now}
 		setOptionalUpdate(updates, "nickname", req.Nickname)
 		setOptionalUpdate(updates, "avatar_url", req.AvatarURL)
 		setOptionalUpdate(updates, "unionid", unionid)
 		if err := s.DB.Model(&model.BuyerUser{}).Where("id = ?", buyer.ID).Updates(updates).Error; err != nil {
-			common.Fail(c, common.ErrInternal)
-			return
+			return common.ErrInternal
 		}
 		setOptionalModelField(&buyer.Nickname, req.Nickname)
 		setOptionalModelField(&buyer.AvatarURL, req.AvatarURL)
@@ -397,17 +474,19 @@ func (s *Server) handleBuyerWechatLogin(c *gin.Context) {
 		}
 		return tx.Model(&model.BuyerDeviceBinding{}).Where("id = ?", binding.ID).Update("last_bind_at", now).Error
 	}); err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
+		return common.ErrInternal
 	}
 
 	data, err := s.issueTokens(c, model.UserTypeBuyer, buyer.ID, model.UserTypeBuyer, 0, "full")
 	if err != nil {
-		common.Fail(c, err)
-		return
+		return err
 	}
-	data["user"] = gin.H{"id": buyer.ID, "buyer_no": buyer.BuyerNo, "nickname": buyer.Nickname, "avatar_url": buyer.AvatarURL, "phone": buyer.Phone}
+	data["user"] = gin.H{
+		"id": buyer.ID, "buyer_no": buyer.BuyerNo, "auth_provider": buyer.AuthProvider,
+		"nickname": buyer.Nickname, "avatar_url": buyer.AvatarURL, "phone": buyer.Phone,
+	}
 	common.Success(c, data)
+	return nil
 }
 
 func (s *Server) handleBuyerGuestMerge(c *gin.Context) {

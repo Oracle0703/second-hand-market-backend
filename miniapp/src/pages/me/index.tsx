@@ -1,13 +1,15 @@
 import React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery } from '@/libs/react-query'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { fetchSummary, logoutBuyer } from '../../services/buyer'
 import { useSessionStore } from '../../stores/session'
+import { getMiniProgramPlatform } from '../../utils/platform'
 
 export default function MePage() {
   const clearSession = useSessionStore((state) => state.clearSession)
   const summary = useQuery({ queryKey: ['buyer-summary'], queryFn: fetchSummary })
+  const platform = getMiniProgramPlatform()
 
   useDidShow(() => {
     summary.refetch()
@@ -29,7 +31,7 @@ export default function MePage() {
       <View className="card" style={{ marginBottom: '16rpx' }}>
         <View className="title">我的</View>
         {data?.is_login ? (
-          <Text>{data.profile?.nickname || '微信买家'}</Text>
+          <Text>{data.profile?.nickname || platform.defaultNickname}</Text>
         ) : (
           <Text>当前为游客模式</Text>
         )}

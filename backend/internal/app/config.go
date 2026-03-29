@@ -23,6 +23,11 @@ type Config struct {
 	BuyerWechatAppSecret       string
 	BuyerWechatCode2SessionURL string
 	BuyerWechatHTTPTimeout     time.Duration
+	BuyerDouyinLoginMode       string
+	BuyerDouyinAppID           string
+	BuyerDouyinAppSecret       string
+	BuyerDouyinCode2SessionURL string
+	BuyerDouyinHTTPTimeout     time.Duration
 }
 
 func LoadConfig() Config {
@@ -43,6 +48,11 @@ func LoadConfig() Config {
 		BuyerWechatAppSecret:       getEnv("BUYER_WECHAT_APP_SECRET", ""),
 		BuyerWechatCode2SessionURL: getEnv("BUYER_WECHAT_CODE2SESSION_URL", "https://api.weixin.qq.com/sns/jscode2session"),
 		BuyerWechatHTTPTimeout:     5 * time.Second,
+		BuyerDouyinLoginMode:       getEnv("BUYER_DOUYIN_LOGIN_MODE", "mock"),
+		BuyerDouyinAppID:           getEnv("BUYER_DOUYIN_APP_ID", ""),
+		BuyerDouyinAppSecret:       getEnv("BUYER_DOUYIN_APP_SECRET", ""),
+		BuyerDouyinCode2SessionURL: getEnv("BUYER_DOUYIN_CODE2SESSION_URL", "https://developer.toutiao.com/api/apps/v2/jscode2session"),
+		BuyerDouyinHTTPTimeout:     5 * time.Second,
 	}
 	if v := os.Getenv("ACCESS_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -57,6 +67,11 @@ func LoadConfig() Config {
 	if v := os.Getenv("BUYER_WECHAT_HTTP_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.BuyerWechatHTTPTimeout = time.Duration(n) * time.Second
+		}
+	}
+	if v := os.Getenv("BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.BuyerDouyinHTTPTimeout = time.Duration(n) * time.Second
 		}
 	}
 	return cfg

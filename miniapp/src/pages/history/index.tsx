@@ -1,5 +1,5 @@
 import React from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
 import Taro from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { BuyerHistoryItem, clearHistories, listHistories } from '../../services/buyer'

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@/libs/react-query'
 import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { Button, Input, Text, Textarea, View } from '@tarojs/components'
 import { createIntent, fetchBuyerProductDetail } from '../../../services/buyer'

@@ -36,6 +36,11 @@
 | `BUYER_WECHAT_APP_SECRET` | 空 | `real` 模式必填，微信 AppSecret |
 | `BUYER_WECHAT_CODE2SESSION_URL` | 微信官方地址 | `code2session` 请求地址 |
 | `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | `5` | 微信接口超时时间（秒） |
+| `BUYER_DOUYIN_LOGIN_MODE` | `mock` | 买家抖音登录模式（`mock/real`） |
+| `BUYER_DOUYIN_APP_ID` | 空 | `real` 模式必填，抖音小程序 AppID |
+| `BUYER_DOUYIN_APP_SECRET` | 空 | `real` 模式必填，抖音小程序 AppSecret |
+| `BUYER_DOUYIN_CODE2SESSION_URL` | 抖音官方地址 | `code2session` 请求地址 |
+| `BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS` | `5` | 抖音接口超时时间（秒） |
 
 生产（MySQL）可参考：`backend/configs/.env.production.mysql.example`  
 生产（SQLite，仅临时/单机）可参考：`backend/configs/.env.production.sqlite.example`
@@ -53,6 +58,20 @@
 | 变量 | 示例 | 说明 |
 | --- | --- | --- |
 | `TARO_APP_API_BASE_URL` | `http://localhost:8080/api/v1` | 小程序 API 地址（真机不能用 localhost） |
+
+微信构建：
+```bash
+cd miniapp
+npm install
+npm run dev:weapp
+```
+
+抖音构建：
+```bash
+cd miniapp
+npm install
+npm run dev:tt
+```
 
 ### 后端
 ```bash
@@ -82,6 +101,7 @@ CGO_ENABLED=0 go run ./cmd/server
 说明：
 - 在 macOS 未同意 Xcode License 时，`go run` 可能因为 cgo 失败；可用 `CGO_ENABLED=0` 启动。
 - 如需真实微信登录，需额外设置 `BUYER_WECHAT_LOGIN_MODE=real` 与微信密钥变量。
+- 如需真实抖音登录，需额外设置 `BUYER_DOUYIN_LOGIN_MODE=real` 与抖音密钥变量。
 - 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过 `/uploads/<object_key>` 提供访问（可通过 `FILE_PUBLIC_BASE_URL` 切换到 CDN/OSS 域名）。
 
 默认管理员账号（初始化自动写入）：

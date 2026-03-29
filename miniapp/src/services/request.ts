@@ -1,6 +1,9 @@
 import Taro from '@tarojs/taro'
 import { ensureDeviceID, useSessionStore } from '../stores/session'
 
+declare const __API_BASE_URL__: string
+declare const __DEV_MODE__: boolean
+
 type APIResponse<T> = {
   code: number
   message: string
@@ -16,7 +19,9 @@ type RequestOptions<T> = {
   retrying?: boolean
 }
 
-const BASE_URL = process.env.TARO_APP_API_BASE_URL || 'http://localhost:8080/api/v1'
+type UnknownRecord = Record<string, unknown>
+
+const BASE_URL = (typeof __API_BASE_URL__ === 'string' && __API_BASE_URL__.trim()) || 'https://market.meaningful.ink/api/api/v1'
 let refreshingPromise: Promise<boolean> | null = null
 
 function buildURL(path: string): string {
@@ -34,6 +39,32 @@ function withQuery(path: string, data?: Record<string, unknown>): string {
   return `${path}${path.includes('?') ? '&' : '?'}${params}`
 }
 
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null
+}
+
+function isAPIResponse<T>(payload: unknown): payload is APIResponse<T> {
+  return isRecord(payload) && typeof payload.code === 'number'
+}
+
+function formatPayloadSummary(payload: unknown): string {
+  if (typeof payload === 'string') {
+    return `string:${payload.slice(0, 200)}`
+  }
+  if (isRecord(payload)) {
+    return `object keys=${Object.keys(payload).slice(0, 10).join(',') || '(none)'}`
+  }
+  if (payload === null) {
+    return 'null'
+  }
+  return typeof payload
+}
+
+function buildMalformedResponseError(res: Taro.request.SuccessCallbackResult<unknown>, url: string): Error {
+  const detail = `API response malformed: status=${res.statusCode}, url=${url}, payload=${formatPayloadSummary(res.data)}`
+  return new Error(detail)
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   const { refreshToken, clearSession, setSession, profile } = useSessionStore.getState()
   if (!refreshToken) return false
@@ -48,6 +79,13 @@ async function refreshAccessToken(): Promise<boolean> {
       }
     })
     const payload = res.data
+    if (!isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
+      if (__DEV_MODE__) {
+        console.error('[miniapp-api] refresh malformed response', res.statusCode, res.header, res.data)
+      }
+      clearSession()
+      return false
+    }
     if (payload.code !== 0) {
       clearSession()
       return false
@@ -72,13 +110,37 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
   }
 
   const path = options.method === 'GET' ? withQuery(options.path, options.data) : options.path
-  const res = await Taro.request<APIResponse<T>>({
-    url: buildURL(path),
-    method: options.method,
-    data: options.method === 'GET' ? undefined : options.data,
-    header: headers
-  })
+  const url = buildURL(path)
+  if (__DEV_MODE__) {
+    console.log('[miniapp-api] request', options.method, url)
+  }
+  let res
+  try {
+    res = await Taro.request<APIResponse<T>>({
+      url,
+      method: options.method,
+      data: options.method === 'GET' ? undefined : options.data,
+      header: headers
+    })
+  } catch (err) {
+    if (__DEV_MODE__) {
+      console.error('[miniapp-api] request failed', options.method, url, err)
+    }
+    throw err
+  }
   const payload = res.data
+
+  if (__DEV_MODE__) {
+    console.log('[miniapp-api] response', options.method, url, res.statusCode, res.header, payload)
+  }
+
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw new Error(`request failed: status=${res.statusCode}, url=${url}, payload=${formatPayloadSummary(payload)}`)
+  }
+
+  if (!isAPIResponse<T>(payload)) {
+    throw buildMalformedResponseError(res as Taro.request.SuccessCallbackResult<unknown>, url)
+  }
 
   if (payload.code === 0) {
     return payload.data

@@ -1,0 +1,12 @@
+{
+  "appid": "tt2d895b34b3e85ab501",
+  "compileType": "miniprogram",
+  "projectName": "second-hand-buyer-miniapp",
+  "projectname": "second-hand-buyer-miniapp",
+  "douyinProjectType": "native",
+  "setting": {
+    "es6": true,
+    "minified": true,
+    "urlCheck": true
+  }
+}

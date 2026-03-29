@@ -1,5 +1,5 @@
 import React from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider } from '@/libs/react-query'
 import { ensureDeviceID } from './stores/session'
 import './styles/app.scss'
 

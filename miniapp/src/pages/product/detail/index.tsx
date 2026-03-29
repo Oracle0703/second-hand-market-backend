@@ -1,5 +1,5 @@
 import React from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
 import Taro, { useRouter, useShareAppMessage } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'

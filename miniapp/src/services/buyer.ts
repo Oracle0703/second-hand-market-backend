@@ -1,5 +1,18 @@
 import { apiRequest } from './request'
 
+type RawCategoryItem = {
+  id?: number
+  ID?: number
+  parent_id?: number
+  ParentID?: number
+  level?: number
+  Level?: number
+  name?: string
+  Name?: string
+  sort?: number
+  Sort?: number
+}
+
 export type BuyerProduct = {
   id: number
   title: string
@@ -65,17 +78,31 @@ export function fetchBuyerProductDetail(id: string | number) {
 }
 
 export function fetchBuyerCategories(params: Record<string, unknown> = {}) {
-  return apiRequest<{ items: Array<{ id: number; parent_id?: number; level: number; name: string; sort: number }> }>({
+  return apiRequest<{ items: RawCategoryItem[] }>({
     method: 'GET',
     path: '/buyer/categories',
     data: params
-  })
+  }).then((result) => ({
+    items: (result.items || []).map((item) => ({
+      id: item.id ?? item.ID ?? 0,
+      parent_id: item.parent_id ?? item.ParentID,
+      level: item.level ?? item.Level ?? 0,
+      name: item.name ?? item.Name ?? '',
+      sort: item.sort ?? item.Sort ?? 0
+    }))
+  }))
 }
 
-export function loginByWechat(payload: { code: string; device_id: string; nickname?: string; avatar_url?: string }) {
+export function loginByMiniProgram(payload: {
+  provider: 'wechat' | 'douyin'
+  code: string
+  device_id: string
+  nickname?: string
+  avatar_url?: string
+}) {
   return apiRequest<{ access_token: string; refresh_token: string; expires_in: number; user: any }>({
     method: 'POST',
-    path: '/buyer/auth/wechat-login',
+    path: '/buyer/auth/miniapp-login',
     data: payload,
     skipAuth: true
   })

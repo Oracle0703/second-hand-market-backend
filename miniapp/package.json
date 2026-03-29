@@ -5,6 +5,8 @@
   "scripts": {
     "dev:weapp": "taro build --type weapp --watch",
     "build:weapp": "taro build --type weapp",
+    "dev:tt": "taro build --type tt --watch",
+    "build:tt": "taro build --type tt",
     "test": "vitest run"
   },
   "dependencies": {

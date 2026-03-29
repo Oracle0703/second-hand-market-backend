@@ -2,6 +2,12 @@ import { defineConfig } from '@tarojs/cli'
 import devConfig from './dev'
 import prodConfig from './prod'
 
+const TaroEnv = process.env.TARO_ENV || 'weapp'
+const IsDev = process.env.NODE_ENV !== 'production'
+const ProductionAPIBaseURL = 'https://market.meaningful.ink/api/api/v1'
+const DefaultAPIBaseURL = TaroEnv === 'tt' || !IsDev ? ProductionAPIBaseURL : 'http://localhost:8080/api/v1'
+const APIBaseURL = process.env.TARO_APP_API_BASE_URL || DefaultAPIBaseURL
+
 export default defineConfig({
   projectName: 'second-hand-buyer-miniapp',
   date: '2026-03-11',
@@ -12,9 +18,14 @@ export default defineConfig({
     828: 1.81 / 2
   },
   sourceRoot: 'src',
-  outputRoot: 'dist',
+  outputRoot: `dist/${TaroEnv}`,
   framework: 'react',
-  compiler: 'webpack5',
+  compiler: {
+    type: 'webpack5',
+    prebundle: {
+      enable: false
+    }
+  },
   mini: {
     postcss: {
       pxtransform: {
@@ -37,6 +48,10 @@ export default defineConfig({
     }
   },
   plugins: [],
+  defineConstants: {
+    __API_BASE_URL__: JSON.stringify(APIBaseURL),
+    __DEV_MODE__: JSON.stringify(IsDev)
+  },
   alias: {
     '@': require('path').resolve(__dirname, '..', 'src')
   }

@@ -1,13 +1,15 @@
 import React, { useState } from 'react'
 import Taro, { useRouter } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
-import { loginByWechat, mergeGuest } from '../../services/buyer'
+import { loginByMiniProgram, mergeGuest } from '../../services/buyer'
 import { ensureDeviceID, useSessionStore } from '../../stores/session'
+import { getMiniProgramPlatform } from '../../utils/platform'
 
 export default function LoginPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const platform = getMiniProgramPlatform()
 
   const onLogin = async () => {
     setLoading(true)
@@ -16,7 +18,12 @@ export default function LoginPage() {
       const loginRes = await Taro.login()
       const code = loginRes.code || `mock_${Date.now()}`
       const deviceID = ensureDeviceID()
-      const data = await loginByWechat({ code, device_id: deviceID, nickname: '微信买家' })
+      const data = await loginByMiniProgram({
+        provider: platform.provider,
+        code,
+        device_id: deviceID,
+        nickname: platform.defaultNickname
+      })
       useSessionStore.getState().setSession(data.access_token, data.refresh_token, data.user)
       await mergeGuest(deviceID)
 
@@ -36,7 +43,7 @@ export default function LoginPage() {
   return (
     <View className="page">
       <View className="card" style={{ textAlign: 'center' }}>
-        <View className="title">微信登录</View>
+        <View className="title">{platform.loginTitle}</View>
         <Text style={{ color: '#6f7c77' }}>登录后可提交意向并同步游客收藏/浏览记录</Text>
         <Button className="btn-primary" style={{ marginTop: '20rpx' }} loading={loading} onClick={onLogin}>
           授权登录
