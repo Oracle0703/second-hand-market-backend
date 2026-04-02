@@ -182,12 +182,15 @@ onboarding scope 黑名单：
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
 | `/files/presign` | POST | 获取上传凭证 | `biz_type(R), file_name(R), file_size(R), mime_type(R)` | `upload_url, object_key, file_id, expire_at` | ADMIN/MERCHANT/PUBLIC(注册场景) |
+| `/files/upload` | POST | 上传图片二进制内容 | `file_id(R), object_key(R), file(binary,R)` | `file_id, url, object_key, status` | ADMIN/MERCHANT/PUBLIC(注册场景) |
 | `/files/confirm` | POST | 上传完成确认 | `file_id(R), object_key(R)` | `file_id, url, status` | ADMIN/MERCHANT/PUBLIC(注册场景) |
 
 失败场景：
-1. MIME 或大小不合法返回 `10008`。
-2. `onboarding` token 上传 `PRODUCT_IMAGE` 返回 `10006`。
-3. `PUBLIC` 身份上传非资质类文件返回 `10003`。
+1. 仅允许 `jpeg/png/webp/heic/heif` 静态图片；`mov` 等视频返回 `10008`。
+2. 原图超过 `40MB` 返回 `10008`。
+3. 服务端会统一压缩图片，压缩目标为 `20MB`，但不是最终拒绝门槛。
+4. `onboarding` token 上传 `PRODUCT_IMAGE` 返回 `10006`。
+5. `PUBLIC` 身份上传非资质类文件返回 `10003`。
 
 ## 10. 审计日志模块（operation-logs）
 

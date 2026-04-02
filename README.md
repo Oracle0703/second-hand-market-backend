@@ -31,6 +31,10 @@
 | `FILE_STORAGE_PROVIDER` | `local` | 文件存储方式（当前支持 `local`，后续可扩展 OSS） |
 | `FILE_UPLOAD_LOCAL_DIR` | `uploads` | 本地上传落盘目录 |
 | `FILE_PUBLIC_BASE_URL` | 空 | 文件对外访问前缀；为空时默认 `/uploads` |
+| `FILE_UPLOAD_MAX_MB` | `40` | 图片原图上传上限（MB） |
+| `IMAGE_COMPRESS_TARGET_MB` | `20` | 服务端图片压缩目标大小（MB） |
+| `IMAGE_PROCESSOR_DRIVER` | `vips` | 图片处理驱动（`vips/passthrough`） |
+| `IMAGE_PROCESSOR_BIN` | `vips` | 图片处理命令路径 |
 | `BUYER_WECHAT_LOGIN_MODE` | `mock` | 买家微信登录模式（`mock/real`） |
 | `BUYER_WECHAT_APP_ID` | 空 | `real` 模式必填，微信 AppID |
 | `BUYER_WECHAT_APP_SECRET` | 空 | `real` 模式必填，微信 AppSecret |
@@ -103,6 +107,15 @@ CGO_ENABLED=0 go run ./cmd/server
 - 如需真实微信登录，需额外设置 `BUYER_WECHAT_LOGIN_MODE=real` 与微信密钥变量。
 - 如需真实抖音登录，需额外设置 `BUYER_DOUYIN_LOGIN_MODE=real` 与抖音密钥变量。
 - 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过 `/uploads/<object_key>` 提供访问（可通过 `FILE_PUBLIC_BASE_URL` 切换到 CDN/OSS 域名）。
+- 当前支持 `jpg/jpeg/png/webp/heic/heif`，苹果 `Live Photo` 仅支持其中静态图，不支持配套 `mov`。
+- 原图大小上限为 `40MB`；后端会统一压缩，优先将图片控制在 `20MB` 内。
+- 本地如未安装 `vips/libheif`，可临时设置 `IMAGE_PROCESSOR_DRIVER=passthrough`；生产 Docker 应使用 `vips`。
+
+### 后端 Docker
+```bash
+docker build -f backend/Dockerfile -t second-hand-market-backend .
+docker run --rm -p 8080:8080 --env-file backend/configs/.env.production.mysql.example second-hand-market-backend
+```
 
 默认管理员账号（初始化自动写入）：
 - `admin / Admin@123456`

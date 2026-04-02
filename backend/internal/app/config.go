@@ -18,6 +18,10 @@ type Config struct {
 	FileStorageProvider        string
 	FileUploadLocalDir         string
 	FilePublicBaseURL          string
+	FileUploadMaxBytes         int64
+	ImageCompressTargetBytes   int64
+	ImageProcessorDriver       string
+	ImageProcessorBin          string
 	BuyerWechatLoginMode       string
 	BuyerWechatAppID           string
 	BuyerWechatAppSecret       string
@@ -43,6 +47,10 @@ func LoadConfig() Config {
 		FileStorageProvider:        getEnv("FILE_STORAGE_PROVIDER", "local"),
 		FileUploadLocalDir:         getEnv("FILE_UPLOAD_LOCAL_DIR", "uploads"),
 		FilePublicBaseURL:          getEnv("FILE_PUBLIC_BASE_URL", ""),
+		FileUploadMaxBytes:         int64(getEnvInt("FILE_UPLOAD_MAX_MB", 40)) * 1024 * 1024,
+		ImageCompressTargetBytes:   int64(getEnvInt("IMAGE_COMPRESS_TARGET_MB", 20)) * 1024 * 1024,
+		ImageProcessorDriver:       getEnv("IMAGE_PROCESSOR_DRIVER", "vips"),
+		ImageProcessorBin:          getEnv("IMAGE_PROCESSOR_BIN", "vips"),
 		BuyerWechatLoginMode:       getEnv("BUYER_WECHAT_LOGIN_MODE", "mock"),
 		BuyerWechatAppID:           getEnv("BUYER_WECHAT_APP_ID", ""),
 		BuyerWechatAppSecret:       getEnv("BUYER_WECHAT_APP_SECRET", ""),
@@ -89,6 +97,16 @@ func getEnvBool(k string, d bool) bool {
 		b, err := strconv.ParseBool(v)
 		if err == nil {
 			return b
+		}
+	}
+	return d
+}
+
+func getEnvInt(k string, d int) int {
+	if v := os.Getenv(k); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil {
+			return n
 		}
 	}
 	return d

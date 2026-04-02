@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,10 +13,11 @@ import (
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
+	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/model"
 )
 
-const maxUploadSizeBytes int64 = 5 * 1024 * 1024
+const maxUploadSizeBytes int64 = media.DefaultMaxOriginalBytes
 
 var allowedMIMEs = map[string]bool{
 	"image/jpeg": true,
@@ -58,7 +58,7 @@ func (s *Server) handlePresign(c *gin.Context) {
 	}
 	bizType := strings.ToUpper(req.BizType)
 	mimeType := strings.ToLower(strings.TrimSpace(req.MIMEType))
-	if !allowedMIMEs[mimeType] || req.FileSize > maxUploadSizeBytes {
+	if !allowedMIMEs[mimeType] || req.FileSize > s.uploadSizeLimit() {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
@@ -119,7 +119,8 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		return
 	}
 	formFile, err := c.FormFile("file")
-	if err != nil || formFile == nil || formFile.Size <= 0 || formFile.Size > maxUploadSizeBytes {
+	limit := s.uploadSizeLimit()
+	if err != nil || formFile == nil || formFile.Size <= 0 || formFile.Size > limit {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
@@ -141,14 +142,30 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 	}
 	defer src.Close()
 
-	head := make([]byte, 512)
-	n, readErr := io.ReadFull(src, head)
-	if readErr != nil && readErr != io.ErrUnexpectedEOF {
+	content, err := io.ReadAll(io.LimitReader(src, limit+1))
+	if err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	if int64(len(content)) == 0 || int64(len(content)) > limit {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
-	detected := strings.ToLower(http.DetectContentType(head[:n]))
-	if !allowedMIMEs[detected] {
+	processor := s.imageProcessor
+	if processor == nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	processed, err := processor.Process(c.Request.Context(), media.ProcessRequest{
+		FileName:  formFile.Filename,
+		InputMIME: file.MimeType,
+		Content:   content,
+	})
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	if len(processed.Content) == 0 || !media.IsAllowedImageMIME(processed.OutputMIME) {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
@@ -168,27 +185,10 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	var written int64
 	writeAndClose := func() error {
 		defer out.Close()
-		if n > 0 {
-			m, werr := out.Write(head[:n])
-			if werr != nil {
-				return werr
-			}
-			written += int64(m)
-		}
-		limit := maxUploadSizeBytes - written + 1
-		if limit <= 0 {
-			return common.ErrInvalidUpload
-		}
-		copied, cerr := io.Copy(out, io.LimitReader(src, limit))
-		if cerr != nil {
-			return cerr
-		}
-		written += copied
-		if written > maxUploadSizeBytes {
-			return common.ErrInvalidUpload
+		if _, err := out.Write(processed.Content); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -211,8 +211,8 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 	updates := map[string]interface{}{
 		"url":         url,
 		"scan_status": model.FileScanPass,
-		"mime_type":   detected,
-		"size_bytes":  written,
+		"mime_type":   processed.OutputMIME,
+		"size_bytes":  int64(len(processed.Content)),
 	}
 	if err := s.DB.Model(&model.FileRecord{}).Where("id = ?", file.ID).Updates(updates).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
@@ -319,4 +319,11 @@ func mimeExt(mimeType string) string {
 	default:
 		return ""
 	}
+}
+
+func (s *Server) uploadSizeLimit() int64 {
+	if s.cfg.FileUploadMaxBytes > 0 {
+		return s.cfg.FileUploadMaxBytes
+	}
+	return maxUploadSizeBytes
 }

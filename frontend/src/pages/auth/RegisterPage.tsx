@@ -153,6 +153,7 @@ export function RegisterPage() {
           <Button type="default" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
             {uploading ? '上传中...' : '选择并上传图片'}
           </Button>
+          <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 40MB，服务端自动压缩。</Typography.Text>
           <Typography.Text type={licenseFileID ? 'success' : 'secondary'}>
             {licenseFileID ? `已上传：${licenseFileName || '执照图片'}（file_id: ${licenseFileID}）` : '未上传'}
           </Typography.Text>
