@@ -10,7 +10,7 @@ import {
   ProFormTextArea,
   type ProFormInstance
 } from '@ant-design/pro-components'
-import { Button, Image, Space, message } from 'antd'
+import { Button, Image, Space, Typography, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { PRODUCT_CONDITION_META, type ProductCondition } from '@/constants/status'
 import { api } from '@/services/api'
@@ -243,6 +243,9 @@ export function CreatePage() {
           <Button type="dashed" loading={uploadMutation.isPending} onClick={() => fileInputRef.current?.click()}>
             选择并上传图片
           </Button>
+          <div style={{ marginTop: 8 }}>
+            <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 40MB，服务端自动压缩。</Typography.Text>
+          </div>
         </div>
       </ProCard>
 

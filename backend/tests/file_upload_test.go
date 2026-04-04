@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -9,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"second-hand-market-backend/backend/internal/media"
 )
 
 func requestMultipart(
@@ -108,5 +111,107 @@ func TestFileUploadLocalPublicLicense(t *testing.T) {
 	}
 	if !bytes.Equal(w.Body.Bytes(), jpeg) {
 		t.Fatalf("downloaded file mismatch: got=%d want=%d", len(w.Body.Bytes()), len(jpeg))
+	}
+}
+
+func TestFilePresignAllowsImageUpTo40MB(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "MERCHANT_LICENSE",
+		"file_name": "license.heic",
+		"file_size": 40 * 1024 * 1024,
+		"mime_type": "image/heic",
+	}, nil)
+	if resp.Code != 0 {
+		t.Fatalf("presign should allow 40MB image: %+v", resp)
+	}
+}
+
+func TestFilePresignRejectsImageOver40MB(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "MERCHANT_LICENSE",
+		"file_name": "huge.jpg",
+		"file_size": 40*1024*1024 + 1,
+		"mime_type": "image/jpeg",
+	}, nil)
+	if resp.Code != 10008 {
+		t.Fatalf("presign should reject image > 40MB: %+v", resp)
+	}
+}
+
+func TestFilePresignRejectsLivePhotoVideo(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "MERCHANT_LICENSE",
+		"file_name": "live.mov",
+		"file_size": 1024,
+		"mime_type": "video/quicktime",
+	}, nil)
+	if resp.Code != 10008 {
+		t.Fatalf("live photo video should be rejected: %+v", resp)
+	}
+}
+
+type fakeProcessor struct {
+	result media.ProcessResult
+	err    error
+}
+
+func (p fakeProcessor) Process(_ context.Context, _ media.ProcessRequest) (media.ProcessResult, error) {
+	if p.err != nil {
+		return media.ProcessResult{}, p.err
+	}
+	return p.result, nil
+}
+
+func TestFileUploadStoresProcessedMetadata(t *testing.T) {
+	processed := []byte("processed-image-content")
+	srv := newTestServerWithProcessor(t, fakeProcessor{
+		result: media.ProcessResult{
+			OutputMIME: "image/heic",
+			OutputExt:  ".heic",
+			Content:    processed,
+		},
+	})
+
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": "MERCHANT_LICENSE", "file_name": "license.heic", "file_size": 2048, "mime_type": "image/heic",
+	}, nil)
+	if presign.Code != 0 {
+		t.Fatalf("presign failed: %+v", presign)
+	}
+
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	upload := requestMultipart(
+		t,
+		srv.Router,
+		http.MethodPost,
+		"/api/v1/files/upload",
+		map[string]string{
+			"file_id":    fmt.Sprintf("%d", fileID),
+			"object_key": objectKey,
+		},
+		"file",
+		"license.heic",
+		[]byte("original-image-content"),
+		nil,
+	)
+	if upload.Code != 0 {
+		t.Fatalf("upload failed: %+v", upload)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, str(upload.Data["url"]), nil)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("download uploaded file failed: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Equal(w.Body.Bytes(), processed) {
+		t.Fatalf("stored bytes mismatch: got=%q want=%q", w.Body.Bytes(), processed)
 	}
 }

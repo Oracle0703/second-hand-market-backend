@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"second-hand-market-backend/backend/internal/app"
+	"second-hand-market-backend/backend/internal/media"
 )
 
 type apiResp struct {
@@ -20,21 +21,31 @@ type apiResp struct {
 func newTestServer(t *testing.T) *app.Server {
 	t.Helper()
 	cfg := app.Config{
-		Addr:                ":0",
-		DBDriver:            "sqlite",
-		DBDSN:               fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
-		JWTAccessSecret:     "test-access",
-		JWTRefreshSecret:    "test-refresh",
-		AccessTTL:           app.LoadConfig().AccessTTL,
-		RefreshTTL:          app.LoadConfig().RefreshTTL,
-		AutoMigrate:         true,
-		FileStorageProvider: "local",
-		FileUploadLocalDir:  t.TempDir(),
+		Addr:                     ":0",
+		DBDriver:                 "sqlite",
+		DBDSN:                    fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
+		JWTAccessSecret:          "test-access",
+		JWTRefreshSecret:         "test-refresh",
+		AccessTTL:                app.LoadConfig().AccessTTL,
+		RefreshTTL:               app.LoadConfig().RefreshTTL,
+		AutoMigrate:              true,
+		FileStorageProvider:      "local",
+		FileUploadLocalDir:       t.TempDir(),
+		FileUploadMaxBytes:       40 * 1024 * 1024,
+		ImageCompressTargetBytes: 20 * 1024 * 1024,
+		ImageProcessorDriver:     "passthrough",
 	}
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server error: %v", err)
 	}
+	return srv
+}
+
+func newTestServerWithProcessor(t *testing.T, processor media.Processor) *app.Server {
+	t.Helper()
+	srv := newTestServer(t)
+	srv.SetImageProcessor(processor)
 	return srv
 }
 

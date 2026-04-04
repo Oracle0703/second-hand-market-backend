@@ -18,15 +18,17 @@ import (
 	"gorm.io/gorm/logger"
 
 	"second-hand-market-backend/backend/internal/common"
+	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/middleware"
 	"second-hand-market-backend/backend/internal/model"
 )
 
 type Server struct {
-	cfg     Config
-	DB      *gorm.DB
-	Router  *gin.Engine
-	limiter *memoryRateLimiter
+	cfg            Config
+	DB             *gorm.DB
+	Router         *gin.Engine
+	limiter        *memoryRateLimiter
+	imageProcessor media.Processor
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -35,6 +37,12 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if strings.TrimSpace(cfg.FileUploadLocalDir) == "" {
 		cfg.FileUploadLocalDir = "uploads"
+	}
+	if cfg.FileUploadMaxBytes <= 0 {
+		cfg.FileUploadMaxBytes = media.DefaultMaxOriginalBytes
+	}
+	if cfg.ImageCompressTargetBytes <= 0 {
+		cfg.ImageCompressTargetBytes = media.DefaultTargetBytes
 	}
 	db, err := openDB(cfg)
 	if err != nil {
@@ -57,9 +65,38 @@ func NewServer(cfg Config) (*Server, error) {
 	if strings.EqualFold(cfg.FileStorageProvider, "local") {
 		r.Static("/uploads", cfg.FileUploadLocalDir)
 	}
-	s := &Server{cfg: cfg, DB: db, Router: r, limiter: newMemoryRateLimiter()}
+	s := &Server{
+		cfg:            cfg,
+		DB:             db,
+		Router:         r,
+		limiter:        newMemoryRateLimiter(),
+		imageProcessor: buildImageProcessor(cfg),
+	}
 	s.registerRoutes()
 	return s, nil
+}
+
+func (s *Server) SetImageProcessor(processor media.Processor) {
+	if processor == nil {
+		s.imageProcessor = buildImageProcessor(s.cfg)
+		return
+	}
+	s.imageProcessor = processor
+}
+
+func buildImageProcessor(cfg Config) media.Processor {
+	policy := media.DefaultUploadPolicy()
+	policy.MaxOriginalBytes = cfg.FileUploadMaxBytes
+	policy.TargetBytes = cfg.ImageCompressTargetBytes
+
+	switch strings.ToLower(strings.TrimSpace(cfg.ImageProcessorDriver)) {
+	case "", "vips":
+		return media.NewVipsCLIProcessor(cfg.ImageProcessorBin, policy)
+	case "passthrough":
+		return media.NewPassthroughProcessor(policy)
+	default:
+		return media.NewPassthroughProcessor(policy)
+	}
 }
 
 func ensureUploadStorage(cfg Config) error {
