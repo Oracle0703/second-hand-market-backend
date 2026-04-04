@@ -47,7 +47,7 @@ type categorySeed struct {
 
 var defaultCategorySeeds = []categorySeed{
 	{Name: "家具类", Children: []string{"家具", "家电", "麻将机", "商铺用品"}},
-	{Name: "办公类", Children: []string{"老板桌", "老板椅", "老板办公座椅套装", "会议桌", "办公沙发", "会议桌椅套装", "文件柜书柜"}},
+	{Name: "办公类", Children: []string{"老板桌", "办公桌", "老板椅", "老板办公座椅套装", "会议桌", "办公沙发", "会议桌椅套装", "文件柜书柜"}},
 	{Name: "麻将机类", Children: []string{"旧麻将机", "新麻将机", "麻将椅", "茶几", "麻将机维修"}},
 }
 

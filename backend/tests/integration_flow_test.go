@@ -154,7 +154,22 @@ func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
 	if product.Code != 0 {
 		t.Fatalf("create product failed: %+v", product)
 	}
+	if str(product.Data["status"]) != "DRAFT" {
+		t.Fatalf("create product status mismatch: %+v", product)
+	}
 	productID := numToUint64(product.Data["product_id"])
+
+	productDetail := requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/merchant/products/%d", productID), nil, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if productDetail.Code != 0 {
+		t.Fatalf("product detail failed: %+v", productDetail)
+	}
+	productPayload, ok := productDetail.Data["product"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("product detail payload invalid: %+v", productDetail)
+	}
+	if str(productPayload["status"]) != "DRAFT" {
+		t.Fatalf("product detail status mismatch: %+v", productDetail)
+	}
 
 	onShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + merchantToken, "Idempotency-Key": "k1"})
 	if onShelf.Code != 0 || str(onShelf.Data["to_status"]) != "ON_SHELF" {
