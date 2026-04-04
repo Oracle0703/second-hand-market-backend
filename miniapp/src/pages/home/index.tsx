@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react'
 import Taro, { useDidShow, useReachBottom } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { BuyerProduct, fetchBuyerProducts } from '../../services/buyer'
+import { hasStoreLocation, STORE_GUIDE_VIDEO, STORE_LOCATION } from '../../constants/store'
 import { centToYuanText } from '../../utils/price'
 
 const PAGE_SIZE = 10
@@ -32,6 +33,7 @@ export default function HomePage() {
 
   const hasMore = items.length < total
   const heroItems = useMemo(() => items.slice(0, 5), [items])
+  const locationConfigured = hasStoreLocation(STORE_LOCATION)
 
   const loadProducts = async (targetPage: number, replace = false) => {
     if (loadingRef.current) {
@@ -84,6 +86,52 @@ export default function HomePage() {
     }
 
     await Taro.makePhoneCall({ phoneNumber: PHONE_NUMBER })
+  }
+
+  const showLocationFallback = async (title: string, content: string) => {
+    await Taro.showModal({
+      title,
+      content: `${content}\n\n门店：${STORE_LOCATION.name}\n地址：${STORE_LOCATION.address}`,
+      showCancel: false,
+      confirmText: '知道了'
+    })
+  }
+
+  const handleOpenLocation = async () => {
+    if (!locationConfigured || STORE_LOCATION.latitude === null || STORE_LOCATION.longitude === null) {
+      await Taro.showToast({ title: '请先配置门店地址', icon: 'none' })
+      return
+    }
+
+    const platform = Taro.getSystemInfoSync().platform
+    const isDevtools = platform === 'devtools'
+
+    if (isDevtools) {
+      await showLocationFallback('开发者工具限制', '微信开发者工具通常不能直接拉起地图，请在手机真机里点击“导航去店”测试。')
+      return
+    }
+
+    try {
+      await Taro.openLocation({
+        latitude: STORE_LOCATION.latitude,
+        longitude: STORE_LOCATION.longitude,
+        name: STORE_LOCATION.name,
+        address: STORE_LOCATION.address,
+        scale: 18
+      })
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error ?? '')
+      await showLocationFallback(
+        '地图打开失败',
+        isDevtools
+          ? '开发者工具通常不支持直接拉起地图，请在手机真机里重试。'
+          : `暂时无法打开地图${errMsg ? `：${errMsg}` : ''}。请确认平台隐私授权后再试。`
+      )
+    }
+  }
+
+  const handleOpenStoreGuide = () => {
+    Taro.navigateTo({ url: '/pages/store-guide/index' })
   }
 
   useDidShow(() => {
@@ -141,6 +189,49 @@ export default function HomePage() {
             <Text>暂无轮播商品</Text>
           </View>
         )}
+      </View>
+
+      <View className={`home-location-card${locationConfigured ? '' : ' home-location-card-pending'}`}>
+        <View className="home-location-copy">
+          <Text className="home-location-label">到店地址</Text>
+          <Text className="home-location-name">{STORE_LOCATION.name}</Text>
+          <Text className="home-location-address">
+            {locationConfigured ? STORE_LOCATION.address : '暂未配置门店地址，补充后可一键唤起导航。'}
+          </Text>
+        </View>
+
+        <View className="home-location-actions">
+          <Button
+            className="home-location-btn home-location-btn-secondary"
+            size="mini"
+            onClick={(event) => {
+              event.stopPropagation()
+              void handleWant()
+            }}
+          >
+            拨打电话
+          </Button>
+          <Button
+            className="home-location-btn home-location-btn-secondary"
+            size="mini"
+            onClick={(event) => {
+              event.stopPropagation()
+              handleOpenStoreGuide()
+            }}
+          >
+            {STORE_GUIDE_VIDEO.url.trim() ? '视频导航' : '视频导航'}
+          </Button>
+          <Button
+            className="home-location-btn home-location-btn-primary"
+            size="mini"
+            onClick={(event) => {
+              event.stopPropagation()
+              void handleOpenLocation()
+            }}
+          >
+            {locationConfigured ? '导航去店' : '待配置'}
+          </Button>
+        </View>
       </View>
 
       <View className="home-section-head">

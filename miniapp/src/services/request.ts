@@ -21,7 +21,7 @@ type RequestOptions<T> = {
 
 type UnknownRecord = Record<string, unknown>
 
-const BASE_URL = (typeof __API_BASE_URL__ === 'string' && __API_BASE_URL__.trim()) || 'https://market.meaningful.ink/api/api/v1'
+const BASE_URL = (typeof __API_BASE_URL__ === 'string' && __API_BASE_URL__.trim()) || 'https://market.meaningful.ink/api/v1'
 let refreshingPromise: Promise<boolean> | null = null
 
 function buildURL(path: string): string {

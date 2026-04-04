@@ -4,7 +4,7 @@ import prodConfig from './prod'
 
 const TaroEnv = process.env.TARO_ENV || 'weapp'
 const IsDev = process.env.NODE_ENV !== 'production'
-const ProductionAPIBaseURL = 'https://market.meaningful.ink/api/api/v1'
+const ProductionAPIBaseURL = 'https://market.meaningful.ink/api/v1'
 const DefaultAPIBaseURL = TaroEnv === 'tt' || !IsDev ? ProductionAPIBaseURL : 'http://localhost:8080/api/v1'
 const APIBaseURL = process.env.TARO_APP_API_BASE_URL || DefaultAPIBaseURL
 

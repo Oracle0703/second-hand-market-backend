@@ -8,6 +8,7 @@ const config = {
     'pages/favorite/index',
     'pages/history/index',
     'pages/login/index',
+    'pages/store-guide/index',
     'pages/me/index',
     'pages/intent/create/index',
     'pages/intent/list/index'
@@ -17,6 +18,13 @@ const config = {
     navigationBarBackgroundColor: '#ffffff',
     navigationBarTitleText: '二手好物',
     navigationBarTextStyle: 'black'
+  },
+  requiredPrivateInfos: ['scope.userLocation'],
+  usePrivacyCheck: true,
+  permission: {
+    'scope.userLocation': {
+      desc: '用于打开地图并为你导航到门店'
+    }
   },
   tabBar: {
     color: '#888',
@@ -41,12 +49,6 @@ const config = {
         text: '收藏',
         iconPath: 'assets/tabbar/favorite.png',
         selectedIconPath: 'assets/tabbar/favorite-active.png'
-      },
-      {
-        pagePath: 'pages/me/index',
-        text: '我的',
-        iconPath: 'assets/tabbar/me.png',
-        selectedIconPath: 'assets/tabbar/me-active.png'
       }
     ]
   }
