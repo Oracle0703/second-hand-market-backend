@@ -19,13 +19,6 @@ const config = {
     navigationBarTitleText: '二手好物',
     navigationBarTextStyle: 'black'
   },
-  requiredPrivateInfos: ['scope.userLocation'],
-  usePrivacyCheck: true,
-  permission: {
-    'scope.userLocation': {
-      desc: '用于打开地图并为你导航到门店'
-    }
-  },
   tabBar: {
     color: '#888',
     selectedColor: '#1d5a4a',

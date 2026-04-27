@@ -343,11 +343,16 @@ page {
 .home-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 18rpx;
+  justify-content: space-between;
+  align-items: stretch;
 }
 
 .home-product-card {
-  width: calc(50% - 9rpx);
+  flex: 0 0 48.5%;
+  width: 48.5%;
+  min-width: 0;
+  margin-bottom: 18rpx;
+  box-sizing: border-box;
   overflow: hidden;
   border-radius: 22rpx;
   background: rgba(255, 255, 255, 0.94);

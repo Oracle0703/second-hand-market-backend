@@ -15,18 +15,18 @@
     "@tarojs/react": "3.6.34",
     "@tarojs/runtime": "3.6.34",
     "@tarojs/taro": "3.6.34",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",
-    "babel-preset-taro": "3.6.34",
     "@tarojs/cli": "3.6.34",
     "@tarojs/plugin-framework-react": "3.6.34",
     "@tarojs/webpack5-runner": "3.6.34",
     "@types/node": "^22.18.8",
     "@types/react": "^18.3.24",
+    "babel-preset-taro": "3.6.34",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }

@@ -27,24 +27,34 @@ const STORAGE_KEYS = {
   deviceID: 'buyer_device_id'
 }
 
-const initialDeviceID = (() => {
-  const cached = Taro.getStorageSync<string>(STORAGE_KEYS.deviceID)
-  if (cached) return cached
-  const generated = generateDeviceID()
-  Taro.setStorageSync(STORAGE_KEYS.deviceID, generated)
-  return generated
-})()
+type SessionSnapshot = Pick<SessionState, 'accessToken' | 'refreshToken' | 'profile' | 'deviceID'>
 
-const initialAccess = Taro.getStorageSync<string>(STORAGE_KEYS.access) || ''
-const initialRefresh = Taro.getStorageSync<string>(STORAGE_KEYS.refresh) || ''
-const initialProfile = Taro.getStorageSync<BuyerProfile>(STORAGE_KEYS.profile)
+let hydrated = false
+
+function readStorageSync<T>(key: string): T | undefined {
+  try {
+    return Taro.getStorageSync<T>(key)
+  } catch {
+    return undefined
+  }
+}
+
+function loadSessionSnapshot(): SessionSnapshot {
+  return {
+    accessToken: readStorageSync<string>(STORAGE_KEYS.access) || '',
+    refreshToken: readStorageSync<string>(STORAGE_KEYS.refresh) || '',
+    profile: readStorageSync<BuyerProfile>(STORAGE_KEYS.profile),
+    deviceID: readStorageSync<string>(STORAGE_KEYS.deviceID) || ''
+  }
+}
 
 export const useSessionStore = create<SessionState>((set) => ({
-  accessToken: initialAccess,
-  refreshToken: initialRefresh,
-  profile: initialProfile,
-  deviceID: initialDeviceID,
+  accessToken: '',
+  refreshToken: '',
+  profile: undefined,
+  deviceID: '',
   setSession: (accessToken, refreshToken, profile) => {
+    hydrated = true
     Taro.setStorageSync(STORAGE_KEYS.access, accessToken)
     Taro.setStorageSync(STORAGE_KEYS.refresh, refreshToken)
     if (profile) {
@@ -53,18 +63,30 @@ export const useSessionStore = create<SessionState>((set) => ({
     set({ accessToken, refreshToken, profile })
   },
   clearSession: () => {
+    hydrated = true
     Taro.removeStorageSync(STORAGE_KEYS.access)
     Taro.removeStorageSync(STORAGE_KEYS.refresh)
     Taro.removeStorageSync(STORAGE_KEYS.profile)
     set({ accessToken: '', refreshToken: '', profile: undefined })
   },
   setDeviceID: (deviceID) => {
+    hydrated = true
     Taro.setStorageSync(STORAGE_KEYS.deviceID, deviceID)
     set({ deviceID })
   }
 }))
 
+export function hydrateSessionStore(): void {
+  if (hydrated) {
+    return
+  }
+
+  hydrated = true
+  useSessionStore.setState(loadSessionSnapshot())
+}
+
 export function ensureDeviceID(): string {
+  hydrateSessionStore()
   const state = useSessionStore.getState()
   if (state.deviceID) return state.deviceID
   const generated = generateDeviceID()
@@ -73,5 +95,6 @@ export function ensureDeviceID(): string {
 }
 
 export function isLoggedIn(): boolean {
+  hydrateSessionStore()
   return !!useSessionStore.getState().accessToken
 }
