@@ -3,10 +3,10 @@ import Taro, { useDidShow, useReachBottom } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { BuyerProduct, fetchBuyerProducts } from '../../services/buyer'
 import { hasStoreLocation, STORE_GUIDE_VIDEO, STORE_LOCATION } from '../../constants/store'
+import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
 
 const PAGE_SIZE = 10
-const PHONE_NUMBER = '13699479406'
 
 function mergeProducts(current: BuyerProduct[], incoming: BuyerProduct[]): BuyerProduct[] {
   const seen = new Set<number>()
@@ -71,21 +71,6 @@ export default function HomePage() {
 
   const goDetail = (id: number) => {
     Taro.navigateTo({ url: `/pages/product/detail/index?id=${id}` })
-  }
-
-  const handleWant = async () => {
-    const modal = await Taro.showModal({
-      title: '联系商家',
-      content: `是否拨打 ${PHONE_NUMBER} 这个电话？`,
-      confirmText: '确定',
-      cancelText: '取消'
-    })
-
-    if (!modal.confirm) {
-      return
-    }
-
-    await Taro.makePhoneCall({ phoneNumber: PHONE_NUMBER })
   }
 
   const showLocationFallback = async (title: string, content: string) => {
@@ -206,7 +191,7 @@ export default function HomePage() {
             size="mini"
             onClick={(event) => {
               event.stopPropagation()
-              void handleWant()
+              void promptAndCallStore()
             }}
           >
             拨打电话
@@ -272,7 +257,7 @@ export default function HomePage() {
                     size="mini"
                     onClick={(event) => {
                       event.stopPropagation()
-                      void handleWant()
+                      void promptAndCallStore()
                     }}
                   >
                     我想要

@@ -44,7 +44,7 @@ export default function LoginPage() {
     <View className="page">
       <View className="card" style={{ textAlign: 'center' }}>
         <View className="title">{platform.loginTitle}</View>
-        <Text style={{ color: '#6f7c77' }}>登录后可提交意向并同步游客收藏/浏览记录</Text>
+        <Text style={{ color: '#6f7c77' }}>登录后可同步游客收藏与浏览记录</Text>
         <Button className="btn-primary" style={{ marginTop: '20rpx' }} loading={loading} onClick={onLogin}>
           授权登录
         </Button>

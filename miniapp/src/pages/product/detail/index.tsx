@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
 import Taro, { useRouter, useShareAppMessage } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
-import { requireLoginFor } from '../../../hooks/useRequireLogin'
+import { promptAndCallStore } from '../../../utils/contact'
 import { centToYuanText } from '../../../utils/price'
 
 export default function ProductDetailPage() {
@@ -43,16 +43,6 @@ export default function ProductDetailPage() {
     title: product?.title || '二手好物',
     path: `/pages/product/detail/index?id=${id}`
   }))
-
-  const canSubmit = !!product?.can_submit_intent
-
-  const handleIntent = () => {
-    const target = `/pages/intent/create/index?product_id=${id}`
-    if (!requireLoginFor(target)) {
-      return
-    }
-    Taro.navigateTo({ url: target })
-  }
 
   return (
     <View className="page">
@@ -98,9 +88,6 @@ export default function ProductDetailPage() {
           ) : null}
 
           <Text>{product.description}</Text>
-
-          {!canSubmit ? <View style={{ marginTop: '16rpx', color: '#7d8b86' }}>当前商品不可提交意向，仅支持查看。</View> : null}
-
           <View className="toolbar" style={{ marginTop: '18rpx', display: 'flex', gap: '12rpx' }}>
             <Button
               className="btn-secondary"
@@ -109,8 +96,8 @@ export default function ProductDetailPage() {
             >
               {product.is_favorited ? '取消收藏' : '收藏'}
             </Button>
-            <Button className={canSubmit ? 'btn-primary' : 'btn-disabled'} disabled={!canSubmit} onClick={handleIntent}>
-              提交意向
+            <Button className="btn-primary" onClick={() => void promptAndCallStore()}>
+              我想要
             </Button>
           </View>
         </View>

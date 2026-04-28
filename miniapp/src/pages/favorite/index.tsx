@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
 import Taro from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { BuyerFavoriteItem, listFavorites, removeFavorite } from '../../services/buyer'
+import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
 
 export default function FavoritePage() {
@@ -37,9 +38,14 @@ export default function FavoritePage() {
                 <Text style={{ marginLeft: '12rpx', color: '#6f7c77' }}>仅剩 {item.stock} 件</Text>
               </View>
             </View>
-            <Button className="btn-secondary" size="mini" style={{ marginTop: '10rpx' }} onClick={() => removeMutation.mutate(item.product_id)}>
-              取消收藏
-            </Button>
+            <View style={{ marginTop: '10rpx', display: 'flex', gap: '12rpx' }}>
+              <Button className="btn-secondary" size="mini" onClick={() => removeMutation.mutate(item.product_id)}>
+                取消收藏
+              </Button>
+              <Button className="btn-primary" size="mini" onClick={() => void promptAndCallStore()}>
+                我想要
+              </Button>
+            </View>
           </View>
         ))}
         {(query.data?.items || []).length === 0 && !query.isLoading ? <View className="empty">暂无收藏</View> : null}

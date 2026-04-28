@@ -42,9 +42,6 @@ export default function MePage() {
         <View className="list-item" onClick={() => Taro.navigateTo({ url: '/pages/history/index' })}>
           浏览记录: {data?.counters?.histories ?? 0}
         </View>
-        <View className="list-item" onClick={() => Taro.navigateTo({ url: '/pages/intent/list/index' })}>
-          未关闭意向: {data?.counters?.intents_open ?? 0}
-        </View>
       </View>
 
       {!data?.is_login ? (

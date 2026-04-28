@@ -9,9 +9,7 @@ const config = {
     'pages/history/index',
     'pages/login/index',
     'pages/store-guide/index',
-    'pages/me/index',
-    'pages/intent/create/index',
-    'pages/intent/list/index'
+    'pages/me/index'
   ],
   window: {
     backgroundTextStyle: 'light',

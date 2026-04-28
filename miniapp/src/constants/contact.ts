@@ -1,0 +1,1 @@
+export const STORE_PHONE_NUMBER = '13699479406'
