@@ -203,3 +203,4 @@ API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mj
 - [后端接口清单](docs/backend-api-checklist.md)
 - [收口验收清单](docs/acceptance-checklist.md)
 - [发布前就绪清单](docs/release-readiness.md)
+- [抖音小程序构建与排障](docs/miniapp-douyin-build-troubleshooting.md)
