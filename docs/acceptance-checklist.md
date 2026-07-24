@@ -3,7 +3,8 @@
 ## 1. 预检
 - [ ] 后端可启动：`cd backend && ... go run ./cmd/server`
 - [ ] 前端可启动：`cd frontend && npm run dev`
-- [ ] 管理员账号可登录：`admin / Admin@123456`
+- [ ] 使用已安全初始化的管理员账号登录；仓库中不存在可用的固定管理员口令。
+- [ ] 管理员可在“安全设置”校验当前密码后改密，成功后旧 access/refresh token 失效并返回管理员登录页。
 
 ## 2. restricted login（商家入驻阶段）
 ### PC
@@ -40,10 +41,12 @@
 
 ## 5. 订单主链路
 ### PC
-- [ ] `ON_SHELF` 商品可创建订单，商品变为 `LOCKED`。
-- [ ] 订单详情可完成订单，商品变为 `SOLD`。
-- [ ] 订单详情可关闭订单，商品变为 `OFF_SHELF`。
-- [ ] 同商品重复创建订单返回冲突（`10010`）。
+- [ ] `ON_SHELF` 商品可填写数量和单件成交价创建订单，页面自动计算整单总价。
+- [ ] 创建订单只增加 `reserved_stock`，商品不进入 `LOCKED`；同一商品可有多笔 active 订单。
+- [ ] 超过 `available_stock=stock-reserved_stock` 的订单返回冲突（`10010`）。
+- [ ] 完成订单按数量同时减少总库存和预占库存；仅总库存归零时商品变为 `SOLD`。
+- [ ] 关闭订单按数量释放预占，商品保持当前上架/下架状态。
+- [ ] 有预占时不能永久关闭商品，也不能把总库存改到预占量以下。
 
 ### Mobile
 - [ ] 订单列表、订单详情可正常访问。
@@ -58,7 +61,7 @@
 - [ ] 后端测试：`cd backend && ... go test ./...`
 - [ ] 前端测试：`cd frontend && npm run test`
 - [ ] 前端构建：`cd frontend && npm run build`
-- [ ] 冒烟回归：`API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs`
+- [ ] 冒烟回归：通过 secret 环境注入 `SMOKE_ADMIN_USERNAME` / `SMOKE_ADMIN_PASSWORD` 后执行 `API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs`。
 
 ## 8. 发布前人工核对补充
 - [ ] 在 Chrome DevTools 切换到 `<768px` 宽度，逐项核对 restricted login / 商品 / 订单关键页面无横向溢出。

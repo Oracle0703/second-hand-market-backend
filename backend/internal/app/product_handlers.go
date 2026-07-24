@@ -84,6 +84,8 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		"product_no":          product.ProductNo,
 		"status":              product.Status,
 		"stock":               product.Stock,
+		"reserved_stock":      product.ReservedStock,
+		"available_stock":     product.Stock - product.ReservedStock,
 		"original_price_cent": product.OriginalPriceCent,
 		"created_at":          product.CreatedAt,
 	})
@@ -153,6 +155,9 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 		if req.Stock != nil {
 			if !allowed["stock"] || *req.Stock <= 0 {
 				return common.ErrInvalidTransition
+			}
+			if *req.Stock < product.ReservedStock {
+				return common.NewBizError(common.CodeConflict, "stock cannot be lower than reserved stock", 409)
 			}
 			product.Stock = *req.Stock
 		}
@@ -243,9 +248,10 @@ func (s *Server) handleProductDetail(c *gin.Context) {
 		"original_price_cent": product.OriginalPriceCent,
 		"condition_level":     product.ConditionLevel,
 		"stock":               product.Stock,
+		"reserved_stock":      product.ReservedStock,
+		"available_stock":     product.Stock - product.ReservedStock,
 		"images":              imgIDs,
 		"image_urls":          imgURLs,
-		"active_order_id":     product.ActiveOrderID,
 	}})
 }
 
@@ -287,6 +293,8 @@ func (s *Server) handleProductList(c *gin.Context) {
 		PriceCent          int       `json:"price_cent"`
 		OriginalPriceCent  *int      `json:"original_price_cent"`
 		Stock              int       `json:"stock"`
+		ReservedStock      int       `json:"reserved_stock"`
+		AvailableStock     int       `json:"available_stock" gorm:"->"`
 		UpdatedAt          time.Time `json:"updated_at"`
 		CategoryLevel1ID   *uint64   `json:"category_level1_id"`
 		CategoryLevel1Name *string   `json:"category_level1_name"`
@@ -295,7 +303,7 @@ func (s *Server) handleProductList(c *gin.Context) {
 	}
 	items := make([]item, 0, size)
 	if err := query.Select(
-		"p.id, p.title, p.status, p.price_cent, p.original_price_cent, p.stock, p.updated_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+		"p.id, p.title, p.status, p.price_cent, p.original_price_cent, p.stock, p.reserved_stock, (p.stock - p.reserved_stock) AS available_stock, p.updated_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
 	).Order("p.updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
@@ -362,7 +370,14 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if !canDeleteProductByStatus(product.Status) || product.ActiveOrderID != nil {
+		if !canDeleteProductByStatus(product.Status) || product.ReservedStock != 0 {
+			return common.ErrInvalidTransition
+		}
+		var activeOrderCount int64
+		if err := tx.Model(&model.Order{}).Where("product_id = ? AND is_active = ?", product.ID, true).Count(&activeOrderCount).Error; err != nil {
+			return err
+		}
+		if activeOrderCount > 0 {
 			return common.ErrInvalidTransition
 		}
 
@@ -516,6 +531,16 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 				product.OffShelfAt = &now
 			}
 			if toStatus == model.ProductClosed {
+				if product.ReservedStock != 0 {
+					return common.ErrInvalidTransition
+				}
+				var activeOrderCount int64
+				if err := tx.Model(&model.Order{}).Where("product_id = ? AND is_active = ?", product.ID, true).Count(&activeOrderCount).Error; err != nil {
+					return err
+				}
+				if activeOrderCount > 0 {
+					return common.ErrInvalidTransition
+				}
 				now := time.Now()
 				product.ClosedAt = &now
 			}

@@ -134,10 +134,11 @@
 | price_cent | int | 售价（分） |
 | original_price_cent | int null | 原价（分） |
 | condition_level | varchar(16) | `LIKE_NEW/GOOD/FAIR/POOR` |
-| stock | int | 库存（本期固定为 1，保留字段） |
+| stock | int | 尚未售出的实物总库存 |
+| reserved_stock | int | 未完成订单已预占库存，默认 0 |
 | cover_file_id | bigint null | 封面图文件 ID |
 | status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` |
-| active_order_id | bigint null | 当前占用中的订单 ID（仅 `LOCKED` 时有值） |
+| active_order_id | bigint null | 首版回滚兼容列；新订单主流程不读写 |
 | locked_at | datetime null | 锁定时间 |
 | shelf_at | datetime null | 上架时间 |
 | off_shelf_at | datetime null | 下架时间 |
@@ -157,8 +158,8 @@
 4. `idx_active_order(active_order_id)`
 
 约束说明：
-1. 本期为二手单件交易模型，`stock` 仅允许为 `1`。
-2. `stock` 作为保留字段存在，为后续“同款多件”扩展预留，不参与本期库存扣减逻辑。
+1. `stock >= 0`、`reserved_stock >= 0` 且 `reserved_stock <= stock`。
+2. `available_stock=stock-reserved_stock` 为可继续创建订单的数量，不单独持久化。
 
 ### 2.7 product_images（商品图片）
 
@@ -181,10 +182,11 @@
 | order_no | varchar(32) unique | 订单号 |
 | merchant_id | bigint | 商家 ID |
 | product_id | bigint | 商品 ID |
-| deal_price_cent | int | 成交价（分） |
+| quantity | int | 购买数量，正整数，历史订单回填为 1 |
+| deal_price_cent | int | 单件成交价（分） |
 | buyer_contact_masked | varchar(64) null | 买家联系方式（脱敏） |
 | status | varchar(16) | `CREATED/COMPLETED/CLOSED` |
-| is_active | tinyint | `1=CREATED`，`0=非CREATED`，用于唯一约束 |
+| is_active | tinyint | `1=CREATED`，`0=非CREATED`，用于快速筛选 |
 | close_reason | varchar(255) null | 关闭原因 |
 | created_by | bigint | 创建账号 ID |
 | completed_at | datetime null | 完成时间 |
@@ -197,12 +199,13 @@
 1. `uk_order_no(order_no)`
 2. `idx_merchant_status(merchant_id, status, created_at)`
 3. `idx_product_id(product_id)`
-4. `uk_product_active(product_id, is_active)`（确保同一商品仅一个活动订单）
+4. `idx_order_product_active(product_id, is_active)`（普通查询索引）
 
 实现说明：
 1. 创建订单时写入 `status=CREATED`、`is_active=1`。
 2. 完成/关闭订单时更新 `is_active=0`。
-3. 即便存在唯一索引，也要在事务中锁商品行，避免并发写入竞态。
+3. 同一商品允许多笔 active 和历史订单；创建订单使用条件更新预占库存，完成/关闭使用订单行锁与订单状态 CAS。
+4. 整单总价由 `quantity * deal_price_cent` 使用 64 位整数派生，不单独持久化。
 
 ### 2.9 order_events（订单事件）
 
@@ -311,12 +314,13 @@
 - `ADMIN`
 
 ## 4. 一致性与事务规则
-1. 创建订单必须与商品 `ON_SHELF -> LOCKED` 在同一事务中完成。
-2. 完成订单必须与商品 `LOCKED -> SOLD` 在同一事务中完成。
-3. 关闭订单必须与商品 `LOCKED -> OFF_SHELF` 在同一事务中完成。
+1. 创建订单必须在同一事务中以 `stock-reserved_stock >= quantity` 为条件增加预占并写入订单。
+2. 完成订单必须在同一事务中锁定订单行，同时按数量减少 `stock` 与 `reserved_stock`；仅 `stock=0` 时置为 `SOLD`。
+3. 关闭订单必须在同一事务中锁定订单行并按数量释放 `reserved_stock`，不改变商品上下架状态。
 4. 任何状态变更必须同时写 `operation_logs`。
 5. 非法状态变更统一返回业务错误码 `10005`。
 6. 删除策略采用软删除；审核/审计相关表禁止物理删除。
+7. `LOCKED` 与 `active_order_id` 仅保留兼容；迁移后主路径不再写入。
 
 ## 5. 预留扩展（子账号与 RBAC）
 1. `merchant_accounts.role` 已支持 `STAFF`。

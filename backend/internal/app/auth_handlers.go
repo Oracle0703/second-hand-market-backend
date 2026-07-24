@@ -179,7 +179,7 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
-	if session.RevokedAt != nil || session.ExpiredAt.Before(time.Now()) || session.RefreshTokenHash != common.SHA256(req.RefreshToken) {
+	if session.UserType != claims.UserType || session.UserID != claims.UserID || session.RevokedAt != nil || session.ExpiredAt.Before(time.Now()) || session.RefreshTokenHash != common.SHA256(req.RefreshToken) {
 		common.Fail(c, common.ErrUnauthorized)
 		return
 	}

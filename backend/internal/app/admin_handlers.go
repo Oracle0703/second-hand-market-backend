@@ -5,13 +5,72 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"second-hand-market-backend/backend/internal/auth"
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
 	"second-hand-market-backend/backend/internal/model"
 	"second-hand-market-backend/backend/internal/stateflow"
 )
+
+func (s *Server) handleAdminChangePassword(c *gin.Context) {
+	actor, err := actorFromContext(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	var req dto.AdminChangePasswordRequest
+	if err := bindJSON(c, &req); err != nil {
+		common.Fail(c, err)
+		return
+	}
+	if !auth.IsSafeAdministratorPassword(req.NewPassword) {
+		common.Fail(c, common.ErrInvalidArgument)
+		return
+	}
+
+	var admin model.AdminUser
+	if err := s.DB.Where("id = ?", actor.UserID).First(&admin).Error; err != nil {
+		common.Fail(c, s.dbError(err))
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+		common.Fail(c, common.ErrInvalidArgument)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(req.NewPassword)); err == nil {
+		common.Fail(c, common.ErrInvalidArgument)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	now := time.Now()
+	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.AdminUser{}).Where("id = ?", admin.ID).Update("password_hash", string(hash))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return common.ErrNotFound
+		}
+		if err := tx.Model(&model.AuthSession{}).
+			Where("user_type = ? AND user_id = ? AND revoked_at IS NULL", model.UserTypeAdmin, admin.ID).
+			Update("revoked_at", &now).Error; err != nil {
+			return err
+		}
+		s.writeOperationLog(c, tx, "admin_user", admin.ID, "admin_password_change", nil, nil, common.CodeOK, nil, nil)
+		return nil
+	}); err != nil {
+		common.Fail(c, err)
+		return
+	}
+	common.Success(c, gin.H{"success": true, "password_updated_at": now.Format(time.RFC3339)})
+}
 
 func (s *Server) handleAdminMerchantList(c *gin.Context) {
 	page, size := parsePage(c)

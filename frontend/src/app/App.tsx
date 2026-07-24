@@ -19,6 +19,7 @@ const AdminReviewDetailPage = lazy(() =>
   import('@/pages/admin/merchants/ReviewDetailPage').then((m) => ({ default: m.ReviewDetailPage }))
 )
 const AdminLogsPage = lazy(() => import('@/pages/admin/logs/ListPage').then((m) => ({ default: m.ListPage })))
+const AdminSecurityPage = lazy(() => import('@/pages/admin/account/SecurityPage').then((m) => ({ default: m.SecurityPage })))
 const MerchantLogsPage = lazy(() => import('@/pages/merchant/logs/ListPage').then((m) => ({ default: m.ListPage })))
 const AccountPage = lazy(() => import('@/pages/merchant/account/AccountPage').then((m) => ({ default: m.AccountPage })))
 const IntentListPage = lazy(() => import('@/pages/merchant/intents/ListPage').then((m) => ({ default: m.ListPage })))
@@ -45,6 +46,7 @@ export function App() {
               <Route path="/admin/merchants/reviews" element={loadable(<AdminReviewsPage />)} />
               <Route path="/admin/merchants/reviews/:merchantId" element={loadable(<AdminReviewDetailPage />)} />
               <Route path="/admin/logs" element={loadable(<AdminLogsPage />)} />
+              <Route path="/admin/account/security" element={loadable(<AdminSecurityPage />)} />
             </Route>
 
             <Route element={<RequireAuth role="MERCHANT" scope="full" />}>

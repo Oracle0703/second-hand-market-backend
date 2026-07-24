@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto'
+
 const baseURL = process.env.API_BASE_URL || 'http://localhost:8080/api/v1'
 
 async function req(path, { method = 'GET', headers = {}, body } = {}) {
@@ -27,10 +29,22 @@ function nowSeed() {
   return Date.now().toString().slice(-8)
 }
 
+function requiredEnv(name) {
+  const value = String(process.env[name] || '').trim()
+  if (!value) throw new Error(`${name} is required`)
+  return value
+}
+
+function randomSmokePassword() {
+  return `Sm0ke!${randomBytes(18).toString('base64url')}`
+}
+
 async function main() {
   const seed = nowSeed()
   const username = `smoke_${seed}`
-  const password = 'Passw0rd!2026'
+  const password = randomSmokePassword()
+  const adminUsername = requiredEnv('SMOKE_ADMIN_USERNAME')
+  const adminPassword = requiredEnv('SMOKE_ADMIN_PASSWORD')
 
   const licPresign = await req('/files/presign', {
     method: 'POST',
@@ -67,7 +81,7 @@ async function main() {
 
   const adminLogin = await req('/auth/login', {
     method: 'POST',
-    body: { login_type: 'ADMIN', username: 'admin', password: 'Admin@123456' }
+    body: { login_type: 'ADMIN', username: adminUsername, password: adminPassword }
   })
   assert(adminLogin.code === 0, 'admin login failed', adminLogin)
   const adminToken = adminLogin.data.access_token
@@ -109,7 +123,7 @@ async function main() {
       price_cent: 12345,
       original_price_cent: 14500,
       condition_level: 'GOOD',
-      stock: 1,
+      stock: 3,
       image_file_ids: [imgPresign.data.file_id]
     }
   })
@@ -126,9 +140,18 @@ async function main() {
   const createOrder = await req('/merchant/orders', {
     method: 'POST',
     headers: { Authorization: `Bearer ${merchantToken}` },
-    body: { product_id: productID, deal_price_cent: 12000 }
+    body: { product_id: productID, quantity: 2, deal_price_cent: 12000 }
   })
-  assert(createOrder.code === 0, 'create order failed', createOrder)
+  assert(
+    createOrder.code === 0 &&
+      createOrder.data.quantity === 2 &&
+      createOrder.data.total_deal_price_cent === 24000 &&
+      createOrder.data.product_status === 'ON_SHELF' &&
+      createOrder.data.reserved_stock === 2 &&
+      createOrder.data.available_stock === 1,
+    'create multi-stock order failed',
+    createOrder
+  )
   const orderID = createOrder.data.order_id
 
   const completeOrder = await req(`/merchant/orders/${orderID}/complete`, {
@@ -138,10 +161,38 @@ async function main() {
   })
   assert(completeOrder.code === 0, 'complete order failed', completeOrder)
 
+  const remainingDetail = await req(`/merchant/products/${productID}`, {
+    headers: { Authorization: `Bearer ${merchantToken}` }
+  })
+  assert(
+    remainingDetail.code === 0 &&
+      remainingDetail.data.product?.status === 'ON_SHELF' &&
+      remainingDetail.data.product?.stock === 1 &&
+      remainingDetail.data.product?.reserved_stock === 0,
+    'completed order should keep a product with remaining stock on shelf',
+    remainingDetail
+  )
+
+  const finalOrder = await req('/merchant/orders', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${merchantToken}` },
+    body: { product_id: productID, quantity: 1, deal_price_cent: 11900 }
+  })
+  assert(finalOrder.code === 0, 'create final-stock order failed', finalOrder)
+  const finalComplete = await req(`/merchant/orders/${finalOrder.data.order_id}/complete`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${merchantToken}` },
+    body: { note: 'smoke final complete' }
+  })
+  assert(finalComplete.code === 0, 'complete final-stock order failed', finalComplete)
   const soldDetail = await req(`/merchant/products/${productID}`, {
     headers: { Authorization: `Bearer ${merchantToken}` }
   })
-  assert(soldDetail.code === 0 && soldDetail.data.product?.status === 'SOLD', 'completed order should set product SOLD', soldDetail)
+  assert(
+    soldDetail.code === 0 && soldDetail.data.product?.status === 'SOLD' && soldDetail.data.product?.stock === 0,
+    'product should become SOLD only after total stock reaches zero',
+    soldDetail
+  )
 
   const createProduct2 = await req('/merchant/products', {
     method: 'POST',
@@ -153,7 +204,7 @@ async function main() {
       price_cent: 12500,
       original_price_cent: 14800,
       condition_level: 'GOOD',
-      stock: 1,
+      stock: 4,
       image_file_ids: [imgPresign.data.file_id]
     }
   })
@@ -170,9 +221,9 @@ async function main() {
   const createOrder2 = await req('/merchant/orders', {
     method: 'POST',
     headers: { Authorization: `Bearer ${merchantToken}` },
-    body: { product_id: product2ID, deal_price_cent: 12100 }
+    body: { product_id: product2ID, quantity: 2, deal_price_cent: 12100 }
   })
-  assert(createOrder2.code === 0, 'create second order failed', createOrder2)
+  assert(createOrder2.code === 0 && createOrder2.data.reserved_stock === 2, 'create second order failed', createOrder2)
   const order2ID = createOrder2.data.order_id
 
   const closeOrder = await req(`/merchant/orders/${order2ID}/close`, {
@@ -186,12 +237,16 @@ async function main() {
     headers: { Authorization: `Bearer ${merchantToken}` }
   })
   assert(
-    closedProductDetail.code === 0 && closedProductDetail.data.product?.status === 'OFF_SHELF',
-    'closed order should set product OFF_SHELF',
+    closedProductDetail.code === 0 &&
+      closedProductDetail.data.product?.status === 'ON_SHELF' &&
+      closedProductDetail.data.product?.stock === 4 &&
+      closedProductDetail.data.product?.reserved_stock === 0 &&
+      closedProductDetail.data.product?.available_stock === 4,
+    'closed order should release inventory without changing shelf status',
     closedProductDetail
   )
 
-  console.log('[SMOKE][PASS] restricted login + 审核 + 商品 + 订单主链路通过')
+  console.log('[SMOKE][PASS] restricted login + 审核 + 多库存订单主链路通过')
 }
 
 main().catch((err) => {

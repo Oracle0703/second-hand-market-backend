@@ -5,7 +5,7 @@
 2. 订单为轻量交易记录，不承载支付、退款、售后。
 3. 商家采用受限制登录（restricted login）：`PENDING/REJECTED` 可登录但只获得 `onboarding scope`，`APPROVED` 获得 `full scope`。
 4. 商品与订单状态机以本文为唯一准则。
-5. 商品支持订单占用状态 `LOCKED`，用于避免同一商品并发成交。
+5. 商品通过 `reserved_stock` 预占库存；`LOCKED` 仅保留兼容，不进入新订单主流程。
 6. 分类采用两级只读字典，本期不开放分类后台管理页面。
 
 ## 1. 产品目标
@@ -83,30 +83,31 @@ restricted login 规则：
 4. 分类数据通过初始化脚本维护，变更需走版本化脚本。
 
 ### 3.4 商品管理
-1. 创建商品：标题、描述、二级分类、价格、成色、库存（固定 1）、图片。
+1. 创建商品：标题、描述、二级分类、价格、成色、正整数库存、图片。
 2. 编辑商品：按状态执行字段级限制（见第 5.4 节）。
 3. 状态操作：上架、下架、关闭。
 4. 商品列表：
    - 支持状态筛选、关键词搜索、时间排序、分页。
    - PC 默认表格；移动端默认卡片。
-5. `stock` 规则（本期）：
-   - 不允许 `stock > 1`。
-   - `stock` 为保留字段，默认值固定为 `1`，用于后续可能的多件同款扩展。
-   - 若请求显式传入 `stock` 且不为 `1`，后端返回参数错误。
+5. 库存规则：
+   - `stock` 是尚未售出的实物总库存，`reserved_stock` 是未完成订单已预占库存。
+   - `available_stock=stock-reserved_stock`；三者始终满足 `0 <= reserved_stock <= stock`。
+   - 草稿或下架商品可调整总库存，但新值不得低于已预占库存。
 
 ### 3.5 轻量订单
 1. 创建订单：
    - 仅允许对 `ON_SHELF` 商品创建。
-   - 创建成功后商品状态立即变更为 `LOCKED`。
+   - 必须填写正整数数量和单件成交价，整单总价由服务端计算。
+   - 创建成功后原子增加 `reserved_stock`，商品保持 `ON_SHELF`。
 2. 并发约束：
-   - 同一商品仅允许一个 `CREATED` 订单并存。
-   - 若已有未完成订单，创建新订单返回冲突错误码。
+   - 同一商品允许多笔 `CREATED` 订单并存。
+   - 预占总量不能超过 `stock`；可售库存不足返回冲突错误码。
 3. 完成订单：
    - 订单 `CREATED -> COMPLETED`。
-   - 商品 `LOCKED -> SOLD`。
+   - 按订单数量同时减少 `stock` 与 `reserved_stock`；仅 `stock=0` 时商品进入 `SOLD`。
 4. 关闭订单：
    - 订单 `CREATED -> CLOSED`。
-   - 商品 `LOCKED -> OFF_SHELF`（统一回退规则）。
+   - 按订单数量释放 `reserved_stock`，商品保持当前上架/下架状态。
 
 ### 3.6 审计与日志
 1. 关键操作必须写日志：
@@ -126,9 +127,9 @@ restricted login 规则：
 ### 4.2 发布商品 -> 上下架 -> 成交/关闭
 1. 商家创建商品默认 `DRAFT`。
 2. 满足必填字段后允许上架至 `ON_SHELF`。
-3. 创建订单后自动锁定 `LOCKED`。
-4. 订单完成后商品变更 `SOLD`。
-5. 订单关闭后商品回退 `OFF_SHELF`，由商家决定是否再次上架。
+3. 创建订单后预占对应数量，不改变商品上架状态。
+4. 订单完成按数量扣减库存，库存归零才变更 `SOLD`。
+5. 订单关闭释放对应预占，不自动上下架。
 
 ## 5. 状态机定义
 
@@ -147,26 +148,23 @@ restricted login 规则：
 | `DRAFT` | `ON_SHELF` | 上架 | MerchantOwner | 必填字段齐全 |
 | `ON_SHELF` | `OFF_SHELF` | 下架 | MerchantOwner | 即时生效 |
 | `OFF_SHELF` | `ON_SHELF` | 重新上架 | MerchantOwner | 字段仍合法 |
-| `ON_SHELF` | `LOCKED` | 创建订单 | MerchantOwner | 仅无未完成订单时允许 |
-| `LOCKED` | `SOLD` | 完成订单 | MerchantOwner | 事务内更新订单与商品 |
-| `LOCKED` | `OFF_SHELF` | 关闭订单 | MerchantOwner | 统一回退到下架态 |
 | `DRAFT`/`ON_SHELF`/`OFF_SHELF` | `CLOSED` | 关闭商品 | MerchantOwner | 关闭后不可恢复 |
+| `ON_SHELF`/`OFF_SHELF` | `SOLD` | 完成最后库存 | MerchantOwner | 仅 `stock=0`，事务内更新 |
 
 ### 5.3 订单状态机
 
 | 当前状态 | 目标状态 | 触发动作 | 触发角色 | 规则 |
 | --- | --- | --- | --- | --- |
-| `CREATED` | `COMPLETED` | 完成订单 | MerchantOwner | 商品 `LOCKED -> SOLD` |
-| `CREATED` | `CLOSED` | 关闭订单 | MerchantOwner | 商品 `LOCKED -> OFF_SHELF` |
+| `CREATED` | `COMPLETED` | 完成订单 | MerchantOwner | 双减总库存与预占库存，库存归零才售罄 |
+| `CREATED` | `CLOSED` | 关闭订单 | MerchantOwner | 释放预占，不改变商品上下架状态 |
 
 ### 5.4 商品字段级编辑与操作矩阵
 
 | 商品状态 | 允许编辑字段 | 禁止编辑字段 | 允许操作 | 校验要求 |
 | --- | --- | --- | --- | --- |
-| `DRAFT` | 标题、描述、分类、价格、成色、图片 | 库存 | 上架、关闭 | 前端库存固定展示 1；后端拒绝修改库存 |
+| `DRAFT` | 标题、描述、分类、价格、成色、库存、图片 | 无 | 上架、关闭 | 库存为正整数 |
 | `ON_SHELF` | 描述、图片 | 分类、价格、库存、成色、标题 | 下架、创建订单、关闭 | 前端禁用禁止字段；后端二次校验拒绝越权字段 |
-| `OFF_SHELF` | 标题、描述、分类、价格、成色、图片 | 库存 | 上架、关闭 | 与 `DRAFT` 类似，允许完整调整后再上架 |
-| `LOCKED` | 无 | 全字段禁止 | 完成订单、关闭订单（订单页） | 商品页按钮禁用编辑；后端仅允许订单状态接口 |
+| `OFF_SHELF` | 标题、描述、分类、价格、成色、库存、图片 | 无 | 上架、关闭 | 新库存不得低于预占；有预占时不得永久关闭 |
 | `SOLD` | 无 | 全字段禁止 | 无 | 前端隐藏动作按钮；后端统一返回状态流转错误 |
 | `CLOSED` | 无 | 全字段禁止 | 无 | 前端隐藏动作按钮；后端统一返回状态流转错误 |
 
@@ -174,9 +172,9 @@ restricted login 规则：
 
 | 场景 | 订单变化 | 商品变化 | 是否事务内 | 备注 |
 | --- | --- | --- | --- | --- |
-| 创建订单 | `N/A -> CREATED` | `ON_SHELF -> LOCKED` | 是 | 同一商品仅允许一个 `CREATED` |
-| 完成订单 | `CREATED -> COMPLETED` | `LOCKED -> SOLD` | 是 | 失败整体回滚 |
-| 关闭订单 | `CREATED -> CLOSED` | `LOCKED -> OFF_SHELF` | 是 | 关闭后不自动上架 |
+| 创建订单 | `N/A -> CREATED` | 增加 `reserved_stock` | 是 | 多 active 订单，预占不超过库存 |
+| 完成订单 | `CREATED -> COMPLETED` | `stock` 与 `reserved_stock` 同量减少 | 是 | 库存归零才 `SOLD` |
+| 关闭订单 | `CREATED -> CLOSED` | 减少 `reserved_stock` | 是 | 保持当前上下架状态 |
 
 ## 7. 非功能规格
 1. 鉴权：JWT + Refresh Token，access token 默认 2h，refresh token 默认 7d。
@@ -195,11 +193,11 @@ restricted login 规则：
 3. Given `onboarding scope`，When 访问商品或订单接口，Then 返回 `10006`。
 4. Given 管理员审核通过商家，When 商家再次登录，Then 登录成功且 `token_scope=full`。
 5. Given 商品为 `DRAFT` 且必填项不全，When 发起上架，Then 返回参数校验错误。
-6. Given 商品为 `ON_SHELF`，When 创建订单，Then 创建成功且商品变更为 `LOCKED`。
-7. Given 商品已 `LOCKED` 且有 `CREATED` 订单，When 再次创建订单，Then 返回并发冲突错误。
-8. Given 订单为 `CREATED`，When 完成订单，Then 订单为 `COMPLETED` 且商品为 `SOLD`。
-9. Given 订单为 `CREATED`，When 关闭订单，Then 订单为 `CLOSED` 且商品为 `OFF_SHELF`。
-10. Given `LOCKED/SOLD/CLOSED` 商品，When 调用商品编辑接口，Then 返回状态流转或字段限制错误。
+6. Given 商品可售库存为 5，When 创建数量 2 的订单，Then 订单成功且商品预占为 2、状态保持 `ON_SHELF`。
+7. Given 同商品仍有可售库存，When 再次创建订单，Then 允许多笔 `CREATED`；只有数量超过可售库存时返回 `10010`。
+8. Given 订单为 `CREATED`，When 完成订单，Then 按数量双减库存；剩余库存大于 0 时不进入 `SOLD`。
+9. Given 订单为 `CREATED`，When 关闭订单，Then 释放预占且不改变商品上下架状态。
+10. Given 商品存在预占，When 永久关闭或把总库存改到预占以下，Then 返回状态或冲突错误。
 
 ## 9. 版本边界
 1. 本期不做支付、退款、售后和买家订单展示。

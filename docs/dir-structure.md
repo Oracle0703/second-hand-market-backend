@@ -83,9 +83,9 @@ second-hand-market-backend/
 3. 禁止将生产密钥写入仓库。
 
 ## 5. 初始化脚本约定
-1. `backend/scripts/bootstrap_admin`：初始化 `SUPER_ADMIN` 与基础管理员。
+1. `backend/scripts/bootstrap_admin`：使用显式数据库配置与 `0600` 密码文件创建单个管理员；不内置口令、不覆盖账号、不执行迁移。
 2. `backend/scripts/seed_categories`：导入一级/二级分类字典。
-3. 初始化脚本需要幂等，可重复执行。
+3. 分类脚本应幂等；管理员 bootstrap 对已存在用户名明确失败，避免误覆盖在用账号。
 
 ## 6. 测试目录与约定
 1. 单元测试与源代码同目录：`*_test.go`。

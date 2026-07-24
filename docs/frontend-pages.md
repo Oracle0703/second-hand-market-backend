@@ -3,20 +3,22 @@
 ## 默认假设
 1. 前端为单应用（React + TypeScript + Vite），通过响应式布局同时支持 PC 和移动端。
 2. 页面按角色与 scope 鉴权：未登录、平台管理员、商家主账号（`full/onboarding`）。
-3. 商品状态采用：`DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED`。
+3. 商品主流程采用：`DRAFT/ON_SHELF/OFF_SHELF/SOLD/CLOSED`；`LOCKED` 仅兼容历史数据。
 4. 分类采用两级字典，页面通过分类查询接口动态加载。
-5. `stock` 在本期固定为 `1`，前端仅展示不允许修改。
+5. 商品展示总库存、已预占和可售库存；草稿/下架状态可编辑总库存，但不得低于预占。
 
 ## 1. 路由与信息架构
 
 | 一级分区 | 页面 | 路由 |
 | --- | --- | --- |
 | 认证区 | 登录页 | `/login` |
+| 认证区 | 管理员登录页 | `/admin/login` |
 | 认证区 | 商家注册页 | `/register` |
 | 认证区 | 注册结果/待审核页 | `/register/status` |
 | 管理员区 | 审核列表页 | `/admin/merchants/reviews` |
 | 管理员区 | 审核详情页 | `/admin/merchants/reviews/:merchantId` |
 | 管理员区 | 全局操作日志页 | `/admin/logs` |
+| 管理员区 | 安全设置页 | `/admin/account/security` |
 | 商家区 | 仪表盘页 | `/merchant/dashboard` |
 | 商家区 | 商品列表页 | `/merchant/products` |
 | 商家区 | 新建商品页 | `/merchant/products/new` |
@@ -105,6 +107,11 @@
   - PC 表格 + 侧边详情。
   - 移动端卡片 + 折叠详情。
 
+#### 安全设置页（`/admin/account/security`）
+- 角色：PlatformAdmin。
+- 核心表单：当前密码、新密码、确认新密码。
+- 修改成功后清空本地 access/refresh token，并跳转 `/admin/login` 重新登录。
+
 ### 2.3 商家区页面
 
 #### 仪表盘页（`/merchant/dashboard`）
@@ -112,7 +119,7 @@
 - 关键动作 -> 接口：
   - 拉取统计：`GET /api/v1/merchant/dashboard`
 - 状态展示规则：
-  - 商品统计需包含 `LOCKED` 数量。
+  - 在售货值按 `price_cent * available_stock` 计算；遗留 `LOCKED` 仅作兼容统计。
 
 #### 商品列表页（`/merchant/products`）
 - 角色：MerchantOwner。
@@ -126,15 +133,15 @@
   - `DRAFT`：显示“编辑/上架/关闭”
   - `ON_SHELF`：显示“下架/创建订单/关闭”
   - `OFF_SHELF`：显示“编辑/上架/关闭”
-  - `LOCKED`：显示“查看订单”，禁用编辑与上下架
   - `SOLD/CLOSED`：仅允许查看详情
+  - 列表显示总库存、已预占、可售库存；可售为 0 时禁用创建订单。
 - PC/移动差异：
   - PC 操作列直接展示按钮。
   - 移动端卡片“更多”菜单。
 
 #### 新建商品页（`/merchant/products/new`）
 - 角色：MerchantOwner。
-- 核心内容：标题、价格、成色、库存（固定 1，只读展示）、描述、图片、分类选择。
+- 核心内容：标题、价格、成色、正整数库存、描述、图片、分类选择。
 - 关键动作 -> 接口：
   - 获取一级/二级分类：`GET /api/v1/merchant/categories`
   - 创建商品：`POST /api/v1/merchant/products`
@@ -142,7 +149,7 @@
 - 分类交互规则：
   - 先选一级再加载二级。
   - 必选二级分类后才允许提交。
-  - 库存不提供可编辑输入，提交时不传或仅传固定值 `1`。
+  - 库存必须为正整数，支持同款多件。
 
 #### 商品编辑页（`/merchant/products/:productId/edit`）
 - 角色：MerchantOwner。
@@ -151,11 +158,11 @@
   - 更新商品：`PUT /api/v1/merchant/products/:id`
   - 分类查询：`GET /api/v1/merchant/categories`
 - 字段可编辑规则：
-  - `DRAFT/OFF_SHELF`：除库存外可编辑（标题、描述、分类、价格、成色、图片）。
+  - `DRAFT/OFF_SHELF`：可编辑标题、描述、分类、价格、成色、库存、图片。
   - `ON_SHELF`：仅描述、图片可编辑。
-  - `LOCKED/SOLD/CLOSED`：禁止编辑。
+  - `SOLD/CLOSED`：禁止编辑；`LOCKED` 只处理历史兼容。
 - 库存规则：
-  - 编辑页不提供 `stock` 编辑控件，库存固定展示 `1`。
+  - 新库存不得低于 `reserved_stock`，页面同时展示当前预占和可售数量。
 - 前后端约束：
   - 前端禁用不可编辑字段和提交按钮。
   - 后端二次校验字段变更，拒绝越权更新。
@@ -166,9 +173,9 @@
   - 详情：`GET /api/v1/merchant/products/:id`
   - 上架/下架/关闭：对应商品状态接口
   - 创建订单：`POST /api/v1/merchant/orders`
-- 状态展示规则：
-  - `LOCKED` 明确展示“占用中（待完成/待关闭订单）”。
-  - 若 `active_order_id` 存在，展示“查看关联订单”按钮。
+- 订单创建规则：
+  - 列表与详情入口都打开数量/单件成交价表单，并实时显示订单总价。
+  - 创建订单不改变商品状态；商品详情不再依赖 `active_order_id`。
 
 #### 订单列表页（`/merchant/orders`）
 - 角色：MerchantOwner。
@@ -178,6 +185,7 @@
 - 状态展示规则：
   - `CREATED`：可进入详情执行完成/关闭。
   - `COMPLETED/CLOSED`：只读。
+  - 列表展示数量、单件成交价和整单总价。
 
 #### 订单详情页（`/merchant/orders/:orderId`）
 - 角色：MerchantOwner。
@@ -188,8 +196,8 @@
   - 仅 `CREATED` 显示完成/关闭按钮。
   - 提交中按钮置灰，防重复点击。
 - 业务提示：
-  - 完成后商品转 `SOLD`。
-  - 关闭后商品转 `OFF_SHELF`。
+  - 完成按数量扣减总库存与预占，库存归零才 `SOLD`。
+  - 关闭只释放预占，不改变商品上下架状态。
 
 #### 账号设置页（`/merchant/account`）
 - 角色：MerchantOwner。
@@ -217,7 +225,7 @@
 ### 3.2 商品状态
 1. `DRAFT`：草稿
 2. `ON_SHELF`：在售
-3. `LOCKED`：占用中
+3. `LOCKED`：遗留兼容状态（新流程不产生）
 4. `OFF_SHELF`：已下架
 5. `SOLD`：已成交
 6. `CLOSED`：已关闭

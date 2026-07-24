@@ -1,5 +1,7 @@
 # 文档修订汇总（review-fixes-summary）
 
+> 历史快照：本文记录 2026-03 初版“单件库存 + `LOCKED`”方案的形成过程，不再作为当前规格或验收依据。2026-07-24 起以 `specs.md`、`data-model.md`、`backend-api-checklist.md` 和 `production-hardening-repair-plan-2026-07-24.md` 的多库存规则为准。
+
 ## 1. 本次问题修复 Checklist（逐条过一遍）
 - [x] 一、订单与商品闭环不完整  
   已补充 `LOCKED` 状态、单商品单活动订单约束、订单关闭后商品统一回退 `OFF_SHELF`、事务一致性规则、联动表。

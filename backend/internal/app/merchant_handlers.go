@@ -190,7 +190,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 
 	var onShelfTotalAmountCent int64
 	if err := s.DB.Table("products").
-		Select("COALESCE(SUM(price_cent * stock), 0)").
+		Select("COALESCE(SUM(price_cent * (stock - reserved_stock)), 0)").
 		Where("merchant_id = ? AND status = ? AND deleted_at IS NULL", actor.MerchantID, model.ProductOnShelf).
 		Scan(&onShelfTotalAmountCent).Error; err != nil {
 		common.Fail(c, common.ErrInternal)

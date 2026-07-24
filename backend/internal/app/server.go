@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -32,6 +31,9 @@ type Server struct {
 }
 
 func NewServer(cfg Config) (*Server, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(cfg.FileStorageProvider) == "" {
 		cfg.FileStorageProvider = "local"
 	}
@@ -56,12 +58,15 @@ func NewServer(cfg Config) (*Server, error) {
 	if err := seedDefaults(db); err != nil {
 		return nil, err
 	}
+	if err := ensureAdminBootstrapState(db, cfg); err != nil {
+		return nil, err
+	}
 	if err := ensureUploadStorage(cfg); err != nil {
 		return nil, err
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret))
+	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret), middleware.RequireActiveAdminSession(db))
 	if strings.EqualFold(cfg.FileStorageProvider, "local") {
 		r.Static("/uploads", cfg.FileUploadLocalDir)
 	}
@@ -143,27 +148,21 @@ func migrate(db *gorm.DB) error {
 }
 
 func seedDefaults(db *gorm.DB) error {
+	return ensureDefaultCategories(db)
+}
+
+func ensureAdminBootstrapState(db *gorm.DB, cfg Config) error {
+	if !cfg.IsProduction() {
+		return nil
+	}
 	var count int64
 	if err := db.Model(&model.AdminUser{}).Count(&count).Error; err != nil {
 		return err
 	}
 	if count == 0 {
-		hash, err := bcrypt.GenerateFromPassword([]byte("Admin@123456"), bcrypt.DefaultCost)
-		if err != nil {
-			return err
-		}
-		admins := []model.AdminUser{
-			{Username: "superadmin", DisplayName: "Super Admin", Role: model.AdminRoleSuper, Status: model.AccountStatusActive, PasswordHash: string(hash)},
-			{Username: "admin", DisplayName: "Admin", Role: model.AdminRoleAdmin, Status: model.AccountStatusActive, PasswordHash: string(hash)},
-		}
-		if err := db.Create(&admins).Error; err != nil {
-			return err
-		}
+		return fmt.Errorf("production has no administrator; run the secure bootstrap command before starting the service")
 	}
-	if err := db.Model(&model.Category{}).Count(&count).Error; err != nil {
-		return err
-	}
-	return ensureDefaultCategories(db)
+	return nil
 }
 
 type categorySeed struct {
@@ -333,6 +332,7 @@ func (s *Server) registerRoutes() {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.RequireAuth(model.UserTypeAdmin))
 		{
+			admin.PUT("/account/password", s.handleAdminChangePassword)
 			admin.GET("/merchants", s.handleAdminMerchantList)
 			admin.GET("/merchants/:id", s.handleAdminMerchantDetail)
 			admin.POST("/merchants/:id/approve", s.handleAdminMerchantApprove)

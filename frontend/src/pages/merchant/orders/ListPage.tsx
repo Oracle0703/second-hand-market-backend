@@ -10,8 +10,11 @@ type OrderItem = {
   id: number
   order_no: string
   product_id: number
+  product_title: string
   status: OrderStatus
+  quantity: number
   deal_price_cent: number
+  total_deal_price_cent: number
   created_at: string
   category_level1_id?: number | null
   category_level1_name?: string | null
@@ -70,6 +73,13 @@ export function ListPage() {
       width: 100
     },
     {
+      title: '商品',
+      dataIndex: 'product_title',
+      search: false,
+      ellipsis: true,
+      width: 140
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       valueType: 'select',
@@ -92,11 +102,24 @@ export function ListPage() {
       render: (_, row) => row.category_level2_name || '-'
     },
     {
-      title: '成交价(元)',
+      title: '数量',
+      dataIndex: 'quantity',
+      search: false,
+      width: 80
+    },
+    {
+      title: '单件成交价(元)',
       dataIndex: 'deal_price_cent',
       search: false,
-      width: 120,
+      width: 140,
       render: (_, row) => centToYuanText(row.deal_price_cent)
+    },
+    {
+      title: '订单总价(元)',
+      dataIndex: 'total_deal_price_cent',
+      search: false,
+      width: 140,
+      render: (_, row) => centToYuanText(row.total_deal_price_cent)
     },
     {
       title: '创建时间',

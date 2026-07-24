@@ -39,14 +39,19 @@ type UpdatePasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required,min=8,max=128"`
 }
 
+type AdminChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password" binding:"required,max=128"`
+	NewPassword     string `json:"new_password" binding:"required,min=12,max=72"`
+}
+
 type CreateProductRequest struct {
 	Title             string   `json:"title" binding:"required,min=2,max=128"`
 	Description       string   `json:"description" binding:"required,min=2,max=5000"`
 	CategoryID        uint64   `json:"category_id" binding:"required"`
-	PriceCent         int      `json:"price_cent" binding:"required,gt=0"`
-	OriginalPriceCent int      `json:"original_price_cent" binding:"required,gt=0"`
+	PriceCent         int      `json:"price_cent" binding:"required,gt=0,lte=2147483647"`
+	OriginalPriceCent int      `json:"original_price_cent" binding:"required,gt=0,lte=2147483647"`
 	ConditionLevel    string   `json:"condition_level" binding:"required,oneof=LIKE_NEW GOOD FAIR POOR"`
-	Stock             int      `json:"stock" binding:"required,gt=0"`
+	Stock             int      `json:"stock" binding:"required,gt=0,lte=2147483647"`
 	ImageFileIDs      []uint64 `json:"image_file_ids" binding:"required,min=1,max=5,dive,gt=0"`
 }
 
@@ -54,16 +59,17 @@ type UpdateProductRequest struct {
 	Title             *string  `json:"title"`
 	Description       *string  `json:"description"`
 	CategoryID        *uint64  `json:"category_id"`
-	PriceCent         *int     `json:"price_cent"`
-	OriginalPriceCent *int     `json:"original_price_cent"`
+	PriceCent         *int     `json:"price_cent" binding:"omitempty,gt=0,lte=2147483647"`
+	OriginalPriceCent *int     `json:"original_price_cent" binding:"omitempty,gt=0,lte=2147483647"`
 	ConditionLevel    *string  `json:"condition_level"`
-	Stock             *int     `json:"stock"`
+	Stock             *int     `json:"stock" binding:"omitempty,gt=0,lte=2147483647"`
 	ImageFileIDs      []uint64 `json:"image_file_ids"`
 }
 
 type CreateOrderRequest struct {
 	ProductID          uint64  `json:"product_id" binding:"required"`
-	DealPriceCent      int     `json:"deal_price_cent" binding:"required,gt=0"`
+	Quantity           int     `json:"quantity" binding:"required,gt=0,lte=2147483647"`
+	DealPriceCent      int     `json:"deal_price_cent" binding:"required,gt=0,lte=2147483647"`
 	BuyerContactMasked *string `json:"buyer_contact_masked"`
 	Remark             *string `json:"remark"`
 }

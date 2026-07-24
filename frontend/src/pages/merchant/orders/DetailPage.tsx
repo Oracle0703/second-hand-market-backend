@@ -10,11 +10,16 @@ type OrderDetail = {
   id: number
   order_no: string
   status: OrderStatus
+  quantity: number
   deal_price_cent: number
+  total_deal_price_cent: number
   product: {
     id: number
     title: string
     status: string
+    stock: number
+    reserved_stock: number
+    available_stock: number
   }
 }
 
@@ -133,16 +138,19 @@ export function DetailPage() {
             dataIndex: 'status',
             render: (_, row) => <Tag color={getStatusColor(ORDER_STATUS_META, row.status)}>{getStatusText(ORDER_STATUS_META, row.status)}</Tag>
           },
-          { title: '成交价(元)', dataIndex: 'deal_price_cent', render: (_, row) => centToYuanText(row.deal_price_cent) },
+          { title: '数量', dataIndex: 'quantity' },
+          { title: '单件成交价(元)', dataIndex: 'deal_price_cent', render: (_, row) => centToYuanText(row.deal_price_cent) },
+          { title: '订单总价(元)', dataIndex: 'total_deal_price_cent', render: (_, row) => centToYuanText(row.total_deal_price_cent) },
           {
             title: '商品',
             key: 'product',
             render: (_, row) => (
-              <span>
-                <Link to={`/merchant/products/${row.product.id}`}>{row.product.title}</Link> ({getStatusText(PRODUCT_STATUS_META, row.product.status)})
-              </span>
+              <span><Link to={`/merchant/products/${row.product.id}`}>{row.product.title}</Link> ({getStatusText(PRODUCT_STATUS_META, row.product.status)})</span>
             )
-          }
+          },
+          { title: '商品总库存', key: 'stock', render: (_, row) => row.product.stock },
+          { title: '商品已预占', key: 'reserved_stock', render: (_, row) => row.product.reserved_stock },
+          { title: '商品可售库存', key: 'available_stock', render: (_, row) => row.product.available_stock }
         ]}
         dataSource={order}
       />

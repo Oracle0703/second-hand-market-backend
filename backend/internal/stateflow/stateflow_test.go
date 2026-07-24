@@ -7,8 +7,11 @@ import (
 )
 
 func TestProductTransition(t *testing.T) {
-	if !CanTransitionProduct(model.ProductOnShelf, model.ProductLocked) {
-		t.Fatal("expected ON_SHELF -> LOCKED allowed")
+	if CanTransitionProduct(model.ProductOnShelf, model.ProductLocked) {
+		t.Fatal("expected order-driven LOCKED transition to be disabled")
+	}
+	if !CanTransitionProduct(model.ProductOnShelf, model.ProductOffShelf) {
+		t.Fatal("expected ON_SHELF -> OFF_SHELF allowed")
 	}
 	if CanTransitionProduct(model.ProductSold, model.ProductOnShelf) {
 		t.Fatal("expected SOLD terminal")

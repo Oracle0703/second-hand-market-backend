@@ -5,6 +5,7 @@ import {
   HomeOutlined,
   LogoutOutlined,
   OrderedListOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   ShoppingOutlined
 } from '@ant-design/icons'
@@ -15,7 +16,8 @@ import { useAuthStore } from '../stores/auth-store'
 
 const adminMenus: MenuDataItem[] = [
   { path: '/admin/merchants/reviews', name: '商家审核', icon: <AuditOutlined /> },
-  { path: '/admin/logs', name: '全局日志', icon: <FileTextOutlined /> }
+  { path: '/admin/logs', name: '全局日志', icon: <FileTextOutlined /> },
+  { path: '/admin/account/security', name: '安全设置', icon: <SafetyCertificateOutlined /> }
 ]
 
 const merchantMenus: MenuDataItem[] = [
@@ -36,7 +38,7 @@ export function Layout() {
 
   const logout = () => {
     clear()
-    navigate('/login')
+    navigate(isAdmin ? '/admin/login' : '/login')
   }
 
   return (

@@ -6,6 +6,7 @@
 3. 游客请求默认携带 `X-Device-Id`。
 4. 本期购买意向必须登录。
 5. 本文只覆盖买家侧与意向闭环必需接口，不扩展支付/售后/聊天。
+6. 买家响应中的 `stock` 表示 `available_stock=products.stock-products.reserved_stock`；不向买家暴露 `reserved_stock`。
 
 ---
 
@@ -16,7 +17,7 @@
 | method | `GET` |
 | path | `/api/v1/buyer/products` |
 | 请求参数 | `keyword(O), category_id(O), page(O), page_size(O), sort(O:latest/price_asc/price_desc)` |
-| 响应字段 | `items[{id,title,price_cent,condition_level,cover_url,status,merchant_id,merchant_name,is_favorited}], total,page,page_size` |
+| 响应字段 | `items[{id,title,price_cent,original_price_cent,stock,condition_level,cover_url,status,merchant_id,merchant_name,is_favorited}], total,page,page_size` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`120 req/min/device` |
@@ -34,7 +35,7 @@
 | method | `GET` |
 | path | `/api/v1/buyer/products/:id` |
 | 请求参数 | `id(path,R)` |
-| 响应字段 | `product{id,title,description,price_cent,condition_level,status,images[],merchant{id,name},is_favorited,can_submit_intent}` |
+| 响应字段 | `product{id,title,description,price_cent,original_price_cent,stock,condition_level,status,images[],merchant{id,name},is_favorited,can_submit_intent}` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`120 req/min/device` |
@@ -127,7 +128,7 @@
 | method | `GET` |
 | path | `/api/v1/buyer/favorites` |
 | 请求参数 | `page(O), page_size(O)` |
-| 响应字段 | `items[{product_id,title,cover_url,price_cent,status,favorited_at}], total,page,page_size` |
+| 响应字段 | `items[{product_id,title,cover_url,price_cent,original_price_cent,stock,status,favorited_at}], total,page,page_size` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`120 req/min/owner` |
@@ -183,7 +184,7 @@
 | method | `GET` |
 | path | `/api/v1/buyer/histories` |
 | 请求参数 | `page(O), page_size(O)` |
-| 响应字段 | `items[{product_id,title,cover_url,price_cent,status,last_viewed_at,view_count}], total,page,page_size` |
+| 响应字段 | `items[{product_id,title,cover_url,price_cent,original_price_cent,stock,status,last_viewed_at,view_count}], total,page,page_size` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`120 req/min/owner` |

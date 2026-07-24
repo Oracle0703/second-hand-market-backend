@@ -46,8 +46,9 @@
    - 同一 `Idempotency-Key + operator_id + path` 只执行一次。
    - 重复请求返回首次执行结果；参数不同则返回 `10011`。
 3. 并发控制：
-   - 创建订单时对商品行加锁，并检查商品状态为 `ON_SHELF` 且无活动订单。
-   - `orders` 使用 `uk_product_active(product_id, is_active)` 避免同商品并发 `CREATED`。
+   - 创建订单使用 `stock-reserved_stock >= quantity` 的条件更新原子预占库存。
+   - 完成/关闭锁定订单行，并以订单状态 CAS 和条件库存更新保证只扣减或释放一次。
+   - `orders` 使用普通索引 `idx_order_product_active(product_id, is_active)`；同商品允许多笔 active 订单。
 
 ## 2. 认证模块（auth）
 
@@ -57,6 +58,9 @@
 | `/auth/login` | POST | 登录 | `login_type(R: ADMIN/MERCHANT), username(R), password(R)` | `access_token, refresh_token, expires_in, token_scope(full/onboarding), review_status, user{id,role,merchant_id?}` | PUBLIC |
 | `/auth/refresh` | POST | 刷新令牌 | `refresh_token(R)` | `access_token, refresh_token, expires_in` | PUBLIC |
 | `/auth/logout` | POST | 退出登录 | 无 | `success` | ADMIN/MERCHANT |
+| `/admin/account/password` | PUT | 管理员修改当前账号密码 | `current_password(R), new_password(R,12-72 bytes,不得使用历史公开口令)` | `success, password_updated_at` | ADMIN |
+
+管理员改密成功后只撤销该 `admin_users.id` 对应的管理员 session；旧 access/refresh token 随即失效。该接口不读写 `merchant_accounts`。
 
 restricted login 规则：
 1. 商家 `PENDING/REJECTED` 登录成功并返回 `token_scope=onboarding`。
@@ -130,25 +134,25 @@ onboarding scope 黑名单：
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(O,仅允许1), image_file_ids(R[])` | `product_id, product_no, status, stock, created_at` | MERCHANT(full) |
-| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), image_file_ids(O[])` | `product_id, status, stock, updated_at` | MERCHANT(full) |
-| `/merchant/products/:id` | GET | 商品详情 | `id(path,R)` | `product{id,title,status,category,price_cent,condition_level,stock,images[],active_order_id}` | MERCHANT(full) |
-| `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,updated_at}], total,page,page_size` | MERCHANT(full) |
+| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(R,正整数), image_file_ids(R[])` | `product_id, product_no, status, stock,reserved_stock,available_stock,created_at` | MERCHANT(full) |
+| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), stock(O), image_file_ids(O[])` | `product_id, status, updated_at` | MERCHANT(full) |
+| `/merchant/products/:id` | GET | 商品详情 | `id(path,R)` | `product{id,title,status,category,price_cent,condition_level,stock,reserved_stock,available_stock,images[]}` | MERCHANT(full) |
+| `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,reserved_stock,available_stock,updated_at}], total,page,page_size` | MERCHANT(full) |
 | `/merchant/products/:id/on-shelf` | POST | 上架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 | `/merchant/products/:id/off-shelf` | POST | 下架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 | `/merchant/products/:id/close` | POST | 关闭商品 | `id(path,R), reason(O)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 
 编辑约束：
-1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、图片），不含 `stock`。
+1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、库存、图片）。
 2. `ON_SHELF`：仅允许 `description,image_file_ids`。
-3. `LOCKED/SOLD/CLOSED`：禁止编辑。
-4. `stock` 为保留字段，本期固定 `1`，不支持编辑。
+3. `SOLD/CLOSED`：禁止编辑；`LOCKED` 仅为遗留兼容状态。
+4. 新库存不得小于 `reserved_stock`；有预占或 active 订单时不得永久关闭。
 
 失败场景：
 1. 跨商家访问返回 `10003`。
 2. 非法状态流转返回 `10005`。
 3. 分类不存在或非二级分类返回 `10001`。
-4. 创建商品时 `stock` 传入且不为 `1` 返回 `10001`。
+4. 创建商品时 `stock <= 0` 返回 `10001`；调整到低于预占库存返回 `10010`。
 
 幂等说明：
 1. `on-shelf/off-shelf/close` 重复请求且目标状态已达成时返回成功（`code=0`，`idempotent=true`）。
@@ -157,20 +161,20 @@ onboarding scope 黑名单：
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/orders` | POST | 创建订单 | `product_id(R), deal_price_cent(R), buyer_contact_masked(O), remark(O)` | `order_id, order_no, status, product_status` | MERCHANT(full) |
-| `/merchant/orders` | GET | 订单列表 | `status(O), keyword(O), page(O), page_size(O)` | `items[{id,order_no,product_id,product_title,status,deal_price_cent,created_at}], total,page,page_size` | MERCHANT(full) |
-| `/merchant/orders/:id` | GET | 订单详情 | `id(path,R)` | `order_detail{id,order_no,status,deal_price_cent,product}, events[]` | MERCHANT(full) |
-| `/merchant/orders/:id/complete` | POST | 完成订单 | `id(path,R), note(O)` | `order_id, from_status, to_status, product_status, completed_at` | MERCHANT(full) |
-| `/merchant/orders/:id/close` | POST | 关闭订单 | `id(path,R), reason(O)` | `order_id, from_status, to_status, product_status, closed_at` | MERCHANT(full) |
+| `/merchant/orders` | POST | 创建订单 | `product_id(R), quantity(R), deal_price_cent(R,单件), buyer_contact_masked(O), remark(O)` | `order_id,order_no,status,quantity,deal_price_cent,total_deal_price_cent,product_status,stock,reserved_stock,available_stock` | MERCHANT(full) |
+| `/merchant/orders` | GET | 订单列表 | `status(O), keyword(O), page(O), page_size(O)` | `items[{id,order_no,product_id,product_title,status,quantity,deal_price_cent,total_deal_price_cent,created_at}], total,page,page_size` | MERCHANT(full) |
+| `/merchant/orders/:id` | GET | 订单详情 | `id(path,R)` | `order_detail{id,order_no,status,quantity,deal_price_cent,total_deal_price_cent,product}, events[]` | MERCHANT(full) |
+| `/merchant/orders/:id/complete` | POST | 完成订单 | `id(path,R), note(O)` | `order_id,from_status,to_status,quantity,deal_price_cent,total_deal_price_cent,product_status,stock,reserved_stock,available_stock,completed_at` | MERCHANT(full) |
+| `/merchant/orders/:id/close` | POST | 关闭订单 | `id(path,R), reason(O)` | `order_id,from_status,to_status,quantity,deal_price_cent,total_deal_price_cent,product_status,stock,reserved_stock,available_stock,closed_at` | MERCHANT(full) |
 
 联动规则：
-1. 创建订单：`product ON_SHELF -> LOCKED`。
-2. 完成订单：`order CREATED -> COMPLETED` + `product LOCKED -> SOLD`。
-3. 关闭订单：`order CREATED -> CLOSED` + `product LOCKED -> OFF_SHELF`。
+1. 创建订单：原子增加 `reserved_stock`，商品保持 `ON_SHELF`。
+2. 完成订单：`order CREATED -> COMPLETED`，按数量同时减少总库存和预占；总库存归零才 `SOLD`。
+3. 关闭订单：`order CREATED -> CLOSED`，按数量释放预占，商品保持当前上下架状态。
 
 失败场景：
 1. 商品非 `ON_SHELF` 创建订单返回 `10005`。
-2. 商品已有活动订单（`CREATED`）返回 `10010`。
+2. 数量超过可售库存返回 `10010`；已有活动订单本身不阻止继续创建。
 3. 订单非 `CREATED` 调用 `complete/close` 返回 `10005`。
 
 幂等说明：
@@ -317,7 +321,7 @@ onboarding scope 黑名单：
   "category_id": 2102,
   "price_cent": 329900,
   "condition_level": "GOOD",
-  "stock": 1,
+  "stock": 5,
   "image_file_ids": [3001, 3002, 3003]
 }
 ```
@@ -362,6 +366,7 @@ onboarding scope 黑名单：
 ```json
 {
   "product_id": 12001,
+  "quantity": 2,
   "deal_price_cent": 320000,
   "buyer_contact_masked": "13****8000",
   "remark": "线下当面交易"
@@ -377,7 +382,13 @@ onboarding scope 黑名单：
     "order_id": 50001,
     "order_no": "O202603100001",
     "status": "CREATED",
-    "product_status": "LOCKED"
+    "quantity": 2,
+    "deal_price_cent": 320000,
+    "total_deal_price_cent": 640000,
+    "product_status": "ON_SHELF",
+    "stock": 5,
+    "reserved_stock": 2,
+    "available_stock": 3
   }
 }
 ```

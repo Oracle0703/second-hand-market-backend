@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions } from '@ant-design/pro-components'
 import { Alert, Button, Image, Space, Tag, message } from 'antd'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { getStatusColor, getStatusText, PRODUCT_STATUS_META, type ProductStatus } from '@/constants/status'
 import { api } from '@/services/api'
 import { centToYuanText } from '@/utils/price'
 import { resolveAssetURL } from '@/utils/url'
+import { CreateOrderModal } from './CreateOrderModal'
 
 type ProductDetail = {
   id: number
@@ -17,15 +19,17 @@ type ProductDetail = {
   original_price_cent?: number | null
   condition_level: string
   stock: number
+  reserved_stock: number
+  available_stock: number
   images: number[]
   image_urls?: string[]
-  active_order_id?: number
 }
 
 export function DetailPage() {
   const { productId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [orderModalOpen, setOrderModalOpen] = useState(false)
   const detail = useQuery({
     queryKey: ['product-detail', productId],
     queryFn: async () => (await api.productDetail(productId)).data.data.product as ProductDetail
@@ -41,18 +45,6 @@ export function DetailPage() {
       message.success('状态更新成功')
       await queryClient.invalidateQueries({ queryKey: ['product-detail', productId] })
       await queryClient.invalidateQueries({ queryKey: ['merchant-products'] })
-    },
-    onError: (err) => {
-      message.error((err as Error).message)
-    }
-  })
-
-  const createOrderMutation = useMutation({
-    mutationFn: async () => api.createOrder({ product_id: Number(productId), deal_price_cent: Number(detail.data?.price_cent ?? 0) }),
-    onSuccess: async () => {
-      message.success('订单创建成功')
-      await queryClient.invalidateQueries({ queryKey: ['product-detail', productId] })
-      await queryClient.invalidateQueries({ queryKey: ['merchant-orders'] })
     },
     onError: (err) => {
       message.error((err as Error).message)
@@ -85,12 +77,12 @@ export function DetailPage() {
       </Button>
     ),
     product.status === 'ON_SHELF' && (
-      <Button key="order" type="primary" loading={createOrderMutation.isPending} onClick={() => createOrderMutation.mutate()}>
+      <Button key="order" type="primary" disabled={product.available_stock <= 0} onClick={() => setOrderModalOpen(true)}>
         创建订单
       </Button>
     ),
     (product.status === 'DRAFT' || product.status === 'ON_SHELF' || product.status === 'OFF_SHELF') && (
-      <Button key="close" danger loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('close')}>
+      <Button key="close" danger loading={transitionMutation.isPending} disabled={product.reserved_stock > 0} onClick={() => transitionMutation.mutate('close')}>
         关闭商品
       </Button>
     )
@@ -113,7 +105,7 @@ export function DetailPage() {
         </ProCard>
       ) : null}
 
-      {(transitionMutation.error || createOrderMutation.error) ? <Alert type="error" showIcon message={((transitionMutation.error ?? createOrderMutation.error) as Error).message} style={{ marginBottom: 16 }} /> : null}
+      {transitionMutation.error ? <Alert type="error" showIcon message={(transitionMutation.error as Error).message} style={{ marginBottom: 16 }} /> : null}
 
       <ProDescriptions<ProductDetail>
         column={2}
@@ -126,7 +118,9 @@ export function DetailPage() {
           },
           { title: '价格(元)', dataIndex: 'price_cent', render: (_, row) => centToYuanText(row.price_cent) },
           { title: '原价(元)', dataIndex: 'original_price_cent', render: (_, row) => (row.original_price_cent ? centToYuanText(row.original_price_cent) : '-') },
-          { title: '库存', dataIndex: 'stock' },
+          { title: '总库存', dataIndex: 'stock' },
+          { title: '已预占', dataIndex: 'reserved_stock' },
+          { title: '可售库存', dataIndex: 'available_stock' },
           { title: '成色', dataIndex: 'condition_level' },
           { title: '分类ID', dataIndex: 'category_id' },
           { title: '描述', dataIndex: 'description', span: 2 },
@@ -176,11 +170,16 @@ export function DetailPage() {
         dataSource={product}
       />
 
-      {product.active_order_id ? (
-        <ProCard title="关联订单" style={{ marginTop: 16 }}>
-          <Link to={`/merchant/orders/${product.active_order_id}`}>查看订单 #{product.active_order_id}</Link>
-        </ProCard>
-      ) : null}
+      <CreateOrderModal
+        open={orderModalOpen}
+        product={product}
+        onCancel={() => setOrderModalOpen(false)}
+        onCreated={async () => {
+          await queryClient.invalidateQueries({ queryKey: ['product-detail', productId] })
+          await queryClient.invalidateQueries({ queryKey: ['merchant-orders'] })
+          await queryClient.invalidateQueries({ queryKey: ['merchant-products'] })
+        }}
+      />
     </PageContainer>
   )
 }

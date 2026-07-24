@@ -1,9 +1,21 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto'
+
 const baseURL = process.env.API_BASE_URL || 'http://localhost:8080/api/v1'
 
 function nowSeed() {
   return Date.now().toString().slice(-8)
+}
+
+function requiredEnv(name) {
+  const value = String(process.env[name] || '').trim()
+  if (!value) throw new Error(`${name} is required`)
+  return value
+}
+
+function randomSmokePassword() {
+  return `Sm0ke!${randomBytes(18).toString('base64url')}`
 }
 
 const seed = nowSeed()
@@ -42,9 +54,9 @@ function step(title) {
   console.log(`[SMOKE-MINIAPP-PAGE][STEP] ${title}`)
 }
 
-async function setupMerchantAndProduct(runSeed) {
+async function setupMerchantAndProduct(runSeed, adminUsername, adminPassword) {
   const username = `smoke_page_${runSeed}`
-  const password = 'Passw0rd!2026'
+  const password = randomSmokePassword()
 
   const license = await req('/files/presign', {
     method: 'POST',
@@ -72,7 +84,7 @@ async function setupMerchantAndProduct(runSeed) {
 
   const adminLogin = await req('/auth/login', {
     method: 'POST',
-    body: { login_type: 'ADMIN', username: 'admin', password: 'Admin@123456' }
+    body: { login_type: 'ADMIN', username: adminUsername, password: adminPassword }
   })
   assert(adminLogin.code === 0, 'admin login failed', adminLogin)
   const adminToken = adminLogin.data.access_token
@@ -141,6 +153,8 @@ function findByProduct(items, productID, field = 'id') {
 }
 
 async function main() {
+  const adminUsername = requiredEnv('SMOKE_ADMIN_USERNAME')
+  const adminPassword = requiredEnv('SMOKE_ADMIN_PASSWORD')
   step('0/7 联调前健康检查')
   let health
   try {
@@ -151,7 +165,7 @@ async function main() {
   }
   assert(health.code === 0, 'health check failed', health)
 
-  const { productID, categoryID, merchantToken } = await setupMerchantAndProduct(seed)
+  const { productID, categoryID, merchantToken } = await setupMerchantAndProduct(seed, adminUsername, adminPassword)
 
   step('1/7 首页 -> 商品列表 -> 商品详情（游客）')
   const homeList = await req('/buyer/products?page=1&page_size=50&sort=latest', {

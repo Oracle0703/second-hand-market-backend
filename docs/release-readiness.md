@@ -1,59 +1,48 @@
 # 发布前问题清单（release-readiness）
 
-更新时间：2026-03-10
+更新时间：2026-07-24
 
-## 1. 当前版本已完成范围
-- 工程骨架、数据模型与迁移、管理员初始化脚本。
-- restricted login 收口（`onboarding/full` scope 边界一致）。
-- 商品 P1 主链路：创建、编辑、上架、下架、关闭、详情、列表。
-- 订单 P1 主链路：创建、详情、完成、关闭，与商品状态联动。
-- 非主链路页面：管理员审核详情、商家日志、账号设置。
-- 并发与事务基础保障：单商品单活动订单、事务一致性测试。
+## 1. 当前版本状态
 
-## 2. 已验证通过项
-- 自动化回归（2026-03-10）：
-  - `cd backend && ... go test ./...`：通过
-  - `cd frontend && npm run test`：通过
-  - `cd frontend && npm run build`：通过
-  - `API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs`：通过
-- 后端关键回归测试覆盖：
-  - `TestRestrictedLoginScope`
-  - `TestConcurrentOrderCreateSingleActive`
-  - `TestOrderProductTransactionConsistency`
-  - `TestProductLifecycleStatusTransitions`
-  - `TestProductEditRulesByStatus`
-- smoke 覆盖：
-  - restricted login（`PENDING -> onboarding` + 受限接口拒绝）
-  - 管理员审核通过后 `full` 权限登录
-  - 商品创建/上架
-  - 订单创建/完成（商品 `LOCKED -> SOLD`）
-  - 订单创建/关闭（商品 `LOCKED -> OFF_SHELF`）
-- 文档一致性核对：
-  - restricted login 规则在 `project-overview/specs/frontend-pages/backend-api-checklist` 已一致。
-  - 错误码 `10001~10011/20001` 前后端已对齐（前端提示文案已按受限登录语义修正）。
+- 管理员安全加固已在本地实现：移除固定口令 seed、增加安全 bootstrap、生产默认值保护、自助改密及管理员 session 即时吊销。
+- 商家后台多库存已在本地实现：订单数量、单件成交价、派生总价、库存预占、多笔 active 订单及新完成/关闭语义。
+- 小程序没有增加下单入口；买家只读 API 的兼容字段 `stock` 返回可售库存。
+- 本地实现尚未部署到生产，`0004_merchant_multi_stock` 尚未在生产数据库执行，管理员生产口令也尚未轮换。
+- `yaner`、`admin`、`superadmin` 必须保留；本地实现和测试不修改任何现网账号或数据。
 
-## 3. 仍存在的风险
-- Mobile 端当前以手工清单核对为主，尚无自动化 E2E。
-- 前端测试存在 React Router v7 future flag warning（不影响当前功能）。
-- 冒烟脚本依赖本地端口与初始化管理员账号可用。
+## 2. 本地验证结果
 
-## 4. 明确不阻塞发布的问题
-- React Router future flag warning（仅升级提示，无行为回归）。
-- `README.en.md` 仍是模板内容（不影响交付与运行）。
-- 当前未引入完整 UI 端到端自动化（已有手工清单 + API/集成回归兜底）。
+- 后端：`go test ./...` 通过。
+- 前端：Vitest 5 个文件 / 5 个测试通过，生产构建通过。
+- 小程序：Vitest 11 个文件 / 17 个测试通过。
+- 三条 smoke 脚本通过 `node --check`，已移除固定管理员/测试商家口令；管理员凭据改为环境注入，临时商家密码每次随机生成。
+- 主 smoke 已同步新库存断言：数量与总价、剩余库存不售罄、库存归零才 `SOLD`、关单释放预占且不改变上下架状态。
 
-## 5. 阻塞发布的问题（如果有）
-- 本轮未发现新的阻塞缺陷。
+以上只证明本地 SQLite 回归和前端构建通过。MySQL 8.x 的迁移、索引和并发语义仍须在非生产测试库验证；三条 smoke 会创建测试业务数据，本轮没有在生产执行。
 
-## 6. 建议发布顺序 / 上线前检查项
-1. 执行后端回归：`cd backend && ... go test ./...`。
-2. 执行前端回归：`cd frontend && npm run test && npm run build`。
-3. 启动后端并执行冒烟脚本：`API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs`。
-4. 按 [收口验收清单](./acceptance-checklist.md) 做 PC + Mobile 最终人工检查。
-5. 上线顺序建议：
-   - 先发布后端
-   - 再发布前端
-   - 发布后立刻执行一次 smoke 回归
-6. 回滚准备：
-   - 保留上一版前后端构建产物
-   - 若上线后出现 `10010/10005` 异常激增，优先回滚后端并保留日志样本。
+## 3. 生产发布前置条件
+
+1. 取得可恢复的数据库备份证据，并重新确认 active 订单为 0。
+2. 明确保护 `yaner` 的两个合法多库存商品；`SOLD / stock>0` 商品保持冻结，未经业务确认不修数。
+3. 显式设置 `APP_ENV=production`，预检现有 JWT 与数据库配置不会触发默认值保护。
+4. 在订单写入口暂停后显式执行 `backend/migrations/0004_merchant_multi_stock.up.sql`，确认 `uk_product_active` 已删除、普通索引已建立、库存不变量成立。
+5. 同步发布后端和商家前端，再使用专门测试商品执行创建、关闭、完成 smoke；不得使用 `yaner` 的真实商品制造成交。
+6. 两个管理员应逐个改密并逐个验证，始终保留一个可登录管理员；只撤销目标管理员 session，不得触碰 `merchant_accounts`。
+
+详细预检、迁移、发布和回滚步骤以 [生产加固与商家多库存修复方案](./production-hardening-repair-plan-2026-07-24.md) 为准。
+
+## 4. 当前阻断项
+
+- 生产数据库备份与迁移证据未完成。
+- MySQL 8.x 非生产迁移/索引/并发验证未完成。
+- 新后端与商家前端尚未部署，生产管理员尚未逐个改密。
+- 域名 smoke 与 `yaner` 实际使用者只读验收尚未在新版本上执行。
+
+这些事项阻断多库存版本正式上线，但不要求同时实施营业执照私有化、miniapp 真实身份迁移、MySQL root 轮换或其他后续治理项。
+
+## 5. 回滚边界
+
+- 新库存语义开放前可回滚应用并保留新增列。
+- 一旦产生多笔 active 或多笔 inactive 历史订单，不得恢复旧唯一索引或直接回滚旧订单代码，应关闭创建入口并向前修复。
+- 管理员口令轮换后不得恢复仓库历史公开口令。
+- 任何回滚都不得删除、禁用、改名或重置 `yaner`，也不得把其多库存商品机械改为 1。

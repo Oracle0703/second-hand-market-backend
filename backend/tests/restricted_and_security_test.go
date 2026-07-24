@@ -42,7 +42,7 @@ func registerMerchant(t *testing.T, srv *app.Server, prefix string) (uint64, str
 func adminAccessToken(t *testing.T, srv *app.Server) string {
 	t.Helper()
 	login := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
-		"login_type": "ADMIN", "username": "admin", "password": "Admin@123456",
+		"login_type": "ADMIN", "username": "admin", "password": testAdminPassword,
 	}, nil)
 	if login.Code != 0 {
 		t.Fatalf("admin login failed: %+v", login)
@@ -98,10 +98,14 @@ func productImageAndCategory(t *testing.T, srv *app.Server, merchantToken string
 }
 
 func createAndOnShelfProduct(t *testing.T, srv *app.Server, merchantToken string) uint64 {
+	return createAndOnShelfProductWithStock(t, srv, merchantToken, 1)
+}
+
+func createAndOnShelfProductWithStock(t *testing.T, srv *app.Server, merchantToken string, stock int) uint64 {
 	t.Helper()
 	imgID, categoryID := productImageAndCategory(t, srv, merchantToken)
 	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
-		"title": "测试商品", "description": "desc", "category_id": categoryID, "price_cent": 10000, "original_price_cent": 12000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
+		"title": "测试商品", "description": "desc", "category_id": categoryID, "price_cent": 10000, "original_price_cent": 12000, "condition_level": "GOOD", "stock": stock, "image_file_ids": []uint64{imgID},
 	}, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if create.Code != 0 {
 		t.Fatalf("create product failed: %+v", create)
@@ -201,7 +205,7 @@ func TestCrossMerchantForbidden(t *testing.T) {
 		t.Fatalf("cross merchant product detail should be forbidden: %+v", productDetail)
 	}
 
-	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 9900}, map[string]string{"Authorization": "Bearer " + m1Token})
+	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "quantity": 1, "deal_price_cent": 9900}, map[string]string{"Authorization": "Bearer " + m1Token})
 	if createOrder.Code != 0 {
 		t.Fatalf("m1 create order failed: %+v", createOrder)
 	}
@@ -226,11 +230,11 @@ func TestOrderConflictAndInvalidTransition(t *testing.T) {
 	token := str(login.Data["access_token"])
 	productID := createAndOnShelfProduct(t, srv, token)
 
-	create1 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 9800}, map[string]string{"Authorization": "Bearer " + token})
+	create1 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "quantity": 1, "deal_price_cent": 9800}, map[string]string{"Authorization": "Bearer " + token})
 	if create1.Code != 0 {
 		t.Fatalf("first create order failed: %+v", create1)
 	}
-	create2 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 9700}, map[string]string{"Authorization": "Bearer " + token})
+	create2 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "quantity": 1, "deal_price_cent": 9700}, map[string]string{"Authorization": "Bearer " + token})
 	if create2.Code != 10010 {
 		t.Fatalf("second create order should conflict: %+v", create2)
 	}
@@ -251,7 +255,7 @@ func TestOrderConflictAndInvalidTransition(t *testing.T) {
 	}
 }
 
-func TestConcurrentOrderCreateSingleActive(t *testing.T) {
+func TestConcurrentOrderCreateDoesNotOversell(t *testing.T) {
 	srv := newTestServer(t)
 	adminToken := adminAccessToken(t, srv)
 	merchantID, username, password := registerMerchant(t, srv, "concurrent")
@@ -278,7 +282,7 @@ func TestConcurrentOrderCreateSingleActive(t *testing.T) {
 				srv.Router,
 				http.MethodPost,
 				"/api/v1/merchant/orders",
-				map[string]interface{}{"product_id": productID, "deal_price_cent": 9000 + idx},
+				map[string]interface{}{"product_id": productID, "quantity": 1, "deal_price_cent": 9000 + idx},
 				map[string]string{"Authorization": "Bearer " + token},
 			)
 			codes <- resp.Code
@@ -319,8 +323,8 @@ func TestConcurrentOrderCreateSingleActive(t *testing.T) {
 	if err := srv.DB.Where("id = ?", productID).First(&product).Error; err != nil {
 		t.Fatalf("load product failed: %v", err)
 	}
-	if product.Status != model.ProductLocked || product.ActiveOrderID == nil {
-		t.Fatalf("expected product locked with active order, got status=%s active_order_id=%v", product.Status, product.ActiveOrderID)
+	if product.Status != model.ProductOnShelf || product.ReservedStock != 1 || product.ActiveOrderID != nil {
+		t.Fatalf("expected one reserved unit without locking product, got status=%s reserved=%d active_order_id=%v", product.Status, product.ReservedStock, product.ActiveOrderID)
 	}
 }
 
@@ -337,7 +341,7 @@ func TestOrderProductTransactionConsistency(t *testing.T) {
 	token := str(login.Data["access_token"])
 
 	productForComplete := createAndOnShelfProduct(t, srv, token)
-	createCompleteOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productForComplete, "deal_price_cent": 10000}, map[string]string{"Authorization": "Bearer " + token})
+	createCompleteOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productForComplete, "quantity": 1, "deal_price_cent": 10000}, map[string]string{"Authorization": "Bearer " + token})
 	if createCompleteOrder.Code != 0 {
 		t.Fatalf("create order for complete failed: %+v", createCompleteOrder)
 	}
@@ -357,12 +361,12 @@ func TestOrderProductTransactionConsistency(t *testing.T) {
 	if completedOrder.Status != model.OrderCompleted || completedOrder.IsActive {
 		t.Fatalf("completed order mismatch: status=%s is_active=%v", completedOrder.Status, completedOrder.IsActive)
 	}
-	if completedProduct.Status != model.ProductSold || completedProduct.ActiveOrderID != nil {
-		t.Fatalf("completed product mismatch: status=%s active_order_id=%v", completedProduct.Status, completedProduct.ActiveOrderID)
+	if completedProduct.Status != model.ProductSold || completedProduct.Stock != 0 || completedProduct.ReservedStock != 0 || completedProduct.ActiveOrderID != nil {
+		t.Fatalf("completed product mismatch: status=%s stock=%d reserved=%d active_order_id=%v", completedProduct.Status, completedProduct.Stock, completedProduct.ReservedStock, completedProduct.ActiveOrderID)
 	}
 
 	productForClose := createAndOnShelfProduct(t, srv, token)
-	createCloseOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productForClose, "deal_price_cent": 9900}, map[string]string{"Authorization": "Bearer " + token})
+	createCloseOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productForClose, "quantity": 1, "deal_price_cent": 9900}, map[string]string{"Authorization": "Bearer " + token})
 	if createCloseOrder.Code != 0 {
 		t.Fatalf("create order for close failed: %+v", createCloseOrder)
 	}
@@ -382,8 +386,8 @@ func TestOrderProductTransactionConsistency(t *testing.T) {
 	if closedOrder.Status != model.OrderClosed || closedOrder.IsActive {
 		t.Fatalf("closed order mismatch: status=%s is_active=%v", closedOrder.Status, closedOrder.IsActive)
 	}
-	if closedProduct.Status != model.ProductOffShelf || closedProduct.ActiveOrderID != nil {
-		t.Fatalf("closed product mismatch: status=%s active_order_id=%v", closedProduct.Status, closedProduct.ActiveOrderID)
+	if closedProduct.Status != model.ProductOnShelf || closedProduct.Stock != 1 || closedProduct.ReservedStock != 0 || closedProduct.ActiveOrderID != nil {
+		t.Fatalf("closed product mismatch: status=%s stock=%d reserved=%d active_order_id=%v", closedProduct.Status, closedProduct.Stock, closedProduct.ReservedStock, closedProduct.ActiveOrderID)
 	}
 }
 

@@ -290,7 +290,7 @@ func (s *Server) handleBuyerProducts(c *gin.Context) {
 			"title":               it.Title,
 			"price_cent":          it.PriceCent,
 			"original_price_cent": it.OriginalPriceCent,
-			"stock":               it.Stock,
+			"stock":               it.Stock - it.ReservedStock,
 			"condition_level":     it.ConditionLevel,
 			"cover_url":           coverMap[it.ID],
 			"status":              it.Status,
@@ -371,7 +371,7 @@ func (s *Server) handleBuyerProductDetail(c *gin.Context) {
 		"description":         product.Description,
 		"price_cent":          product.PriceCent,
 		"original_price_cent": product.OriginalPriceCent,
-		"stock":               product.Stock,
+		"stock":               product.Stock - product.ReservedStock,
 		"condition_level":     product.ConditionLevel,
 		"status":              product.Status,
 		"images":              images,
@@ -653,6 +653,7 @@ func (s *Server) handleBuyerFavoriteList(c *gin.Context) {
 		PriceCent         int
 		OriginalPriceCent *int
 		Stock             int
+		ReservedStock     int
 		Status            string
 	}
 	rows := make([]productRow, 0, len(productIDs))
@@ -681,7 +682,7 @@ func (s *Server) handleBuyerFavoriteList(c *gin.Context) {
 			"cover_url":           coverMap[fav.ProductID],
 			"price_cent":          p.PriceCent,
 			"original_price_cent": p.OriginalPriceCent,
-			"stock":               p.Stock,
+			"stock":               p.Stock - p.ReservedStock,
 			"status":              p.Status,
 			"favorited_at":        fav.CreatedAt,
 		})
@@ -880,6 +881,7 @@ func (s *Server) handleBuyerHistoryList(c *gin.Context) {
 		PriceCent         int
 		OriginalPriceCent *int
 		Stock             int
+		ReservedStock     int
 		Status            string
 	}
 	rows := make([]productRow, 0, len(productIDs))
@@ -908,7 +910,7 @@ func (s *Server) handleBuyerHistoryList(c *gin.Context) {
 			"cover_url":           coverMap[it.ProductID],
 			"price_cent":          p.PriceCent,
 			"original_price_cent": p.OriginalPriceCent,
-			"stock":               p.Stock,
+			"stock":               p.Stock - p.ReservedStock,
 			"status":              p.Status,
 			"last_viewed_at":      it.LastViewedAt,
 			"view_count":          it.ViewCount,

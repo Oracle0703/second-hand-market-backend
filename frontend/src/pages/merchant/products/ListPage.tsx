@@ -7,6 +7,7 @@ import { getStatusColor, getStatusText, PRODUCT_STATUS_META, toValueEnum, type P
 import { api } from '@/services/api'
 import { centToYuanText } from '@/utils/price'
 import { resolveAssetURL } from '@/utils/url'
+import { CreateOrderModal, type OrderableProduct } from './CreateOrderModal'
 
 type ProductItem = {
   id: number
@@ -15,6 +16,8 @@ type ProductItem = {
   price_cent: number
   original_price_cent?: number | null
   stock: number
+  reserved_stock: number
+  available_stock: number
   updated_at: string
   category_level1_id?: number | null
   category_level1_name?: string | null
@@ -59,6 +62,7 @@ export function ListPage() {
   const [previewTitle, setPreviewTitle] = useState('')
   const [previewImageURLs, setPreviewImageURLs] = useState<string[]>([])
   const [previewImageIDs, setPreviewImageIDs] = useState<number[]>([])
+  const [orderProduct, setOrderProduct] = useState<OrderableProduct | null>(null)
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
     queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
@@ -69,15 +73,6 @@ export function ListPage() {
       if (action === 'off') return api.productOffShelf(id)
       return api.productClose(id)
     },
-    onSuccess: () => {
-      actionRef.current?.reload()
-    },
-    onError: (err) => {
-      message.error((err as Error).message)
-    }
-  })
-  const createOrderMutation = useMutation({
-    mutationFn: async (payload: { product_id: number; deal_price_cent: number }) => api.createOrder(payload),
     onSuccess: () => {
       actionRef.current?.reload()
     },
@@ -200,10 +195,22 @@ export function ListPage() {
       render: (_, row) => (row.original_price_cent ? centToYuanText(row.original_price_cent) : '-')
     },
     {
-      title: '库存',
+      title: '总库存',
       dataIndex: 'stock',
       search: false,
       width: 80
+    },
+    {
+      title: '已预占',
+      dataIndex: 'reserved_stock',
+      search: false,
+      width: 80
+    },
+    {
+      title: '可售库存',
+      dataIndex: 'available_stock',
+      search: false,
+      width: 88
     },
     {
       title: '状态',
@@ -256,8 +263,8 @@ export function ListPage() {
               </Button>
               <Button
                 type="link"
-                loading={createOrderMutation.isPending}
-                onClick={() => createOrderMutation.mutate({ product_id: row.id, deal_price_cent: row.price_cent })}
+                disabled={row.available_stock <= 0}
+                onClick={() => setOrderProduct(row)}
               >
                 创建订单
               </Button>
@@ -268,13 +275,14 @@ export function ListPage() {
               type="link"
               danger
               loading={transitionMutation.isPending}
+              disabled={row.reserved_stock > 0}
               onClick={() => transitionMutation.mutate({ id: row.id, action: 'close' })}
             >
               关闭
             </Button>
           )}
           {(row.status === 'DRAFT' || row.status === 'OFF_SHELF' || row.status === 'CLOSED') && (
-            <Button type="link" danger loading={deleteMutation.isPending} onClick={() => handleDeleteProduct(row)}>
+            <Button type="link" danger loading={deleteMutation.isPending} disabled={row.reserved_stock > 0} onClick={() => handleDeleteProduct(row)}>
               删除
             </Button>
           )}
@@ -351,6 +359,12 @@ export function ListPage() {
           <Empty description="当前商品暂无上传图片" />
         )}
       </Modal>
+      <CreateOrderModal
+        open={orderProduct !== null}
+        product={orderProduct}
+        onCancel={() => setOrderProduct(null)}
+        onCreated={() => actionRef.current?.reload()}
+      />
     </PageContainer>
   )
 }

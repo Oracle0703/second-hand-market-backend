@@ -1,12 +1,35 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	mysqlcfg "github.com/go-sql-driver/mysql"
 )
 
+const (
+	defaultDBDSN            = "shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"
+	defaultDBPassword       = "Shm@123456"
+	defaultJWTAccessSecret  = "dev-access-secret"
+	defaultJWTRefreshSecret = "dev-refresh-secret"
+)
+
+var knownUnsafeProductionSecrets = map[string]bool{
+	defaultJWTAccessSecret:                        true,
+	defaultJWTRefreshSecret:                       true,
+	"replace-access-secret":                       true,
+	"replace-refresh-secret":                      true,
+	"replace-with-a-strong-access-secret":         true,
+	"replace-with-a-strong-refresh-secret":        true,
+	"replace-with-a-strong-random-access-secret":  true,
+	"replace-with-a-strong-random-refresh-secret": true,
+}
+
 type Config struct {
+	AppEnv                     string
 	Addr                       string
 	DBDriver                   string
 	DBDSN                      string
@@ -36,11 +59,12 @@ type Config struct {
 
 func LoadConfig() Config {
 	cfg := Config{
+		AppEnv:                     getEnv("APP_ENV", "development"),
 		Addr:                       getEnv("ADDR", ":8080"),
 		DBDriver:                   getEnv("DB_DRIVER", "mysql"),
-		DBDSN:                      getEnv("DB_DSN", "shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"),
-		JWTAccessSecret:            getEnv("JWT_ACCESS_SECRET", "dev-access-secret"),
-		JWTRefreshSecret:           getEnv("JWT_REFRESH_SECRET", "dev-refresh-secret"),
+		DBDSN:                      getEnv("DB_DSN", defaultDBDSN),
+		JWTAccessSecret:            getEnv("JWT_ACCESS_SECRET", defaultJWTAccessSecret),
+		JWTRefreshSecret:           getEnv("JWT_REFRESH_SECRET", defaultJWTRefreshSecret),
 		AccessTTL:                  2 * time.Hour,
 		RefreshTTL:                 7 * 24 * time.Hour,
 		AutoMigrate:                getEnvBool("AUTO_MIGRATE", true),
@@ -83,6 +107,41 @@ func LoadConfig() Config {
 		}
 	}
 	return cfg
+}
+
+func (c Config) IsProduction() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AppEnv), "production")
+}
+
+func (c Config) Validate() error {
+	if !c.IsProduction() {
+		return nil
+	}
+	if isKnownUnsafeProductionSecret(c.JWTAccessSecret) {
+		return fmt.Errorf("production JWT access secret must be explicitly configured")
+	}
+	if isKnownUnsafeProductionSecret(c.JWTRefreshSecret) {
+		return fmt.Errorf("production JWT refresh secret must be explicitly configured")
+	}
+	if strings.EqualFold(strings.TrimSpace(c.DBDriver), "mysql") {
+		dsn := strings.TrimSpace(c.DBDSN)
+		if dsn == "" || dsn == defaultDBDSN {
+			return fmt.Errorf("production database DSN must be explicitly configured")
+		}
+		parsed, err := mysqlcfg.ParseDSN(dsn)
+		if err != nil {
+			return fmt.Errorf("production database DSN is invalid")
+		}
+		if parsed.Passwd == "" || parsed.Passwd == defaultDBPassword || parsed.Passwd == "replace-with-a-strong-db-password" {
+			return fmt.Errorf("production database password must not use an empty, default, or example value")
+		}
+	}
+	return nil
+}
+
+func isKnownUnsafeProductionSecret(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || knownUnsafeProductionSecrets[value]
 }
 
 func getEnv(k, d string) string {

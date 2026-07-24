@@ -9,16 +9,11 @@ var productTransitions = map[string]map[string]bool{
 	},
 	model.ProductOnShelf: {
 		model.ProductOffShelf: true,
-		model.ProductLocked:   true,
 		model.ProductClosed:   true,
 	},
 	model.ProductOffShelf: {
 		model.ProductOnShelf: true,
 		model.ProductClosed:  true,
-	},
-	model.ProductLocked: {
-		model.ProductSold:     true,
-		model.ProductOffShelf: true,
 	},
 }
 

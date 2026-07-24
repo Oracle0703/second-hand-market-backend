@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -13,12 +14,11 @@ import (
 	"second-hand-market-backend/backend/internal/stateflow"
 )
 
-func isUniqueActiveOrderErr(err error) bool {
-	if err == nil {
-		return false
+func orderTotalDealPriceCent(quantity, dealPriceCent int) (int64, error) {
+	if quantity <= 0 || dealPriceCent <= 0 || int64(dealPriceCent) > math.MaxInt64/int64(quantity) {
+		return 0, common.ErrInvalidArgument
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "uk_product_active") || strings.Contains(msg, "unique")
+	return int64(quantity) * int64(dealPriceCent), nil
 }
 
 func (s *Server) handleCreateOrder(c *gin.Context) {
@@ -32,22 +32,39 @@ func (s *Server) handleCreateOrder(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	totalDealPriceCent, err := orderTotalDealPriceCent(req.Quantity, req.DealPriceCent)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	var order model.Order
+	var product model.Product
 	err = s.DB.Transaction(func(tx *gorm.DB) error {
-		product, err := s.loadOwnedProduct(tx, req.ProductID, actor.MerchantID)
+		ownedProduct, err := s.loadOwnedProduct(tx, req.ProductID, actor.MerchantID)
 		if err != nil {
 			return err
 		}
-		if product.Status == model.ProductLocked && product.ActiveOrderID != nil {
-			return common.NewBizError(common.CodeConflict, "product has active order", 409)
-		}
-		if !stateflow.CanTransitionProduct(product.Status, model.ProductLocked) {
+		if ownedProduct.Status != model.ProductOnShelf {
 			return common.ErrInvalidTransition
+		}
+		reserveResult := tx.Model(&model.Product{}).
+			Where("id = ? AND merchant_id = ? AND status = ? AND stock - reserved_stock >= ?", ownedProduct.ID, actor.MerchantID, model.ProductOnShelf, req.Quantity).
+			Updates(map[string]interface{}{
+				"reserved_stock": gorm.Expr("reserved_stock + ?", req.Quantity),
+				"updated_by":     actor.UserID,
+				"version":        gorm.Expr("version + 1"),
+			})
+		if reserveResult.Error != nil {
+			return reserveResult.Error
+		}
+		if reserveResult.RowsAffected != 1 {
+			return common.NewBizError(common.CodeConflict, "insufficient available stock", 409)
 		}
 		order = model.Order{
 			OrderNo:            common.BuildBizNo("O"),
 			MerchantID:         actor.MerchantID,
-			ProductID:          product.ID,
+			ProductID:          ownedProduct.ID,
+			Quantity:           req.Quantity,
 			DealPriceCent:      req.DealPriceCent,
 			BuyerContactMasked: req.BuyerContactMasked,
 			Remark:             req.Remark,
@@ -56,27 +73,16 @@ func (s *Server) handleCreateOrder(c *gin.Context) {
 			CreatedBy:          actor.UserID,
 		}
 		if err := tx.Create(&order).Error; err != nil {
-			if isUniqueActiveOrderErr(err) {
-				return common.ErrConflict
-			}
 			return err
 		}
-		now := time.Now()
-		fromStatus := product.Status
-		product.Status = model.ProductLocked
-		product.ActiveOrderID = &order.ID
-		product.LockedAt = &now
-		product.UpdatedBy = actor.UserID
-		product.Version++
-		if err := tx.Save(&product).Error; err != nil {
+		if err := tx.Where("id = ?", ownedProduct.ID).First(&product).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&model.OrderEvent{OrderID: order.ID, EventType: "CREATE", ToStatus: model.OrderCreated, OperatorType: model.UserTypeMerchant, OperatorID: actor.UserID, Note: req.Remark}).Error; err != nil {
 			return err
 		}
-		from, to := fromStatus, model.ProductLocked
 		s.writeOperationLog(c, tx, "order", order.ID, "order_create", nil, &order.Status, common.CodeOK, &actor.MerchantID, nil)
-		s.writeOperationLog(c, tx, "product", product.ID, "product_lock", &from, &to, common.CodeOK, &actor.MerchantID, gin.H{"order_id": order.ID})
+		s.writeOperationLog(c, tx, "product", product.ID, "product_reserve_stock", nil, nil, common.CodeOK, &actor.MerchantID, gin.H{"order_id": order.ID, "quantity": order.Quantity})
 		return nil
 	})
 	if err != nil {
@@ -87,7 +93,18 @@ func (s *Server) handleCreateOrder(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	common.Success(c, gin.H{"order_id": order.ID, "order_no": order.OrderNo, "status": order.Status, "product_status": model.ProductLocked})
+	common.Success(c, gin.H{
+		"order_id":              order.ID,
+		"order_no":              order.OrderNo,
+		"status":                order.Status,
+		"quantity":              order.Quantity,
+		"deal_price_cent":       order.DealPriceCent,
+		"total_deal_price_cent": totalDealPriceCent,
+		"product_status":        product.Status,
+		"stock":                 product.Stock,
+		"reserved_stock":        product.ReservedStock,
+		"available_stock":       product.Stock - product.ReservedStock,
+	})
 }
 
 func (s *Server) handleOrderList(c *gin.Context) {
@@ -120,8 +137,11 @@ func (s *Server) handleOrderList(c *gin.Context) {
 		ID                 uint64    `json:"id"`
 		OrderNo            string    `json:"order_no"`
 		ProductID          uint64    `json:"product_id"`
+		ProductTitle       string    `json:"product_title"`
 		Status             string    `json:"status"`
+		Quantity           int       `json:"quantity"`
 		DealPriceCent      int       `json:"deal_price_cent"`
+		TotalDealPriceCent int64     `json:"total_deal_price_cent" gorm:"-"`
 		CreatedAt          time.Time `json:"created_at"`
 		CategoryLevel1ID   *uint64   `json:"category_level1_id"`
 		CategoryLevel1Name *string   `json:"category_level1_name"`
@@ -130,10 +150,13 @@ func (s *Server) handleOrderList(c *gin.Context) {
 	}
 	items := make([]item, 0, size)
 	if err := query.Select(
-		"o.id, o.order_no, o.product_id, o.status, o.deal_price_cent, o.created_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+		"o.id, o.order_no, o.product_id, p.title AS product_title, o.status, o.quantity, o.deal_price_cent, o.created_at, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
 	).Order("o.id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
+	}
+	for i := range items {
+		items[i].TotalDealPriceCent = int64(items[i].Quantity) * int64(items[i].DealPriceCent)
 	}
 	common.Success(c, common.PageResult[item]{Items: items, Total: total, Page: page, PageSize: size})
 }
@@ -158,7 +181,23 @@ func (s *Server) handleOrderDetail(c *gin.Context) {
 	_ = s.DB.Where("id = ?", order.ProductID).First(&product).Error
 	var events []model.OrderEvent
 	_ = s.DB.Where("order_id = ?", order.ID).Order("id ASC").Find(&events).Error
-	common.Success(c, gin.H{"order_detail": gin.H{"id": order.ID, "order_no": order.OrderNo, "status": order.Status, "deal_price_cent": order.DealPriceCent, "product": gin.H{"id": product.ID, "title": product.Title, "status": product.Status}}, "events": events})
+	totalDealPriceCent := int64(order.Quantity) * int64(order.DealPriceCent)
+	common.Success(c, gin.H{"order_detail": gin.H{
+		"id":                    order.ID,
+		"order_no":              order.OrderNo,
+		"status":                order.Status,
+		"quantity":              order.Quantity,
+		"deal_price_cent":       order.DealPriceCent,
+		"total_deal_price_cent": totalDealPriceCent,
+		"product": gin.H{
+			"id":              product.ID,
+			"title":           product.Title,
+			"status":          product.Status,
+			"stock":           product.Stock,
+			"reserved_stock":  product.ReservedStock,
+			"available_stock": product.Stock - product.ReservedStock,
+		},
+	}, "events": events})
 }
 
 func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action string, note *string) {
@@ -177,51 +216,106 @@ func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action strin
 			}
 			fromOrder := order.Status
 			if order.Status == toStatus {
+				product, err := s.loadOwnedProduct(tx, order.ProductID, actor.MerchantID)
+				if err != nil {
+					return err
+				}
 				resp["order_id"] = order.ID
 				resp["from_status"] = order.Status
 				resp["to_status"] = order.Status
 				resp["idempotent"] = true
-				if toStatus == model.OrderCompleted {
-					resp["product_status"] = model.ProductSold
-				} else {
-					resp["product_status"] = model.ProductOffShelf
-				}
+				resp["quantity"] = order.Quantity
+				resp["deal_price_cent"] = order.DealPriceCent
+				resp["total_deal_price_cent"] = int64(order.Quantity) * int64(order.DealPriceCent)
+				resp["product_status"] = product.Status
+				resp["stock"] = product.Stock
+				resp["reserved_stock"] = product.ReservedStock
+				resp["available_stock"] = product.Stock - product.ReservedStock
 				return nil
 			}
 			if !stateflow.CanTransitionOrder(order.Status, toStatus) {
 				return common.ErrInvalidTransition
 			}
+			if order.Quantity <= 0 {
+				return common.ErrInternal
+			}
 			product, err := s.loadOwnedProduct(tx, order.ProductID, actor.MerchantID)
 			if err != nil {
 				return err
 			}
-			if product.Status != model.ProductLocked {
+			if product.Status != model.ProductOnShelf && product.Status != model.ProductOffShelf {
 				return common.ErrInvalidTransition
 			}
 
-			order.Status = toStatus
-			order.IsActive = false
 			now := time.Now()
+			var inventoryResult *gorm.DB
 			if toStatus == model.OrderCompleted {
-				order.CompletedAt = &now
-				product.Status = model.ProductSold
-				product.SoldAt = &now
+				inventoryResult = tx.Model(&model.Product{}).
+					Where("id = ? AND merchant_id = ? AND stock >= ? AND reserved_stock >= ?", product.ID, actor.MerchantID, order.Quantity, order.Quantity).
+					Updates(map[string]interface{}{
+						"stock":          gorm.Expr("stock - ?", order.Quantity),
+						"reserved_stock": gorm.Expr("reserved_stock - ?", order.Quantity),
+						"updated_by":     actor.UserID,
+						"version":        gorm.Expr("version + 1"),
+					})
 				resp["completed_at"] = now.Format(time.RFC3339)
 			} else {
-				order.ClosedAt = &now
-				order.CloseReason = note
-				product.Status = model.ProductOffShelf
-				product.OffShelfAt = &now
+				inventoryResult = tx.Model(&model.Product{}).
+					Where("id = ? AND merchant_id = ? AND reserved_stock >= ?", product.ID, actor.MerchantID, order.Quantity).
+					Updates(map[string]interface{}{
+						"reserved_stock": gorm.Expr("reserved_stock - ?", order.Quantity),
+						"updated_by":     actor.UserID,
+						"version":        gorm.Expr("version + 1"),
+					})
 				resp["closed_at"] = now.Format(time.RFC3339)
 			}
-			product.ActiveOrderID = nil
-			product.UpdatedBy = actor.UserID
-			product.Version++
-			if err := tx.Save(&order).Error; err != nil {
+			if inventoryResult.Error != nil {
+				return inventoryResult.Error
+			}
+			if inventoryResult.RowsAffected != 1 {
+				return common.NewBizError(common.CodeConflict, "inventory state changed", 409)
+			}
+
+			orderUpdates := map[string]interface{}{
+				"status":    toStatus,
+				"is_active": false,
+			}
+			if toStatus == model.OrderCompleted {
+				orderUpdates["completed_at"] = &now
+			} else {
+				orderUpdates["closed_at"] = &now
+				orderUpdates["close_reason"] = note
+			}
+			orderResult := tx.Model(&model.Order{}).
+				Where("id = ? AND merchant_id = ? AND status = ? AND is_active = ?", order.ID, actor.MerchantID, model.OrderCreated, true).
+				Updates(orderUpdates)
+			if orderResult.Error != nil {
+				return orderResult.Error
+			}
+			if orderResult.RowsAffected != 1 {
+				return common.NewBizError(common.CodeConflict, "order state changed", 409)
+			}
+
+			if err := tx.Where("id = ?", product.ID).First(&product).Error; err != nil {
 				return err
 			}
-			if err := tx.Save(&product).Error; err != nil {
-				return err
+			if toStatus == model.OrderCompleted && product.Stock == 0 {
+				statusResult := tx.Model(&model.Product{}).
+					Where("id = ? AND stock = 0 AND status IN ?", product.ID, []string{model.ProductOnShelf, model.ProductOffShelf}).
+					Updates(map[string]interface{}{
+						"status":     model.ProductSold,
+						"sold_at":    &now,
+						"updated_by": actor.UserID,
+						"version":    gorm.Expr("version + 1"),
+					})
+				if statusResult.Error != nil {
+					return statusResult.Error
+				}
+				if statusResult.RowsAffected != 1 {
+					return common.ErrInvalidTransition
+				}
+				product.Status = model.ProductSold
+				product.SoldAt = &now
 			}
 			eventType := "COMPLETE"
 			if toStatus == model.OrderClosed {
@@ -230,14 +324,19 @@ func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action strin
 			if err := tx.Create(&model.OrderEvent{OrderID: order.ID, EventType: eventType, FromStatus: &fromOrder, ToStatus: toStatus, OperatorType: model.UserTypeMerchant, OperatorID: actor.UserID, Note: note}).Error; err != nil {
 				return err
 			}
-			fromProduct := model.ProductLocked
 			s.writeOperationLog(c, tx, "order", order.ID, action, &fromOrder, &toStatus, common.CodeOK, &actor.MerchantID, nil)
-			s.writeOperationLog(c, tx, "product", product.ID, "product_order_link", &fromProduct, &product.Status, common.CodeOK, &actor.MerchantID, gin.H{"order_id": order.ID})
+			s.writeOperationLog(c, tx, "product", product.ID, "product_order_inventory", nil, &product.Status, common.CodeOK, &actor.MerchantID, gin.H{"order_id": order.ID, "quantity": order.Quantity, "order_status": toStatus})
 
 			resp["order_id"] = order.ID
 			resp["from_status"] = fromOrder
 			resp["to_status"] = toStatus
 			resp["product_status"] = product.Status
+			resp["quantity"] = order.Quantity
+			resp["deal_price_cent"] = order.DealPriceCent
+			resp["total_deal_price_cent"] = int64(order.Quantity) * int64(order.DealPriceCent)
+			resp["stock"] = product.Stock
+			resp["reserved_stock"] = product.ReservedStock
+			resp["available_stock"] = product.Stock - product.ReservedStock
 			resp["idempotent"] = false
 			return nil
 		})

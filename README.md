@@ -7,8 +7,8 @@
 
 ## 本期范围
 - 商家注册、审核、登录
-- 商品管理（草稿/上架/下架/锁定/成交/关闭）
-- 轻量订单与商品状态联动
+- 商品管理（草稿/上架/下架/多库存/成交/关闭）
+- 商家轻量订单（数量、单件成交价、自动总价与库存预占）
 - 文件上传（presign/confirm）
 - 审计日志查询
 
@@ -22,6 +22,7 @@
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `APP_ENV` | `development` | 运行环境；生产必须显式设置为 `production` |
 | `ADDR` | `:8080` | 服务监听地址 |
 | `DB_DRIVER` | `mysql` | 数据库驱动（默认 mysql） |
 | `DB_DSN` | `'shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...'` | 数据库连接串（建议带引号，便于 `source`） |
@@ -141,9 +142,20 @@ docker build -f backend/Dockerfile -t second-hand-market-backend .
 docker run --rm -p 8080:8080 --env-file backend/configs/.env.production.mysql.example second-hand-market-backend
 ```
 
-默认管理员账号（初始化自动写入）：
-- `admin / Admin@123456`
-- `superadmin / Admin@123456`
+管理员不会在服务启动时自动创建。首次部署应先完成数据库迁移，再通过受控密码文件逐个创建所需账号：
+
+```bash
+cd backend
+DB_DRIVER=mysql \
+DB_DSN='<通过部署 secret 注入>' \
+ADMIN_BOOTSTRAP_USERNAME='<管理员账号>' \
+ADMIN_BOOTSTRAP_DISPLAY_NAME='<显示名>' \
+ADMIN_BOOTSTRAP_ROLE=SUPER_ADMIN \
+ADMIN_BOOTSTRAP_PASSWORD_FILE='<权限为 0600 的密码文件>' \
+go run ./scripts/bootstrap_admin
+```
+
+脚本不回显密码、不覆盖已有管理员，也不自行执行迁移。`APP_ENV=production` 时，默认 JWT secret、示例 MySQL DSN 或空管理员库都会使服务拒绝启动。已有管理员通过后台“安全设置”自助改密，成功后旧 session 立即失效。
 
 ### 前端
 ```bash
@@ -179,14 +191,22 @@ GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build GOPROXY=https://p
 
 # 4) 执行主链路冒烟
 cd ..
-API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-flow.mjs
+SMOKE_ADMIN_USERNAME="$ADMIN_USERNAME" \
+SMOKE_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+API_BASE_URL=http://localhost:8080/api/v1 \
+node scripts/smoke-flow.mjs
 
 # 5) 买家页面级冒烟（需要后端已启动）
-API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mjs
+SMOKE_ADMIN_USERNAME="$ADMIN_USERNAME" \
+SMOKE_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+API_BASE_URL=http://localhost:8080/api/v1 \
+node scripts/smoke-miniapp-page-e2e.mjs
 ```
 
 `smoke-miniapp-page-e2e.mjs` 前置条件：
 - 后端 `/healthz` 可用。
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD` 由本地或 CI secret 环境注入；冒烟脚本不再包含固定管理员口令。
+- 脚本会创建商家、商品和订单测试数据，默认只在本地或隔离的非生产环境执行；生产验收应使用经批准的专用测试数据与清理流程。
 - 如后端为 `BUYER_WECHAT_LOGIN_MODE=real`，需要额外传入 `BUYER_WECHAT_LOGIN_CODE=<wx.login 获取的临时 code>`。
 
 ## restricted login 边界

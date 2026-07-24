@@ -84,7 +84,7 @@ export const api = {
   orders(params: Record<string, string | number> = {}) {
     return http.get('/merchant/orders', { params })
   },
-  createOrder(payload: { product_id: number; deal_price_cent: number; buyer_contact_masked?: string; remark?: string }) {
+  createOrder(payload: { product_id: number; quantity: number; deal_price_cent: number; buyer_contact_masked?: string; remark?: string }) {
     return http.post('/merchant/orders', payload)
   },
   orderDetail(orderId: string | number) {
@@ -122,6 +122,9 @@ export const api = {
   },
   adminLogs(params: Record<string, string | number> = {}) {
     return http.get('/admin/logs', { params })
+  },
+  adminChangePassword(payload: { current_password: string; new_password: string }) {
+    return http.put('/admin/account/password', payload)
   },
   merchantLogs(params: Record<string, string | number> = {}) {
     return http.get('/merchant/logs', { params })

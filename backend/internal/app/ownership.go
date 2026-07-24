@@ -2,6 +2,7 @@ package app
 
 import (
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/model"
@@ -10,7 +11,7 @@ import (
 func (s *Server) loadOwnedProduct(tx *gorm.DB, productID, merchantID uint64) (model.Product, error) {
 	target := s.DB
 	if tx != nil {
-		target = tx
+		target = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	var product model.Product
 	if err := target.Where("id = ?", productID).First(&product).Error; err != nil {
@@ -25,7 +26,7 @@ func (s *Server) loadOwnedProduct(tx *gorm.DB, productID, merchantID uint64) (mo
 func (s *Server) loadOwnedOrder(tx *gorm.DB, orderID, merchantID uint64) (model.Order, error) {
 	target := s.DB
 	if tx != nil {
-		target = tx
+		target = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	var order model.Order
 	if err := target.Where("id = ?", orderID).First(&order).Error; err != nil {

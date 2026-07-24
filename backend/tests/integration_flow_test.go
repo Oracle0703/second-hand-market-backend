@@ -9,9 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/media"
+	"second-hand-market-backend/backend/internal/model"
 )
+
+const testAdminPassword = "AdminTest@2026"
 
 type apiResp struct {
 	Code int                    `json:"code"`
@@ -38,6 +43,17 @@ func newTestServer(t *testing.T) *app.Server {
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server error: %v", err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(testAdminPassword), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash test admin password: %v", err)
+	}
+	admins := []model.AdminUser{
+		{Username: "superadmin", DisplayName: "Super Admin", Role: model.AdminRoleSuper, Status: model.AccountStatusActive, PasswordHash: string(hash)},
+		{Username: "admin", DisplayName: "Admin", Role: model.AdminRoleAdmin, Status: model.AccountStatusActive, PasswordHash: string(hash)},
+	}
+	if err := srv.DB.Create(&admins).Error; err != nil {
+		t.Fatalf("create test admins: %v", err)
 	}
 	return srv
 }
@@ -109,7 +125,7 @@ func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
 		t.Fatalf("profile pending mismatch: %+v", profile)
 	}
 
-	adminLogin := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{"login_type": "ADMIN", "username": "admin", "password": "Admin@123456"}, nil)
+	adminLogin := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{"login_type": "ADMIN", "username": "admin", "password": testAdminPassword}, nil)
 	if adminLogin.Code != 0 {
 		t.Fatalf("admin login failed: %+v", adminLogin)
 	}
@@ -177,9 +193,9 @@ func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
 	}
 
 	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{
-		"product_id": productID, "deal_price_cent": 315000,
+		"product_id": productID, "quantity": 1, "deal_price_cent": 315000,
 	}, map[string]string{"Authorization": "Bearer " + merchantToken})
-	if createOrder.Code != 0 || str(createOrder.Data["product_status"]) != "LOCKED" {
+	if createOrder.Code != 0 || str(createOrder.Data["product_status"]) != "ON_SHELF" || numToUint64(createOrder.Data["available_stock"]) != 0 {
 		t.Fatalf("create order failed: %+v", createOrder)
 	}
 	orderID := numToUint64(createOrder.Data["order_id"])

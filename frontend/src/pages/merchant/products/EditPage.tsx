@@ -37,6 +37,8 @@ type ProductDetail = {
   price_cent: number
   original_price_cent?: number | null
   stock: number
+  reserved_stock: number
+  available_stock: number
   condition_level: ProductCondition
   images: number[]
   image_urls?: string[]
@@ -166,6 +168,9 @@ export function EditPage() {
         }
         if (Number(values.stock) <= 0) {
           throw new Error('库存数量必须大于0')
+        }
+        if (Number(values.stock) < Number(detail.data?.reserved_stock ?? 0)) {
+          throw new Error('库存数量不能低于已预占数量')
         }
         return api.updateProduct(productId, {
           title: values.title,
@@ -400,11 +405,16 @@ export function EditPage() {
         <ProFormDigit
           name="stock"
           label="库存数量"
-          min={1}
+          min={Math.max(1, Number(detail.data?.reserved_stock ?? 0))}
           disabled={!canEditAll}
           fieldProps={{ precision: 0, step: 1 }}
           rules={[{ required: true, message: '请输入库存数量' }]}
         />
+        {canEditAll ? (
+          <Typography.Text type="secondary">
+            已预占 {detail.data?.reserved_stock ?? 0}，可售 {detail.data?.available_stock ?? 0}
+          </Typography.Text>
+        ) : null}
         <ProFormSelect
           name="condition_level"
           label="成色"

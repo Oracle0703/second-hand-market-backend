@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto'
+
 const baseURL = process.env.API_BASE_URL || 'http://localhost:8080/api/v1'
 const deviceId = process.env.BUYER_DEVICE_ID || 'smoke-buyer-device-001'
 
@@ -28,9 +30,19 @@ function nowSeed() {
   return Date.now().toString().slice(-8)
 }
 
-async function setupMerchantAndProduct(seed) {
+function requiredEnv(name) {
+  const value = String(process.env[name] || '').trim()
+  if (!value) throw new Error(`${name} is required`)
+  return value
+}
+
+function randomSmokePassword() {
+  return `Sm0ke!${randomBytes(18).toString('base64url')}`
+}
+
+async function setupMerchantAndProduct(seed, adminUsername, adminPassword) {
   const username = `smoke_buyer_${seed}`
-  const password = 'Passw0rd!2026'
+  const password = randomSmokePassword()
 
   const lic = await req('/files/presign', {
     method: 'POST',
@@ -53,7 +65,7 @@ async function setupMerchantAndProduct(seed) {
 
   const adminLogin = await req('/auth/login', {
     method: 'POST',
-    body: { login_type: 'ADMIN', username: 'admin', password: 'Admin@123456' }
+    body: { login_type: 'ADMIN', username: adminUsername, password: adminPassword }
   })
   assert(adminLogin.code === 0, 'admin login failed', adminLogin)
   const adminToken = adminLogin.data.access_token
@@ -114,7 +126,9 @@ async function setupMerchantAndProduct(seed) {
 
 async function main() {
   const seed = nowSeed()
-  const { productID, merchantToken } = await setupMerchantAndProduct(seed)
+  const adminUsername = requiredEnv('SMOKE_ADMIN_USERNAME')
+  const adminPassword = requiredEnv('SMOKE_ADMIN_PASSWORD')
+  const { productID, merchantToken } = await setupMerchantAndProduct(seed, adminUsername, adminPassword)
 
   const guestList = await req('/buyer/products?page=1&page_size=10', {
     headers: { 'X-Device-Id': deviceId }
