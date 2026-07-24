@@ -1,0 +1,157 @@
+name: secondhand-acceptance
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 1.0
+    environment:
+      MYSQL_DATABASE: "${MYSQL_DATABASE:?set MYSQL_DATABASE in .env}"
+      MYSQL_USER: "${MYSQL_USER:?set MYSQL_USER in .env}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}"
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ../../backend/migrations:/acceptance/migrations:ro
+      - ./sql:/acceptance/sql:ro
+    networks:
+      - acceptance
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP -h 127.0.0.1
+          -u"$${MYSQL_USER}" "$${MYSQL_DATABASE}" --silent --skip-column-names
+          --execute="SELECT 1" | grep -qx 1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging: *default-logging
+
+  api:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.75
+    environment:
+      APP_ENV: production
+      ADDR: ":8080"
+      DB_DRIVER: mysql
+      DB_DSN: "${MYSQL_USER:?set MYSQL_USER in .env}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@tcp(mysql:3306)/${MYSQL_DATABASE:?set MYSQL_DATABASE in .env}?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"
+      JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET in .env}"
+      JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}"
+      AUTO_MIGRATE: "${AUTO_MIGRATE:-false}"
+      FILE_STORAGE_PROVIDER: local
+      FILE_UPLOAD_LOCAL_DIR: /var/lib/second-hand-market/uploads
+      FILE_PUBLIC_BASE_URL: http://127.0.0.1:18081/uploads
+      FILE_UPLOAD_MAX_MB: "40"
+      IMAGE_COMPRESS_TARGET_MB: "20"
+      IMAGE_PROCESSOR_DRIVER: vips
+      IMAGE_PROCESSOR_BIN: vips
+      BUYER_WECHAT_LOGIN_MODE: mock
+      BUYER_DOUYIN_LOGIN_MODE: mock
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:18082:8080"
+    volumes:
+      - uploads:/var/lib/second-hand-market/uploads
+    networks:
+      - acceptance
+      - edge
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:8080/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *default-logging
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/acceptance/frontend.Dockerfile
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    ports:
+      - "127.0.0.1:18081:80"
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *default-logging
+
+  bootstrap-admin:
+    profiles:
+      - tools
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      target: build
+    mem_limit: 768m
+    cpus: 0.75
+    command:
+      - go
+      - run
+      - ./scripts/bootstrap_admin
+    environment:
+      DB_DRIVER: mysql
+      DB_DSN: "${MYSQL_USER:?set MYSQL_USER in .env}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@tcp(mysql:3306)/${MYSQL_DATABASE:?set MYSQL_DATABASE in .env}?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"
+      ADMIN_BOOTSTRAP_USERNAME: "${ADMIN_BOOTSTRAP_USERNAME:-acceptance_admin}"
+      ADMIN_BOOTSTRAP_DISPLAY_NAME: "${ADMIN_BOOTSTRAP_DISPLAY_NAME:-Acceptance Admin}"
+      ADMIN_BOOTSTRAP_ROLE: SUPER_ADMIN
+      ADMIN_BOOTSTRAP_PASSWORD_FILE: /run/secrets/admin-password
+      TZ: Asia/Shanghai
+    volumes:
+      - ${ADMIN_BOOTSTRAP_PASSWORD_FILE_HOST:-./secrets/control-admin-password}:/run/secrets/admin-password:ro
+    networks:
+      - acceptance
+    depends_on:
+      mysql:
+        condition: service_healthy
+    logging: *default-logging
+
+volumes:
+  mysql-data:
+  uploads:
+
+networks:
+  acceptance:
+    internal: true
+  edge:

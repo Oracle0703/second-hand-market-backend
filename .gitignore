@@ -134,6 +134,9 @@ deploy/.env.*
 !deploy/.env.production.example
 deploy/docker-compose.override.yml
 deploy/*.local.*
+deploy/acceptance/secrets/
+deploy/acceptance/backups/
+deploy/acceptance/evidence/
 runtime/
 uploads/
 backend/uploads/

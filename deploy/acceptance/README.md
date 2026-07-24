@@ -1,0 +1,388 @@
+# Isolated acceptance environment
+
+This stack runs a production-mode API and admin frontend against an isolated
+MySQL 8.4 database on the same Docker host. It is intended for migration,
+concurrency, and UI acceptance before a production deployment.
+
+It deliberately does not reuse production container names, networks, volumes,
+credentials, upload storage, or published ports. MySQL is attached only to an
+internal database network and has no host port. API and Web share a separate
+edge network; their published ports listen on host loopback only:
+
+- Web: `127.0.0.1:18081`
+- API: `127.0.0.1:18082`
+
+The three normal services are `mysql`, `api`, and `web`. The optional
+`bootstrap-admin` service is behind the `tools` profile and never runs during a
+normal `docker compose up`.
+
+## Prerequisites
+
+- Docker Engine with Docker Compose v2 and support for `depends_on.condition`.
+- A dedicated checkout of the exact release commit to be tested.
+- A fresh logical dump produced with consistent snapshot semantics and without
+  `CREATE DATABASE`, `USE`, GTID, or production user/grant statements.
+- Enough disk for a separate MySQL data volume, build cache, and acceptance
+  uploads.
+
+Do not run this stack from a live deployment directory. Do not mount a live
+database volume or live upload directory into it.
+
+Before creating anything, verify that the fixed Compose project name and
+loopback ports are unused. Stop if any command prints an existing resource or
+listener; do not delete or reuse it without identifying its owner:
+
+```bash
+docker ps -a --filter label=com.docker.compose.project=secondhand-acceptance \
+  --format '{{.ID}} {{.Names}} {{.Status}}'
+docker volume ls --filter label=com.docker.compose.project=secondhand-acceptance
+docker network ls --filter label=com.docker.compose.project=secondhand-acceptance
+ss -ltnp | grep -E ':(18081|18082)\b' || true
+```
+
+## 1. Prepare secrets
+
+Run all commands in this directory.
+
+```bash
+./prepare.sh
+```
+
+The preparation script refuses to overwrite existing files. It creates `.env`,
+two administrator password files, and mode-`0700` backup/evidence directories.
+All MySQL and JWT values are independent random acceptance secrets; no
+production secret is read or reused. To prepare values manually instead, start
+from `.env.example` and keep the MySQL application password DSN-safe (letters,
+numbers, `_`, or `-`).
+
+The administrator password files must remain mode `0600`; the bootstrap command
+rejects files readable by group or other users. Do not place a password in a
+shell argument or saved command output. Two acceptance-only administrators are
+used so password rotation can prove that unrelated administrator sessions stay
+active.
+
+Before continuing, confirm that the resolved service list is isolated:
+
+```bash
+docker compose config --services
+docker compose config --volumes
+```
+
+Do not save the full output of `docker compose config`, because it resolves and
+prints secrets from `.env`.
+
+On a shared host, build sequentially before starting acceptance services. The
+backend image currently targets `amd64`; stop if the host architecture differs.
+Recheck available memory after each build and stop if production headroom is
+no longer adequate:
+
+```bash
+docker info --format '{{.Architecture}}'
+free -h
+docker compose build api
+free -h
+docker compose build web
+free -h
+docker compose --profile tools build bootstrap-admin
+free -h
+```
+
+## 2. Start only MySQL and restore the clone
+
+Start the database without starting the new API against the old schema:
+
+```bash
+docker compose up -d mysql
+docker compose ps mysql
+```
+
+Restore a fresh dump into the acceptance database. This writes only to the
+Compose-managed acceptance volume:
+
+```bash
+chmod 600 backups/source-clone.sql
+stat -c '%a %n' backups/source-clone.sql
+docker compose exec -T mysql sh -ec \
+  'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --protocol=TCP -h 127.0.0.1 -u"$MYSQL_USER" "$MYSQL_DATABASE"' \
+  < backups/source-clone.sql
+```
+
+The dump can contain production-derived personal data. Keep it mode `0600`, do
+not commit it, and remove it securely according to the project's data handling
+policy after acceptance is complete.
+
+## 3. Preflight and explicitly apply migration 0004
+
+Do not rely on GORM AutoMigrate for the first schema transition. Keep
+`AUTO_MIGRATE=false`, stop if any preflight check fails, and record sanitized
+results under `evidence/`.
+
+Run the checked-in fail-fast preflight:
+
+```bash
+set -o pipefail
+docker compose exec -T mysql sh -ec '
+  MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/sql/preflight.sql
+' | tee evidence/preflight.txt
+```
+
+At minimum, verify all of the following before applying SQL:
+
+- There are no active orders and no negative stock values.
+- Order numbers are unique and every order references an existing product.
+- `SHOW INDEX FROM orders` contains the unique index
+  `uk_product_active` (or the actual reviewed equivalent).
+- The expected protected merchant/product rows are recorded but not modified.
+- The source dump can be restored again if the non-transactional MySQL DDL
+  fails partway through.
+
+Save the protected account and product fingerprints before migration, then run
+the same query after all smoke tests and compare the files byte-for-byte:
+
+```bash
+docker compose exec -T mysql sh -ec '
+  MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/sql/protected-fingerprint.sql
+' > evidence/protected-before.txt
+```
+
+Apply the checked-in migration exactly once:
+
+```bash
+set -o pipefail
+docker compose exec -T mysql sh -ec '
+  MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/migrations/0004_merchant_multi_stock.up.sql
+'
+```
+
+MySQL DDL auto-commits and this migration is not idempotent. On failure, do not
+blindly rerun it. Capture the error, discard the acceptance MySQL volume, restore
+a fresh clone, repeat preflight, and apply the migration again.
+
+Postflight must prove:
+
+- `orders.quantity` and `products.reserved_stock` exist with the intended
+  defaults and constraints.
+- Historical order quantities are `1` and reserved stock is consistent with
+  active order quantities.
+- Unique index `uk_product_active` is absent.
+- Non-unique index `idx_order_product_active(product_id, is_active)` exists.
+- No product has negative stock, reserved stock above stock, or an unresolved
+  `LOCKED` status.
+
+Run the checked-in post-migration gate before starting the API:
+
+```bash
+set -o pipefail
+docker compose exec -T mysql sh -ec '
+  MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/sql/post-migration.sql
+' | tee evidence/post-migration.txt
+```
+
+## 4. Create two acceptance-only administrators
+
+The cloned password hashes are not acceptance credentials. Add a control
+administrator and a disposable password-rotation target only inside the clone:
+
+```bash
+ADMIN_BOOTSTRAP_USERNAME=acceptance_control \
+ADMIN_BOOTSTRAP_DISPLAY_NAME='Acceptance Control Admin' \
+ADMIN_BOOTSTRAP_PASSWORD_FILE_HOST=./secrets/control-admin-password \
+docker compose --profile tools run --rm bootstrap-admin
+
+ADMIN_BOOTSTRAP_USERNAME=acceptance_rotate \
+ADMIN_BOOTSTRAP_DISPLAY_NAME='Acceptance Rotation Target' \
+ADMIN_BOOTSTRAP_PASSWORD_FILE_HOST=./secrets/rotate-admin-password \
+docker compose --profile tools run --rm bootstrap-admin
+```
+
+Bootstrap refuses to overwrite an existing username. If the configured name
+already exists, choose a new acceptance-only username; never reset or modify an
+existing administrator or merchant account.
+
+## 5. Start the API and web UI
+
+Start the previously built application with explicit SQL migration ownership:
+
+```bash
+docker compose up -d api web
+docker compose ps
+```
+
+Both published ports must show `127.0.0.1`, and MySQL must show no published
+port. The API health endpoint proves that Gin is responding, but it does not
+query MySQL. Also verify an authenticated, database-backed endpoint before
+declaring the application healthy.
+
+From another machine, use an SSH tunnel instead of opening firewall ports:
+
+```bash
+ssh -N \
+  -L 18081:127.0.0.1:18081 \
+  -L 18082:127.0.0.1:18082 \
+  user@acceptance-host
+```
+
+Then open `http://127.0.0.1:18081`. The direct API base is
+`http://127.0.0.1:18082/api/v1`.
+
+## 6. Run acceptance tests
+
+First prove that changing one administrator password immediately revokes only
+that account's sessions. The target password becomes intentionally disposable;
+the unchanged control account remains available for the other smoke tests:
+
+```bash
+set -o pipefail
+ACCEPTANCE_CONFIRM_ISOLATED=I_UNDERSTAND_THIS_CHANGES_AN_ACCEPTANCE_PASSWORD \
+SMOKE_TARGET_ADMIN_USERNAME=acceptance_rotate \
+SMOKE_TARGET_ADMIN_PASSWORD="$(tr -d '\r\n' < secrets/rotate-admin-password)" \
+SMOKE_CONTROL_ADMIN_USERNAME=acceptance_control \
+SMOKE_CONTROL_ADMIN_PASSWORD="$(tr -d '\r\n' < secrets/control-admin-password)" \
+API_BASE_URL=http://127.0.0.1:18082/api/v1 \
+node ../../scripts/smoke-admin-security.mjs \
+  | tee evidence/admin-security.txt
+```
+
+Treat this administrator test as one-shot. If it reports a failure after the
+password-change request succeeds, the generated replacement password may no
+longer be recoverable. Discard the acceptance database volume, restore a fresh
+clone, and bootstrap both acceptance administrators again; do not reset or
+reuse a cloned administrator such as `admin`, `superadmin`, or `yaner`.
+
+Use only the control administrator and acceptance-created merchant/product
+records for the remaining flows. The existing main smoke flow creates and
+completes orders, so never point it at production:
+
+```bash
+SMOKE_ADMIN_USERNAME=acceptance_control \
+SMOKE_ADMIN_PASSWORD="$(tr -d '\r\n' < secrets/control-admin-password)" \
+API_BASE_URL=http://127.0.0.1:18082/api/v1 \
+node ../../scripts/smoke-flow.mjs
+```
+
+### Browser acceptance
+
+Create a disposable merchant and product for browser checks. The credentials
+file must be an absolute path that does not already exist; keep its parent
+directory mode `0700` and never add it to evidence or command output:
+
+```bash
+credentials_dir="$(mktemp -d)"
+chmod 700 "$credentials_dir"
+
+ACCEPTANCE_CONFIRM_ISOLATED=I_UNDERSTAND_THIS_CREATES_AN_ACCEPTANCE_MERCHANT \
+SMOKE_ADMIN_USERNAME=acceptance_control \
+SMOKE_ADMIN_PASSWORD="$(tr -d '\r\n' < secrets/control-admin-password)" \
+UI_ACCEPTANCE_CREDENTIALS_FILE="$credentials_dir/merchant.json" \
+API_BASE_URL=http://127.0.0.1:18082/api/v1 \
+node ../../scripts/prepare-ui-acceptance.mjs
+```
+
+Through the SSH tunnel, log in only with that disposable merchant and verify
+the following at desktop and narrow mobile viewports:
+
+- The product list shows total, reserved, and available stock separately.
+- Creating an order accepts a positive integer quantity and a unit price, and
+  recalculates the total before submission.
+- Closing an order releases its quantity exactly once.
+- Completing an order deducts its quantity exactly once without marking a
+  product sold while stock remains.
+- Order list and detail views show quantity, unit price, total price, and the
+  three inventory values without hiding required actions.
+
+Use test records only. Do not create an order against a cloned merchant or a
+`yaner` product. Delete the temporary credentials directory after the browser
+session is finalized.
+
+Run the checked-in MySQL migration assertions and concurrency acceptance test
+as part of the same session. Required behavior includes:
+
+- Stock `5`, ten concurrent quantity-`1` creates: exactly five succeed and
+  total reservations never exceed five.
+- Closing releases a reservation once; completing deducts stock once.
+- Concurrent complete/close attempts yield one terminal transition.
+- Multiple active and multiple historical orders for one product do not hit a
+  uniqueness error.
+- Quantity, unit price, calculated total, total/reserved/available stock, and
+  buyer-compatible available stock are correct.
+
+The concurrency script refuses non-loopback URLs and requires two explicit
+acceptance confirmations:
+
+```bash
+set -o pipefail
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+ACCEPTANCE_CONFIRM_ISOLATED=I_UNDERSTAND_THIS_WRITES_TEST_DATA \
+SMOKE_ADMIN_USERNAME=acceptance_control \
+SMOKE_ADMIN_PASSWORD="$(tr -d '\r\n' < secrets/control-admin-password)" \
+API_BASE_URL=http://127.0.0.1:18082/api/v1 \
+node ../../scripts/smoke-mysql-concurrency.mjs \
+  | tee evidence/mysql-concurrency.txt
+```
+
+The test closes active test orders on success and performs best-effort cleanup
+on failure. It intentionally leaves acceptance rows for auditability. Run the
+SQL invariant gate after both smoke scripts:
+
+```bash
+set -o pipefail
+docker compose exec -T mysql sh -ec '
+  MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/sql/post-smoke.sql
+' | tee evidence/post-smoke.txt
+```
+
+Finally keep `.env` at its safe default `AUTO_MIGRATE=false`, but recreate only
+the API with a one-command override to test AutoMigrate compatibility:
+
+```bash
+AUTO_MIGRATE=true docker compose up -d --force-recreate api
+docker compose ps api
+docker compose exec -T api sh -ec 'test "$AUTO_MIGRATE" = true'
+```
+
+Rerun `smoke-mysql-concurrency.mjs`, then rerun `post-smoke.sql` and save their
+outputs under distinct `after-automigrate` evidence names. This proves a
+process restart cannot recreate `uk_product_active` and that MySQL concurrency
+semantics remain intact. The recreated container retains `AUTO_MIGRATE=true`
+when restarted with `docker compose start`. Running `docker compose up` or
+recreating the API later without the same override uses `.env=false` and no
+longer reproduces the tested container configuration. Record the override in
+the evidence; it does not choose the eventual production setting.
+
+## 7. Inspect and tear down
+
+Capture only sanitized evidence:
+
+```bash
+docker compose ps
+docker compose logs --since=30m api web
+```
+
+On a shared low-memory host, stop the acceptance services after evidence is
+captured. This preserves the containers, isolated volumes, clone, and evidence
+while releasing runtime memory and preventing `restart: unless-stopped` from
+bringing the stack back after a host reboot:
+
+```bash
+docker compose stop
+```
+
+Do not include environment dumps, DSNs, passwords, JWTs, raw personal data, or
+the full output of `docker compose config` in evidence.
+
+Keep the environment until results have been reviewed. When teardown is
+explicitly approved, remove the isolated containers and volumes from this
+directory:
+
+```bash
+docker compose down --volumes --remove-orphans
+```
+
+This permanently deletes only the Compose-managed acceptance database and
+upload volumes. The source dump, `.env`, password file, and evidence are host
+files and require a separate, explicitly approved retention or deletion step.
