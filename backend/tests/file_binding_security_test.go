@@ -1,7 +1,9 @@
 package tests
 
 import (
+	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -19,6 +21,167 @@ func registrationPayload(username string, fileID uint64, rawToken string) map[st
 		"password":           "Passw0rd!2026",
 		"license_file_id":    fileID,
 		"license_file_token": rawToken,
+	}
+}
+
+func loginApprovedMerchant(
+	t *testing.T,
+	srv *app.Server,
+	adminToken string,
+	prefix string,
+) (uint64, string) {
+	t.Helper()
+	merchantID, username, password := registerMerchant(t, srv, prefix)
+	approveMerchant(t, srv, adminToken, merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != common.CodeOK || str(login.Data["token_scope"]) != "full" {
+		t.Fatalf("full merchant login: %+v", login)
+	}
+	return merchantID, str(login.Data["access_token"])
+}
+
+func productCreatePayload(categoryID uint64, fileIDs []uint64) map[string]interface{} {
+	return map[string]interface{}{
+		"title":               "Binding Product",
+		"description":         "binding security regression",
+		"category_id":         categoryID,
+		"price_cent":          10000,
+		"original_price_cent": 12000,
+		"condition_level":     "GOOD",
+		"stock":               1,
+		"image_file_ids":      fileIDs,
+	}
+}
+
+func TestProductCreateValidatesImageBindings(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantA, tokenA := loginApprovedMerchant(t, srv, adminToken, "product_bind_a")
+	merchantB, _ := loginApprovedMerchant(t, srv, adminToken, "product_bind_b")
+	validID, categoryID := productImageAndCategory(t, srv, tokenA)
+	foreign := createReadyOwnedFile(t, srv, merchantB, model.FileBizProductImage)
+	wrongType := createReadyOwnedFile(t, srv, merchantA, model.FileBizMerchantLicense)
+	pending := createReadyOwnedFile(t, srv, merchantA, model.FileBizProductImage)
+	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", pending.ID).Updates(map[string]interface{}{
+		"scan_status": model.FileScanPending,
+		"url":         "",
+	}).Error; err != nil {
+		t.Fatalf("make pending image: %v", err)
+	}
+	blocked := createReadyOwnedFile(t, srv, merchantA, model.FileBizProductImage)
+	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", blocked.ID).Update("scan_status", model.FileScanBlocked).Error; err != nil {
+		t.Fatalf("block image: %v", err)
+	}
+	emptyURL := createReadyOwnedFile(t, srv, merchantA, model.FileBizProductImage)
+	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", emptyURL.ID).Update("url", "").Error; err != nil {
+		t.Fatalf("clear image URL: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		ids  []uint64
+	}{
+		{name: "foreign", ids: []uint64{foreign.ID}},
+		{name: "wrong type", ids: []uint64{wrongType.ID}},
+		{name: "pending", ids: []uint64{pending.ID}},
+		{name: "blocked", ids: []uint64{blocked.ID}},
+		{name: "empty URL", ids: []uint64{emptyURL.ID}},
+		{name: "missing", ids: []uint64{999999}},
+		{name: "duplicate", ids: []uint64{validID, validID}},
+		{name: "mixed valid and foreign", ids: []uint64{validID, foreign.ID}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var productsBefore int64
+			var imagesBefore int64
+			var logsBefore int64
+			if err := srv.DB.Model(&model.Product{}).Count(&productsBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.DB.Model(&model.ProductImage{}).Count(&imagesBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.DB.Model(&model.OperationLog{}).Where("action = ?", "product_create").Count(&logsBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products",
+				productCreatePayload(categoryID, tt.ids),
+				map[string]string{"Authorization": "Bearer " + tokenA})
+			if resp.Code != common.CodeInvalidFileBinding {
+				t.Fatalf("create response = %+v", resp)
+			}
+
+			var productsAfter int64
+			var imagesAfter int64
+			var logsAfter int64
+			_ = srv.DB.Model(&model.Product{}).Count(&productsAfter).Error
+			_ = srv.DB.Model(&model.ProductImage{}).Count(&imagesAfter).Error
+			_ = srv.DB.Model(&model.OperationLog{}).Where("action = ?", "product_create").Count(&logsAfter).Error
+			if productsAfter != productsBefore || imagesAfter != imagesBefore || logsAfter != logsBefore {
+				t.Fatalf(
+					"failed create persisted rows: products %d->%d images %d->%d logs %d->%d",
+					productsBefore, productsAfter, imagesBefore, imagesAfter, logsBefore, logsAfter,
+				)
+			}
+		})
+	}
+}
+
+func loadProductImageIDs(t *testing.T, srv *app.Server, productID uint64) []uint64 {
+	t.Helper()
+	var images []model.ProductImage
+	if err := srv.DB.Where("product_id = ?", productID).Order("sort_order ASC").Find(&images).Error; err != nil {
+		t.Fatalf("load product images: %v", err)
+	}
+	ids := make([]uint64, 0, len(images))
+	for _, image := range images {
+		ids = append(ids, image.FileID)
+	}
+	return ids
+}
+
+func TestProductUpdatePreservesImagesWhenBindingFails(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantA, tokenA := loginApprovedMerchant(t, srv, adminToken, "product_update_a")
+	merchantB, _ := loginApprovedMerchant(t, srv, adminToken, "product_update_b")
+	firstID, categoryID := productImageAndCategory(t, srv, tokenA)
+	second := createReadyOwnedFileForToken(t, srv, tokenA, model.FileBizProductImage)
+	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products",
+		productCreatePayload(categoryID, []uint64{firstID, second.ID}),
+		map[string]string{"Authorization": "Bearer " + tokenA})
+	if create.Code != common.CodeOK {
+		t.Fatalf("create product: %+v", create)
+	}
+	productID := numToUint64(create.Data["product_id"])
+	beforeIDs := loadProductImageIDs(t, srv, productID)
+	var before model.Product
+	if err := srv.DB.First(&before, productID).Error; err != nil {
+		t.Fatalf("load product before update: %v", err)
+	}
+	foreign := createReadyOwnedFile(t, srv, merchantB, model.FileBizProductImage)
+
+	resp := requestJSON(t, srv.Router, http.MethodPut, "/api/v1/merchant/products/"+fmt.Sprint(productID), map[string]interface{}{
+		"image_file_ids": []uint64{foreign.ID},
+	}, map[string]string{"Authorization": "Bearer " + tokenA})
+	if resp.Code != common.CodeInvalidFileBinding {
+		t.Fatalf("update response = %+v", resp)
+	}
+	afterIDs := loadProductImageIDs(t, srv, productID)
+	var after model.Product
+	if err := srv.DB.First(&after, productID).Error; err != nil {
+		t.Fatalf("load product after update: %v", err)
+	}
+	if !reflect.DeepEqual(afterIDs, beforeIDs) {
+		t.Fatalf("images changed: before=%v after=%v", beforeIDs, afterIDs)
+	}
+	if before.CoverFileID == nil || after.CoverFileID == nil || *after.CoverFileID != *before.CoverFileID {
+		t.Fatalf("cover changed: before=%v after=%v", before.CoverFileID, after.CoverFileID)
+	}
+	if after.MerchantID != merchantA {
+		t.Fatalf("product owner changed: got %d want %d", after.MerchantID, merchantA)
 	}
 }
 

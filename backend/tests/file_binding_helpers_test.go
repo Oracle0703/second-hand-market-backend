@@ -42,6 +42,36 @@ func createReadyOwnedFile(
 	return file
 }
 
+func createReadyOwnedFileForToken(
+	t *testing.T,
+	srv *app.Server,
+	merchantToken string,
+	bizType string,
+) model.FileRecord {
+	t.Helper()
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  bizType,
+		"file_name": "owned.jpg",
+		"file_size": 22,
+		"mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if presign.Code != common.CodeOK {
+		t.Fatalf("presign owned file: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", fileID).Updates(map[string]interface{}{
+		"url":         "/uploads/test-owned.jpg",
+		"scan_status": model.FileScanPass,
+	}).Error; err != nil {
+		t.Fatalf("complete owned file: %v", err)
+	}
+	var file model.FileRecord
+	if err := srv.DB.First(&file, fileID).Error; err != nil {
+		t.Fatalf("load owned file: %v", err)
+	}
+	return file
+}
+
 func uploadReadyPublicLicense(t *testing.T, srv *app.Server) (uint64, string) {
 	t.Helper()
 	jpeg := minimalJPEG()

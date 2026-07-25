@@ -64,6 +64,14 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		product.CoverFileID = &cover
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := validateMerchantFilesForBinding(
+			tx,
+			actor.MerchantID,
+			req.ImageFileIDs,
+			model.FileBizProductImage,
+		); err != nil {
+			return err
+		}
 		if err := tx.Create(&product).Error; err != nil {
 			return err
 		}
@@ -76,7 +84,7 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		s.writeOperationLog(c, tx, "product", product.ID, "product_create", nil, &to, common.CodeOK, &actor.MerchantID, gin.H{"title": product.Title})
 		return nil
 	}); err != nil {
-		common.Fail(c, common.ErrInternal)
+		common.Fail(c, err)
 		return
 	}
 	common.Success(c, gin.H{
@@ -167,6 +175,14 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 		if req.ImageFileIDs != nil {
 			if !allowed["image_file_ids"] || len(req.ImageFileIDs) == 0 || len(req.ImageFileIDs) > 5 {
 				return common.ErrInvalidTransition
+			}
+			if err := validateMerchantFilesForBinding(
+				tx,
+				actor.MerchantID,
+				req.ImageFileIDs,
+				model.FileBizProductImage,
+			); err != nil {
+				return err
 			}
 			cover := req.ImageFileIDs[0]
 			product.CoverFileID = &cover
