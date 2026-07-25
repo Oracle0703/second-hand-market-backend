@@ -201,16 +201,19 @@ type OrderEvent struct {
 }
 
 type FileRecord struct {
-	ID           uint64 `gorm:"primaryKey"`
-	BizType      string `gorm:"size:32;index:idx_biz_type_created,priority:1"`
-	ObjectKey    string `gorm:"size:255;uniqueIndex"`
-	URL          string `gorm:"size:500"`
-	MimeType     string `gorm:"size:64"`
-	SizeBytes    int64
-	UploaderType string `gorm:"size:16"`
-	UploaderID   *uint64
-	ScanStatus   string    `gorm:"size:16"`
-	CreatedAt    time.Time `gorm:"index:idx_biz_type_created,priority:2"`
+	ID                  uint64 `gorm:"primaryKey"`
+	BizType             string `gorm:"size:32;index:idx_biz_type_created,priority:1;index:idx_file_owner_biz_scan,priority:2"`
+	ObjectKey           string `gorm:"size:255;uniqueIndex"`
+	URL                 string `gorm:"size:500"`
+	MimeType            string `gorm:"size:64"`
+	SizeBytes           int64
+	UploaderType        string `gorm:"size:16"`
+	UploaderID          *uint64
+	ScanStatus          string     `gorm:"size:16;index:idx_file_owner_biz_scan,priority:3"`
+	OwnerMerchantID     *uint64    `gorm:"index:idx_file_owner_biz_scan,priority:1"`
+	CapabilityTokenHash *string    `gorm:"type:char(64);uniqueIndex:uk_file_capability_token"`
+	CapabilityExpiresAt *time.Time `gorm:"index:idx_file_capability_expires"`
+	CreatedAt           time.Time  `gorm:"index:idx_biz_type_created,priority:2"`
 }
 
 func (FileRecord) TableName() string {
