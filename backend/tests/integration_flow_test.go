@@ -98,16 +98,10 @@ func numToUint64(v interface{}) uint64 {
 func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
 	srv := newTestServer(t)
 
-	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 1000, "mime_type": "image/jpeg",
-	}, nil)
-	if presign.Code != 0 {
-		t.Fatalf("presign failed: %+v", presign)
-	}
-	licenseFileID := numToUint64(presign.Data["file_id"])
+	licenseFileID, licenseFileToken := uploadReadyPublicLicense(t, srv)
 
 	register := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
-		"merchant_name": "测试商家", "contact_name": "张三", "phone": "13800138000", "username": "merchant1", "password": "Passw0rd!2026", "license_file_id": licenseFileID,
+		"merchant_name": "测试商家", "contact_name": "张三", "phone": "13800138000", "username": "merchant1", "password": "Passw0rd!2026", "license_file_id": licenseFileID, "license_file_token": licenseFileToken,
 	}, nil)
 	if register.Code != 0 {
 		t.Fatalf("register failed: %+v", register)

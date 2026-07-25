@@ -42,7 +42,6 @@ func (s *Server) handleRegister(c *gin.Context) {
 		ContactPhone: req.Phone,
 		ReviewStatus: model.ReviewPending,
 	}
-	merchant.LicenseFileID = &req.LicenseFileID
 	acct := model.MerchantAccount{
 		Username:     req.Username,
 		PasswordHash: string(hash),
@@ -58,10 +57,19 @@ func (s *Server) handleRegister(c *gin.Context) {
 		if err := tx.Create(&acct).Error; err != nil {
 			return err
 		}
+		if err := claimPublicMerchantLicense(tx, req.LicenseFileID, req.LicenseFileToken, merchant.ID, time.Now()); err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Merchant{}).
+			Where("id = ?", merchant.ID).
+			Update("license_file_id", req.LicenseFileID).Error; err != nil {
+			return err
+		}
+		merchant.LicenseFileID = &req.LicenseFileID
 		logItem := model.MerchantAuditLog{MerchantID: merchant.ID, Action: "SUBMIT", FromStatus: "", ToStatus: model.ReviewPending, OperatorType: model.UserTypeMerchant, OperatorID: acct.ID}
 		return tx.Create(&logItem).Error
 	}); err != nil {
-		common.Fail(c, common.ErrInternal)
+		common.Fail(c, err)
 		return
 	}
 	common.Success(c, gin.H{"merchant_id": merchant.ID, "merchant_no": merchant.MerchantNo, "review_status": merchant.ReviewStatus})

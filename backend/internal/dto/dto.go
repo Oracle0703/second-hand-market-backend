@@ -1,12 +1,13 @@
 package dto
 
 type RegisterRequest struct {
-	MerchantName  string `json:"merchant_name" binding:"required,min=2,max=128"`
-	ContactName   string `json:"contact_name" binding:"required,min=2,max=64"`
-	Phone         string `json:"phone" binding:"required,min=6,max=20"`
-	Username      string `json:"username" binding:"required,min=3,max=64"`
-	Password      string `json:"password" binding:"required,min=8,max=128"`
-	LicenseFileID uint64 `json:"license_file_id" binding:"required"`
+	MerchantName     string `json:"merchant_name" binding:"required,min=2,max=128"`
+	ContactName      string `json:"contact_name" binding:"required,min=2,max=64"`
+	Phone            string `json:"phone" binding:"required,min=6,max=20"`
+	Username         string `json:"username" binding:"required,min=3,max=64"`
+	Password         string `json:"password" binding:"required,min=8,max=128"`
+	LicenseFileID    uint64 `json:"license_file_id" binding:"required"`
+	LicenseFileToken string `json:"license_file_token" binding:"max=256"`
 }
 
 type LoginRequest struct {

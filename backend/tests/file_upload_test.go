@@ -91,12 +91,7 @@ func TestFileUploadLocalPublicLicense(t *testing.T) {
 		t.Fatal("raw file token must not be persisted")
 	}
 
-	// Minimal JPEG bytes for MIME detection.
-	jpeg := []byte{
-		0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F',
-		0x00, 0x01, 0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00,
-		0xFF, 0xD9,
-	}
+	jpeg := minimalJPEG()
 	upload := requestMultipart(
 		t,
 		srv.Router,

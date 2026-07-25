@@ -19,19 +19,15 @@ func registerMerchant(t *testing.T, srv *app.Server, prefix string) (uint64, str
 	t.Helper()
 	username := uniqueUsername(prefix)
 	password := "Passw0rd!2026"
-	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 1000, "mime_type": "image/jpeg",
-	}, nil)
-	if presign.Code != 0 {
-		t.Fatalf("license presign failed: %+v", presign)
-	}
+	licenseFileID, licenseFileToken := uploadReadyPublicLicense(t, srv)
 	register := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
-		"merchant_name":   "测试商家_" + prefix,
-		"contact_name":    "张三",
-		"phone":           fmt.Sprintf("139%08d", time.Now().UnixNano()%100000000),
-		"username":        username,
-		"password":        password,
-		"license_file_id": numToUint64(presign.Data["file_id"]),
+		"merchant_name":      "测试商家_" + prefix,
+		"contact_name":       "张三",
+		"phone":              fmt.Sprintf("139%08d", time.Now().UnixNano()%100000000),
+		"username":           username,
+		"password":           password,
+		"license_file_id":    licenseFileID,
+		"license_file_token": licenseFileToken,
 	}, nil)
 	if register.Code != 0 {
 		t.Fatalf("register failed: %+v", register)
