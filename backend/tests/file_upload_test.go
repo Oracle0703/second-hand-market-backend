@@ -3,6 +3,8 @@ package tests
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -10,8 +12,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/media"
+	"second-hand-market-backend/backend/internal/model"
 )
 
 func requestMultipart(
@@ -70,8 +75,20 @@ func TestFileUploadLocalPublicLicense(t *testing.T) {
 	}
 	fileID := numToUint64(presign.Data["file_id"])
 	objectKey := str(presign.Data["object_key"])
-	if fileID == 0 || objectKey == "" {
+	fileToken := str(presign.Data["file_token"])
+	if fileID == 0 || objectKey == "" || fileToken == "" {
 		t.Fatalf("invalid presign response: %+v", presign)
+	}
+	var record model.FileRecord
+	if err := srv.DB.First(&record, fileID).Error; err != nil {
+		t.Fatalf("load presigned record: %v", err)
+	}
+	wantHash := sha256.Sum256([]byte(fileToken))
+	if record.CapabilityTokenHash == nil || *record.CapabilityTokenHash != hex.EncodeToString(wantHash[:]) {
+		t.Fatalf("capability hash was not persisted: %+v", record)
+	}
+	if *record.CapabilityTokenHash == fileToken {
+		t.Fatal("raw file token must not be persisted")
 	}
 
 	// Minimal JPEG bytes for MIME detection.
@@ -88,6 +105,7 @@ func TestFileUploadLocalPublicLicense(t *testing.T) {
 		map[string]string{
 			"file_id":    fmt.Sprintf("%d", fileID),
 			"object_key": objectKey,
+			"file_token": fileToken,
 		},
 		"file",
 		"license.jpg",
@@ -111,6 +129,128 @@ func TestFileUploadLocalPublicLicense(t *testing.T) {
 	}
 	if !bytes.Equal(w.Body.Bytes(), jpeg) {
 		t.Fatalf("downloaded file mismatch: got=%d want=%d", len(w.Body.Bytes()), len(jpeg))
+	}
+}
+
+func TestAnonymousFileUploadRequiresMatchingCapability(t *testing.T) {
+	srv := newTestServer(t)
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 22, "mime_type": "image/jpeg",
+	}, nil)
+	if presign.Code != common.CodeOK {
+		t.Fatalf("presign failed: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	fileToken := str(presign.Data["file_token"])
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
+
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{name: "missing"},
+		{name: "wrong", token: "wrong-token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+				"file_id": fmt.Sprintf("%d", fileID), "object_key": objectKey, "file_token": tc.token,
+			}, "file", "license.jpg", jpeg, nil)
+			if resp.Code != common.CodeInvalidFileBinding {
+				t.Fatalf("response = %+v", resp)
+			}
+		})
+	}
+
+	expired := time.Now().Add(-time.Minute)
+	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", fileID).Update("capability_expires_at", expired).Error; err != nil {
+		t.Fatalf("expire capability: %v", err)
+	}
+	expiredResp := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprintf("%d", fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", "license.jpg", jpeg, nil)
+	if expiredResp.Code != common.CodeInvalidFileBinding {
+		t.Fatalf("expired capability response = %+v", expiredResp)
+	}
+}
+
+func TestAnonymousFileConfirmRequiresMatchingCapability(t *testing.T) {
+	srv := newTestServer(t)
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 22, "mime_type": "image/jpeg",
+	}, nil)
+	if presign.Code != common.CodeOK {
+		t.Fatalf("presign failed: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	fileToken := str(presign.Data["file_token"])
+	upload := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprintf("%d", fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", "license.jpg", []byte{0xFF, 0xD8, 0xFF, 0xD9}, nil)
+	if upload.Code != common.CodeOK {
+		t.Fatalf("upload failed: %+v", upload)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		token string
+		code  int
+	}{
+		{name: "missing", code: common.CodeInvalidFileBinding},
+		{name: "wrong", token: "wrong-token", code: common.CodeInvalidFileBinding},
+		{name: "matching", token: fileToken, code: common.CodeOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/confirm", map[string]interface{}{
+				"file_id": fileID, "object_key": objectKey, "file_token": tc.token,
+			}, nil)
+			if resp.Code != tc.code {
+				t.Fatalf("response = %+v", resp)
+			}
+		})
+	}
+}
+
+func TestMerchantAndAdminPresignOwnership(t *testing.T) {
+	srv := newTestServer(t)
+	merchantID, username, password := registerMerchant(t, srv, "presign_owner")
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != common.CodeOK {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	merchantPresign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": "MERCHANT_LICENSE", "file_name": "owned.jpg", "file_size": 22, "mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"])})
+	if merchantPresign.Code != common.CodeOK {
+		t.Fatalf("merchant presign failed: %+v", merchantPresign)
+	}
+	if str(merchantPresign.Data["file_token"]) != "" {
+		t.Fatal("authenticated merchant presign returned a public capability")
+	}
+	var merchantFile model.FileRecord
+	if err := srv.DB.First(&merchantFile, numToUint64(merchantPresign.Data["file_id"])).Error; err != nil {
+		t.Fatalf("load merchant file: %v", err)
+	}
+	if merchantFile.OwnerMerchantID == nil || *merchantFile.OwnerMerchantID != merchantID {
+		t.Fatalf("merchant owner = %v, want %d", merchantFile.OwnerMerchantID, merchantID)
+	}
+
+	adminPresign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": "PRODUCT_IMAGE", "file_name": "admin.jpg", "file_size": 22, "mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
+	if adminPresign.Code != common.CodeOK {
+		t.Fatalf("admin presign failed: %+v", adminPresign)
+	}
+	if str(adminPresign.Data["file_token"]) != "" {
+		t.Fatal("admin presign returned a public capability")
+	}
+	var adminFile model.FileRecord
+	if err := srv.DB.First(&adminFile, numToUint64(adminPresign.Data["file_id"])).Error; err != nil {
+		t.Fatalf("load admin file: %v", err)
+	}
+	if adminFile.OwnerMerchantID != nil {
+		t.Fatalf("admin file must remain unowned: %+v", adminFile)
 	}
 }
 
@@ -187,6 +327,7 @@ func TestFileUploadStoresProcessedMetadata(t *testing.T) {
 
 	fileID := numToUint64(presign.Data["file_id"])
 	objectKey := str(presign.Data["object_key"])
+	fileToken := str(presign.Data["file_token"])
 	upload := requestMultipart(
 		t,
 		srv.Router,
@@ -195,6 +336,7 @@ func TestFileUploadStoresProcessedMetadata(t *testing.T) {
 		map[string]string{
 			"file_id":    fmt.Sprintf("%d", fileID),
 			"object_key": objectKey,
+			"file_token": fileToken,
 		},
 		"file",
 		"license.heic",

@@ -89,6 +89,7 @@ type PresignRequest struct {
 type ConfirmUploadRequest struct {
 	FileID    uint64 `json:"file_id" binding:"required"`
 	ObjectKey string `json:"object_key" binding:"required"`
+	FileToken string `json:"file_token"`
 }
 
 type BuyerMiniProgramLoginRequest struct {

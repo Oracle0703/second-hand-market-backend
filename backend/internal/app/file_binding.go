@@ -1,7 +1,9 @@
 package app
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const fileCapabilityTTL = 15 * time.Minute
 
 func validateMerchantFilesForBinding(
 	tx *gorm.DB,
@@ -59,6 +63,15 @@ func validateMerchantFilesForBinding(
 func fileCapabilityHash(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func newFileCapability(now time.Time) (string, string, time.Time, error) {
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return "", "", time.Time{}, err
+	}
+	raw := base64.RawURLEncoding.EncodeToString(random)
+	return raw, fileCapabilityHash(raw), now.Add(fileCapabilityTTL), nil
 }
 
 func claimPublicMerchantLicense(

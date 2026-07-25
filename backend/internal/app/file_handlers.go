@@ -1,6 +1,8 @@
 package app
 
 import (
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +17,8 @@ import (
 	"second-hand-market-backend/backend/internal/dto"
 	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/model"
+
+	"gorm.io/gorm"
 )
 
 const maxUploadSizeBytes int64 = media.DefaultMaxOriginalBytes
@@ -75,6 +79,25 @@ func (s *Server) handlePresign(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	now := time.Now()
+	expiresAt := now.Add(fileCapabilityTTL)
+	var ownerMerchantID *uint64
+	var capabilityTokenHash *string
+	var capabilityExpiresAt *time.Time
+	fileToken := ""
+	if actorPtr == nil {
+		var tokenHash string
+		var err error
+		fileToken, tokenHash, expiresAt, err = newFileCapability(now)
+		if err != nil {
+			common.Fail(c, err)
+			return
+		}
+		capabilityTokenHash = &tokenHash
+		capabilityExpiresAt = &expiresAt
+	} else if actor.UserType == model.UserTypeMerchant {
+		ownerMerchantID = &actor.MerchantID
+	}
 	ext := strings.ToLower(filepath.Ext(req.FileName))
 	if ext == "" {
 		ext = mimeExt(mimeType)
@@ -84,27 +107,34 @@ func (s *Server) handlePresign(c *gin.Context) {
 	}
 	objectKey := fmt.Sprintf("%s/%s%s", strings.ToLower(bizType), common.BuildBizNo("F"), ext)
 	file := model.FileRecord{
-		BizType:      bizType,
-		ObjectKey:    objectKey,
-		URL:          "",
-		MimeType:     mimeType,
-		SizeBytes:    req.FileSize,
-		UploaderType: uploaderType,
-		UploaderID:   uploaderID,
-		ScanStatus:   model.FileScanPending,
+		BizType:             bizType,
+		ObjectKey:           objectKey,
+		URL:                 "",
+		MimeType:            mimeType,
+		SizeBytes:           req.FileSize,
+		UploaderType:        uploaderType,
+		UploaderID:          uploaderID,
+		ScanStatus:          model.FileScanPending,
+		OwnerMerchantID:     ownerMerchantID,
+		CapabilityTokenHash: capabilityTokenHash,
+		CapabilityExpiresAt: capabilityExpiresAt,
 	}
 	if err := s.DB.Create(&file).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, gin.H{
+	response := gin.H{
 		"upload_url":       "/api/v1/files/upload",
 		"upload_method":    "multipart/form-data",
 		"storage_provider": strings.ToLower(strings.TrimSpace(s.cfg.FileStorageProvider)),
 		"object_key":       objectKey,
 		"file_id":          file.ID,
-		"expire_at":        time.Now().Add(15 * time.Minute).Format(time.RFC3339),
-	})
+		"expire_at":        expiresAt.Format(time.RFC3339),
+	}
+	if fileToken != "" {
+		response["file_token"] = fileToken
+	}
+	common.Success(c, response)
 }
 
 func (s *Server) handleUploadFile(c *gin.Context) {
@@ -125,7 +155,7 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		return
 	}
 
-	file, err := s.loadFileRecordAndAuthorize(c, fileID)
+	file, err := s.loadFileRecordAndAuthorize(c, fileID, c.PostForm("file_token"))
 	if err != nil {
 		common.Fail(c, err)
 		return
@@ -227,7 +257,7 @@ func (s *Server) handleConfirmUpload(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	file, err := s.loadFileRecordAndAuthorize(c, req.FileID)
+	file, err := s.loadFileRecordAndAuthorize(c, req.FileID, req.FileToken)
 	if err != nil {
 		common.Fail(c, err)
 		return
@@ -255,15 +285,31 @@ func (s *Server) handleConfirmUpload(c *gin.Context) {
 	common.Success(c, gin.H{"file_id": file.ID, "url": url, "status": model.FileScanPass})
 }
 
-func (s *Server) loadFileRecordAndAuthorize(c *gin.Context, fileID uint64) (*model.FileRecord, error) {
+func (s *Server) loadFileRecordAndAuthorize(c *gin.Context, fileID uint64, rawToken string) (*model.FileRecord, error) {
+	actor, hasActor := common.GetActor(c)
 	var file model.FileRecord
 	if err := s.DB.Where("id = ?", fileID).First(&file).Error; err != nil {
-		return nil, common.ErrNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if !hasActor {
+				return nil, common.ErrInvalidFileBinding
+			}
+			return nil, common.ErrNotFound
+		}
+		return nil, err
 	}
-	actor, ok := common.GetActor(c)
-	if !ok {
+	if !hasActor {
 		if file.UploaderType != model.UserTypePublic {
-			return nil, common.ErrForbidden
+			return nil, common.ErrInvalidFileBinding
+		}
+		if strings.TrimSpace(rawToken) == "" ||
+			file.CapabilityTokenHash == nil ||
+			file.CapabilityExpiresAt == nil ||
+			!file.CapabilityExpiresAt.After(time.Now()) {
+			return nil, common.ErrInvalidFileBinding
+		}
+		computedHash := fileCapabilityHash(rawToken)
+		if subtle.ConstantTimeCompare([]byte(*file.CapabilityTokenHash), []byte(computedHash)) != 1 {
+			return nil, common.ErrInvalidFileBinding
 		}
 	} else {
 		if err := allowUploadBiz(&actor, file.BizType); err != nil {
