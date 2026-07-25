@@ -1,6 +1,25 @@
 -- Stable, non-PII fingerprints for the protected production-derived account.
 -- Excludes migration-owned fields such as reserved_stock and active_order_id.
 
+DROP PROCEDURE IF EXISTS acceptance_protected_account_guard;
+
+DELIMITER //
+CREATE PROCEDURE acceptance_protected_account_guard()
+BEGIN
+  DECLARE protected_accounts BIGINT DEFAULT 0;
+  SELECT COUNT(*) INTO protected_accounts
+  FROM merchant_accounts
+  WHERE username = 'yaner' AND deleted_at IS NULL;
+  IF protected_accounts <> 1 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'protected fingerprint: yaner account is absent or duplicated';
+  END IF;
+END//
+DELIMITER ;
+
+CALL acceptance_protected_account_guard();
+DROP PROCEDURE acceptance_protected_account_guard;
+
 SELECT
   'yaner_account' AS protected_scope,
   COUNT(*) AS row_count,

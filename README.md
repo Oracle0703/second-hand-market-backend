@@ -203,11 +203,53 @@ API_BASE_URL=http://localhost:8080/api/v1 \
 node scripts/smoke-miniapp-page-e2e.mjs
 ```
 
+MySQL 并发验收冒烟会写入持久测试行，只能在隔离环境运行，绝不能指向生产环境：
+
+```bash
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+ACCEPTANCE_CONFIRM_ISOLATED=I_UNDERSTAND_THIS_WRITES_TEST_DATA \
+SMOKE_ADMIN_USERNAME="$SMOKE_ADMIN_USERNAME" \
+SMOKE_ADMIN_PASSWORD="$SMOKE_ADMIN_PASSWORD" \
+API_BASE_URL=http://127.0.0.1:18082/api/v1 \
+make acceptance-mysql-smoke
+```
+
 `smoke-miniapp-page-e2e.mjs` 前置条件：
 - 后端 `/healthz` 可用。
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD` 由本地或 CI secret 环境注入；冒烟脚本不再包含固定管理员口令。
-- 脚本会创建商家、商品和订单测试数据，默认只在本地或隔离的非生产环境执行；生产验收应使用经批准的专用测试数据与清理流程。
+- 脚本会创建商家、商品和订单测试数据，只在本地或隔离的非生产环境执行；生产写验证遵循下方的受控专用测试商品流程，不运行此脚本。
 - 如后端为 `BUYER_WECHAT_LOGIN_MODE=real`，需要额外传入 `BUYER_WECHAT_LOGIN_CODE=<wx.login 获取的临时 code>`。
+
+## Production multi-stock release boundary
+
+Isolated acceptance on a production-data clone passed MySQL 8.4.8 migration, index, CHECK, AutoMigrate compatibility, concurrency, administrator security, and desktop/mobile browser checks. `frontend npm run build` passed. `frontend npm test` did not complete because it hung during Ant Design module initialization; it is not green evidence. Production migration, deployment, administrator rotation, and real production write verification remain undone.
+
+The production maintenance window must use this exact order:
+
+```text
+recoverable backup evidence
+-> protected yaner fingerprint
+-> 0004 preflight
+-> 0004 up migration exactly once
+-> 0004 postflight
+-> deploy API and admin frontend together
+-> health/auth/read checks
+-> controlled dedicated test product create/close/complete
+-> protected yaner fingerprint comparison
+-> 30-60 minute observation
+```
+
+The canonical gate files are:
+
+- `backend/migrations/0004_merchant_multi_stock.preflight.sql`
+- `backend/migrations/0004_merchant_multi_stock.up.sql`
+- `backend/migrations/0004_merchant_multi_stock.postflight.sql`
+
+Stop before migration when active orders are nonzero, `LOCKED` products are nonzero, the old index shape differs from the expected unique `(product_id,is_active)` definition, recoverable backup evidence is missing, or `yaner` is absent/duplicated or its pre-release fingerprint cannot be captured. For `LOCKED > 0`, report affected row IDs and active-order counts for explicit business approval; do not apply a blanket status rewrite.
+
+Production must not run `smoke-mysql-concurrency.mjs`. Production write validation uses only a dedicated test merchant/product with small quantities and performs create -> close and create -> complete. It must not use `yaner` data or rotate an existing administrator password merely for testing. Once multi-stock orders exist, production rollback is forward-fix only: do not restore the old unique index or old order code.
+
+F-12, F-13, license governance, miniapp ordering, MySQL root rotation, and the Vitest investigation remain outside this release.
 
 ## restricted login 边界
 

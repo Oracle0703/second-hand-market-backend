@@ -1,9 +1,7 @@
--- Run immediately after migration 0004 and before the acceptance API starts.
-
-DROP PROCEDURE IF EXISTS acceptance_post_migration;
+DROP PROCEDURE IF EXISTS merchant_multi_stock_postflight;
 
 DELIMITER //
-CREATE PROCEDURE acceptance_post_migration()
+CREATE PROCEDURE merchant_multi_stock_postflight()
 BEGIN
   DECLARE failures BIGINT DEFAULT 0;
 
@@ -12,7 +10,7 @@ BEGIN
   WHERE table_schema = DATABASE()
     AND table_name = 'products'
     AND column_name = 'reserved_stock'
-    AND data_type = 'int'
+    AND column_type = 'int'
     AND is_nullable = 'NO'
     AND column_default = '0';
   IF failures <> 1 THEN
@@ -24,7 +22,7 @@ BEGIN
   WHERE table_schema = DATABASE()
     AND table_name = 'orders'
     AND column_name = 'quantity'
-    AND data_type = 'int'
+    AND column_type = 'int'
     AND is_nullable = 'NO'
     AND column_default = '1';
   IF failures <> 1 THEN
@@ -106,24 +104,14 @@ BEGIN
   IF failures <> 3 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'post-migration: required CHECK constraints are absent, unenforced, or drifted';
   END IF;
-
-  SELECT COUNT(*) INTO failures
-  FROM merchant_accounts
-  WHERE username = 'yaner' AND deleted_at IS NULL;
-  IF failures <> 1 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'post-migration: protected yaner account changed unexpectedly';
-  END IF;
 END//
 DELIMITER ;
 
-CALL acceptance_post_migration();
-DROP PROCEDURE acceptance_post_migration;
+CALL merchant_multi_stock_postflight();
+DROP PROCEDURE merchant_multi_stock_postflight;
 
-SELECT 'post_migration_passed' AS acceptance_gate, NOW() AS checked_at;
+SELECT 'postflight_passed' AS migration_gate;
 SELECT COUNT(*) AS products, SUM(stock) AS total_stock, SUM(reserved_stock) AS total_reserved_stock
 FROM products WHERE deleted_at IS NULL;
 SELECT COUNT(*) AS orders, SUM(quantity) AS total_quantity, COALESCE(SUM(deal_price_cent), 0) AS unit_price_sum
 FROM orders WHERE deleted_at IS NULL;
-SELECT id, merchant_id, role, status, SHA2(password_hash, 256) AS password_hash_fingerprint
-FROM merchant_accounts
-WHERE username = 'yaner' AND deleted_at IS NULL;

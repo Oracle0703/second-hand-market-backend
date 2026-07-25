@@ -1,17 +1,15 @@
--- Run only against the isolated acceptance clone before migration 0004.
-
-DROP PROCEDURE IF EXISTS acceptance_preflight;
+DROP PROCEDURE IF EXISTS merchant_multi_stock_preflight;
 
 DELIMITER //
-CREATE PROCEDURE acceptance_preflight()
+CREATE PROCEDURE merchant_multi_stock_preflight()
 BEGIN
   DECLARE failures BIGINT DEFAULT 0;
 
   SELECT COUNT(*) INTO failures
   FROM information_schema.tables
   WHERE table_schema = DATABASE()
-    AND table_name IN ('products', 'orders', 'merchant_accounts');
-  IF failures <> 3 THEN
+    AND table_name IN ('products', 'orders');
+  IF failures <> 2 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'preflight: required production tables are missing';
   END IF;
 
@@ -74,24 +72,14 @@ BEGIN
   IF failures <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'preflight: expected composite unique index uk_product_active is absent or drifted';
   END IF;
-
-  SELECT COUNT(*) INTO failures
-  FROM merchant_accounts
-  WHERE username = 'yaner' AND deleted_at IS NULL;
-  IF failures <> 1 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'preflight: protected yaner account is absent or duplicated';
-  END IF;
 END//
 DELIMITER ;
 
-CALL acceptance_preflight();
-DROP PROCEDURE acceptance_preflight;
+CALL merchant_multi_stock_preflight();
+DROP PROCEDURE merchant_multi_stock_preflight;
 
-SELECT 'preflight_passed' AS acceptance_gate, NOW() AS checked_at, VERSION() AS mysql_version;
+SELECT 'preflight_passed' AS migration_gate, VERSION() AS mysql_version;
 SELECT COUNT(*) AS products, SUM(stock) AS total_stock FROM products WHERE deleted_at IS NULL;
 SELECT COUNT(*) AS orders, COALESCE(SUM(deal_price_cent), 0) AS unit_price_sum FROM orders WHERE deleted_at IS NULL;
 SELECT COUNT(*) AS stale_active_order_ids FROM products WHERE active_order_id IS NOT NULL;
 SELECT COUNT(*) AS sold_with_stock FROM products WHERE status = 'SOLD' AND stock > 0;
-SELECT id, merchant_id, role, status, SHA2(password_hash, 256) AS password_hash_fingerprint
-FROM merchant_accounts
-WHERE username = 'yaner' AND deleted_at IS NULL;

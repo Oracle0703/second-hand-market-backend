@@ -13,36 +13,61 @@
 ## 2. 本地验证结果
 
 - 后端：`go test ./...` 通过。
-- 前端：Vitest 5 个文件 / 5 个测试通过，生产构建通过。
+- 前端：`npm run build` 通过。`npm test` 在 Ant Design 模块初始化阶段挂起，未完成；它不是绿色证据。
 - 小程序：Vitest 11 个文件 / 17 个测试通过。
 - 三条 smoke 脚本通过 `node --check`，已移除固定管理员/测试商家口令；管理员凭据改为环境注入，临时商家密码每次随机生成。
 - 主 smoke 已同步新库存断言：数量与总价、剩余库存不售罄、库存归零才 `SOLD`、关单释放预占且不改变上下架状态。
 
-以上只证明本地 SQLite 回归和前端构建通过。MySQL 8.x 的迁移、索引和并发语义仍须在非生产测试库验证；三条 smoke 会创建测试业务数据，本轮没有在生产执行。
+生产数据克隆隔离验收已通过：MySQL 8.4.8 迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全以及桌面/移动浏览器验收均已完成。生产迁移、部署、管理员轮换和真实生产写验证仍未执行。三条 smoke 会创建测试业务数据，本轮没有在生产执行。
+
+MySQL 8.4.8 migration, index, CHECK, AutoMigrate compatibility, concurrency, administrator security, and desktop/mobile browser acceptance passed on a production-data clone.
+
+`frontend npm run build` passed.
+
+`frontend npm test` did not complete because it hung during Ant Design module initialization; it is not green evidence.
+
+Production migration, deployment, administrator rotation, and real production write verification remain undone.
 
 ## 3. 生产发布前置条件
 
-1. 取得可恢复的数据库备份证据，并重新确认 active 订单为 0。
-2. 明确保护 `yaner` 的两个合法多库存商品；`SOLD / stock>0` 商品保持冻结，未经业务确认不修数。
-3. 显式设置 `APP_ENV=production`，预检现有 JWT 与数据库配置不会触发默认值保护。
-4. 在订单写入口暂停后显式执行 `backend/migrations/0004_merchant_multi_stock.up.sql`，确认 `uk_product_active` 已删除、普通索引已建立、库存不变量成立。
-5. 同步发布后端和商家前端，再使用专门测试商品执行创建、关闭、完成 smoke；不得使用 `yaner` 的真实商品制造成交。
-6. 两个管理员应逐个改密并逐个验证，始终保留一个可登录管理员；只撤销目标管理员 session，不得触碰 `merchant_accounts`。
+生产维护窗只按以下顺序进行；任何一步不满足即停止，不跳过或重排：
+
+```text
+recoverable backup evidence
+-> protected yaner fingerprint
+-> 0004 preflight
+-> 0004 up migration exactly once
+-> 0004 postflight
+-> deploy API and admin frontend together
+-> health/auth/read checks
+-> controlled dedicated test product create/close/complete
+-> protected yaner fingerprint comparison
+-> 30-60 minute observation
+```
+
+三份唯一的 `0004` 门禁文件为：
+
+- `backend/migrations/0004_merchant_multi_stock.preflight.sql`
+- `backend/migrations/0004_merchant_multi_stock.up.sql`
+- `backend/migrations/0004_merchant_multi_stock.postflight.sql`
+
+迁移前的停止条件：active 订单非零；`LOCKED` 商品非零；旧索引形态不是预期的唯一 `(product_id,is_active)`；缺少可恢复备份证据；或 `yaner` 缺失、重复、或无法采集发布前指纹。`LOCKED > 0` 时，先报告受影响行 ID 及其 active-order 计数，取得明确业务批准后才可逐行处置；不得批量改写所有受影响商品状态。
+
+生产不得运行 `smoke-mysql-concurrency.mjs`。生产写验证只使用小数量的专用测试商家/商品，依次执行创建 -> 关闭及创建 -> 完成；不得使用 `yaner` 数据，也不得仅为测试轮换现有管理员密码。
 
 详细预检、迁移、发布和回滚步骤以 [生产加固与商家多库存修复方案](./production-hardening-repair-plan-2026-07-24.md) 为准。
 
 ## 4. 当前阻断项
 
 - 生产数据库备份与迁移证据未完成。
-- MySQL 8.x 非生产迁移/索引/并发验证未完成。
 - 新后端与商家前端尚未部署，生产管理员尚未逐个改密。
-- 域名 smoke 与 `yaner` 实际使用者只读验收尚未在新版本上执行。
+- 真实生产写验证、`yaner` 发布前后指纹比较和 30-60 分钟观察尚未执行。
 
-这些事项阻断多库存版本正式上线，但不要求同时实施营业执照私有化、miniapp 真实身份迁移、MySQL root 轮换或其他后续治理项。
+这些事项阻断多库存版本正式上线。F-12、F-13、license governance、miniapp ordering、MySQL root rotation 和 Vitest investigation 均在本次发布范围外，不得借此扩大生产窗口。
 
 ## 5. 回滚边界
 
 - 新库存语义开放前可回滚应用并保留新增列。
-- 一旦产生多笔 active 或多笔 inactive 历史订单，不得恢复旧唯一索引或直接回滚旧订单代码，应关闭创建入口并向前修复。
+- 一旦产生多笔 active 或多笔 inactive 历史订单，不得恢复旧唯一索引或直接回滚旧订单代码，应关闭创建入口并向前修复；生产回滚只允许前向修复。
 - 管理员口令轮换后不得恢复仓库历史公开口令。
 - 任何回滚都不得删除、禁用、改名或重置 `yaner`，也不得把其多库存商品机械改为 1。

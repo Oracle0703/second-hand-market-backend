@@ -5,7 +5,8 @@
 - 目标分支：`codex/reconcile-code-reviews`
 - 依据：`docs/full-project-code-review-2026-07-24.md`（问题台账）、`docs/deep-code-review-2026-07-24.md`（底稿）与生产环境只读核验
 - 角色：本文是当前小修施工单，并单列后续业务门槛；后续门槛不得反向阻塞当前范围
-- 状态：本地代码与文档修复已完成并通过回归；生产迁移、部署和账号轮换待维护窗执行
+- Status: local implementation and production-clone isolated acceptance completed; production migration/deployment/account rotation still pending.
+- F-12, F-13, license governance, miniapp ordering, MySQL root rotation, and the Vitest investigation remain outside this release.
 
 ## 0. 生产执行记录
 
@@ -18,7 +19,7 @@
 | A2b MySQL root 口令 | 保留 root 账号并轮换口令 | **待独立维护窗** | 不与管理员改密或库存发布混做 |
 | A2c 管理员口令 | 保留两个管理员并逐个改密；移除固定密码 seed；不得动 `yaner` | **本地实现完成，待生产轮换** | 改密、session 吊销、安全 bootstrap 与生产默认值保护已完成；尚未改现网口令 |
 | A3 备份证据 | 核实云快照 / DB 备份 / root cron；确无则补最小异机备份 | **待办** | 是生产数据库迁移前置条件 |
-| C 商家多库存 | 数量、单价、自动总价、预占和多 active 订单 | **本地实现完成，待迁移部署** | SQLite/前端/miniapp 回归已通过；MySQL 8.x 与生产迁移仍待执行 |
+| C 商家多库存 | 数量、单价、自动总价、预占和多 active 订单 | **本地实现和生产数据克隆隔离验收完成，待迁移部署** | MySQL 8.4.8 迁移、索引、CHECK、AutoMigrate、并发及浏览器验收已通过；生产迁移仍待执行 |
 | G1 资质文件 | 执照私有化与管理员预览 | **延后** | 真实商家入驻/资质审核前完成，不阻塞 C |
 | G2 miniapp 身份 | 先迁移两名体验用户，再关闭 mock | **后续独立迁移** | 不阻塞 C；不得先切断现有体验用户登录 |
 
@@ -57,8 +58,8 @@
 - 已增加 `APP_ENV=production` 默认值保护，生产示例中的 JWT/数据库占位值在替换前会被拒绝。
 - 已实现商家后台多库存订单、数量/单件成交价/自动总价、原子预占、完成双减、关闭释放和多 active 订单；新主路径不再写入 `LOCKED` 或 `active_order_id`。
 - 买家列表、详情、收藏和历史继续读取字段 `stock`，其值由 API 映射为可售库存；小程序页面未增加下单功能。
-- 本地后端、前端测试与构建、miniapp 测试均已通过；三条 smoke 脚本已通过语法检查，但未对现网执行会产生业务数据的 smoke。
-- 本轮没有执行生产 SQL、部署、管理员改密或任何 `yaner` 数据变更。MySQL 8.x 的迁移、索引和并发验证仍须在非生产库及维护窗完成。
+- 本地后端、前端构建和 miniapp 测试均已通过；`frontend npm test` 在 Ant Design 模块初始化阶段挂起，未完成，不是绿色证据。三条 smoke 脚本已通过语法检查，但未对现网执行会产生业务数据的 smoke。
+- 本轮没有执行生产 SQL、部署、管理员改密或任何 `yaner` 数据变更。MySQL 8.4.8 的迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全及桌面/移动浏览器验收已在生产数据克隆隔离环境通过。
 
 ## 1. 目标与原则
 
@@ -348,17 +349,9 @@ GORM：
 
 ### 5.0 现网推荐执行顺序（维护窗）
 
-1. **备份**：逻辑备份 + 确认可恢复（与 A3 衔接）。
-2. **暂停商家创建订单**（前端入口或临时网关规则）；如有 active 订单，只临时保留完成/关闭用于排空。active 订单归零后暂停创建、完成和关闭全部写操作，直到新 API 启动并通过迁移验证。
-3. **保护 `yaner` 的 3 个相关商品**（§4.3）：两个合法多库存商品不改数据且暂停旧式建单，一个状态冲突商品保持冻结待确认。
-4. 在全部订单写操作暂停后执行最终**预检**（§5.1），不通过则中止；执行结构变更前再次确认 active 订单仍为 0。
-5. **准备代码模型**：构建含新字段、**已去掉** `uk_product_active` unique 标签的新后端镜像，但在 SQL 迁移完成前不启动新 API。
-6. **结构变更**（二选一，须在发布记录写明采用哪条）：
-   - **路径 M1（推荐）**：在订单写操作已全部暂停的维护窗，对生产库**显式执行** `0004_...up.sql`（或等价变更集）：加列、回填、`DROP INDEX uk_product_active`、建普通索引、校验约束/检查查询。迁移成功后才启动新 API；AutoMigrate 只作幂等检查，**模型不得再声明该 unique**。
-   - **路径 M2**：短时 `AUTO_MIGRATE=false`，只跑 SQL migration 工具/手工脚本，再以 `false` 或改回 true 但模型已无 unique。新建环境应以 SQL 或单一来源为准，长期目标见 §9.2。
-7. **验证**（§5.3）。
-8. **发布商家前端**，小流量创建/关闭/完成验证。
-9. **恢复创建订单**；两个合法多库存商品不再受旧逻辑限制，`SOLD / stock>0` 商品继续冻结直至人工确认修正。
+§8.1 是唯一的生产维护窗顺序。本节只补充其迁移步骤：暂停所有订单写操作；对受保护 `yaner` 账号和商品采集指纹；只执行一次 `backend/migrations/0004_merchant_multi_stock.preflight.sql`；预检通过后只执行一次 `backend/migrations/0004_merchant_multi_stock.up.sql`；再执行 `backend/migrations/0004_merchant_multi_stock.postflight.sql`。任一门禁失败或 §5.1 停止条件命中即停止生产窗口。
+
+在 SQL 迁移完成前不得启动新 API。新后端模型必须已去掉 `uk_product_active` unique 标签；迁移成功后 AutoMigrate 只作兼容性检查，不能重建唯一索引。发布 API 和商家前端后，按 §8.1 完成 health/auth/read、受控专用测试商品写验证、`yaner` 指纹比较和 30-60 分钟观察，才恢复订单入口。
 
 **禁止**：模型仍带 `uniqueIndex:uk_product_active` 时依赖「人手 drop index」——进程重启/AutoMigrate 可能加回唯一约束并在第二笔历史单时再次炸库。
 
@@ -366,11 +359,13 @@ GORM：
 
 1. 记录订单、商品、active 订单、`LOCKED` 商品和真正违反状态/库存不变量的商品数量。
 2. 验证不存在 `stock < 0`、重复订单号或无法关联商品的订单。
-3. 查询 active 订单；当前只读核验未发现 active 订单，但上线前必须重新确认。生产首发要求该数量为 0；若发现 active 订单，停止结构迁移，先按旧流程完成/关闭并重新开始最终预检。
-4. 列出所有 `status=LOCKED` 商品；按 §2.4 决定迁回策略；有 active 订单则先处理订单。
+3. 查询 active 订单；当前只读核验未发现 active 订单，但上线前必须重新确认。生产首发要求该数量为 0；若发现 active 订单，停止生产窗口并重新开始最终预检。
+4. 列出所有 `status=LOCKED` 商品。任何 `LOCKED > 0` 都停止生产窗口；报告每个受影响行 ID 及其 active-order 计数，取得明确业务批准后才可逐行处置。禁止批量把所有受影响商品状态改写为同一值。
 5. 分开记录两个合法 `ON_SHELF / stock>1` 商品和一个 `SOLD / stock>0` 冲突商品；迁移不得改动前两个，也不得自动修正第三个。
 6. 完成数据库快照或可恢复备份。
-7. 确认索引名：`SHOW INDEX FROM orders` 中存在即将删除的 `uk_product_active`（名称以现网为准，脚本勿写死错误名）。
+7. 确认旧索引形态是预期的唯一 `(product_id,is_active)` 定义；不一致即停止生产窗口。确认将被删除的索引名（名称以现网为准，脚本勿写死错误名）。
+8. 确认 `yaner` 恰有一个受保护账号且可采集发布前指纹；缺失、重复或无法采集均停止生产窗口。
+9. 缺少可恢复备份证据即停止生产窗口。
 
 ### 5.2 结构与回填
 
@@ -379,7 +374,7 @@ GORM：
 3. `reserved_stock` 首发回填为 0，并再次断言不存在 active 订单；本生产方案不在结构迁移中猜测或接管旧 active 订单。
 4. 删除 `uk_product_active`（或现网实际 unique 名），创建普通复合索引 `idx_order_product_active(product_id, is_active)`。
 5. 第一版不删除 `active_order_id`，只停止读写并置空已迁移关联。
-6. 处理遗留 `LOCKED` 行（§2.4）。
+6. 只处理已按 §5.1 取得明确业务批准的 `LOCKED` 行；不得批量状态改写。
 7. 加入数据库 CHECK（MySQL 8.4 可用）或迁移后 SQL 验证：`quantity > 0`、`reserved_stock >= 0`、`reserved_stock <= stock`。
 
 ### 5.3 迁移后验证
@@ -489,27 +484,40 @@ cd miniapp && npm test
 
 另用不含生产数据和生产凭据的 MySQL 8.x 临时库运行迁移、订单并发与索引回归；测试结束后核对库存不变量及 `SHOW INDEX FROM orders`。连接信息只通过测试环境 secret 注入，不写入命令记录或仓库。
 
-若本机 frontend 依赖因 FileProvider 挂起，须在干净环境或 CI 重跑，不得用「环境失败」代替通过。
+`frontend npm test` 曾在 Ant Design 模块初始化阶段挂起，未取得完成结果；它不是绿色证据，Vitest 调查留在本次发布范围外。
 
 小程序虽然不修改功能，仍运行测试确认无误改共享契约。发布前另执行：
 
 - 域名入口 smoke
-- 并发库存 smoke（记录命令与期望成功数）
-- 由实际使用者完成 `yaner` 登录与只读访问商品/订单验证（不重置密码，不创建不可回滚真实订单）
+- `smoke-mysql-concurrency.mjs` 只在隔离 MySQL 环境运行，绝不指向生产
+- 生产写验证只使用小数量的专用测试商家/商品，执行创建 -> 关闭及创建 -> 完成；不得使用 `yaner` 数据
 
 ## 8. 发布与回滚
 
 ### 8.1 发布顺序
 
-1. 用户在阿里云安全组关闭公网 `8081`，随后复测域名首页、`/healthz`、买家接口和公网端口不可达，完成 A1。
-2. 在部署配置中显式设置并校验 `APP_ENV=production`，确认当前 JWT/DB 配置不会触发默认值拒绝后，发布管理员改密、active-session 校验和安全 bootstrap 变更；先轮换并验证一个管理员，再轮换另一个。确认 `yaner` 登录和数据未受影响。
-3. 有权限人员完成 A3 备份证据核实；这是后续 root 维护和库存数据库迁移的共同前置条件。
-4. 在单独短维护窗按 §4.1.2 完成 MySQL root 双密码切换、compose/healthcheck 更新、MySQL 重建和新旧密码验证。
-5. 开始 Checkpoint C 维护窗：暂停商家创建订单，保护 `yaner` 的 3 个相关商品，执行预检，再按 §5.0 完成结构迁移与模型对齐。
-6. 同步发布库存后端与商家前端；使用专门测试商品做小数量 **创建 → 关闭**，确认订单不 LOCKED、预占释放、商品状态保持。
-7. 再做 **创建 → 完成**，确认库存与预占双减以及 SOLD 条件；不得使用 `yaner` 的真实商品制造不可回滚成交。
-8. 恢复商家订单入口。两个合法多库存商品恢复正常使用；`SOLD / stock>0` 商品保持冻结，等待 `yaner` 使用者确认后单独修正。
-9. 观察冲突率、DB 错误和库存不变量，更新运维笔记中的迁移路径（M1/M2）、索引证明和各独立分项状态。
+生产维护窗只按以下顺序进行；任何步骤失败或停止条件命中都停止，不跳过或重排：
+
+```text
+recoverable backup evidence
+-> protected yaner fingerprint
+-> 0004 preflight
+-> 0004 up migration exactly once
+-> 0004 postflight
+-> deploy API and admin frontend together
+-> health/auth/read checks
+-> controlled dedicated test product create/close/complete
+-> protected yaner fingerprint comparison
+-> 30-60 minute observation
+```
+
+唯一允许执行的 `0004` 文件路径为：
+
+- `backend/migrations/0004_merchant_multi_stock.preflight.sql`
+- `backend/migrations/0004_merchant_multi_stock.up.sql`
+- `backend/migrations/0004_merchant_multi_stock.postflight.sql`
+
+生产不得运行 `smoke-mysql-concurrency.mjs`。生产写验证只使用小数量的专用测试商家/商品，执行创建 -> 关闭及创建 -> 完成；不得使用 `yaner` 数据，也不得仅为测试轮换现有管理员密码。
 
 Gate G1 资质私有化和 G2 miniapp 身份限制按业务触发条件独立安排，不插入上述库存发布链路。
 
@@ -518,7 +526,7 @@ Gate G1 资质私有化和 G2 miniapp 身份限制按业务触发条件独立安
 - 管理员改密功能回滚时不得恢复公开初始化密码或旧密码哈希；已经轮换的密码继续有效，必要时使用受控的一次性重置流程。
 - root 维护失败时可在双密码尚未废止的窗口恢复旧 compose 并重建 MySQL；新配置完全验证后才废止旧密码。
 - 多库存功能开放前，可以回滚应用并保留新增列。
-- 多库存功能开放后，只要已经按新语义创建过订单，就不得直接回滚旧代码；同商品存在多笔 active 或多笔 inactive 历史时均不得恢复旧唯一索引。
+- 多库存功能开放后，只要已经按新语义创建过订单，就不得直接回滚旧代码；同商品存在多笔 active 或多笔 inactive 历史时均不得恢复旧唯一索引。生产回滚只允许前向修复。
 - 数据不变量异常时立即关闭商家创建订单入口，保留完成/关闭已有订单的处置通道，优先向前修复。
 - 回滚不得修改、禁用、重置或删除 `yaner`；两个合法多库存商品不得在回滚时机械改成 1。
 - 回滚记录不得包含密码、token、openid、完整文件 URL。
@@ -574,7 +582,7 @@ Gate G1 资质私有化和 G2 miniapp 身份限制按业务触发条件独立安
 4. 买家 API 的兼容 `stock` 字段返回可售库存，现有 miniapp 页面无需改动即可显示正确数量。
 5. `uk_product_active` 已删除，普通索引存在，GORM 模型不会经 AutoMigrate 重建唯一索引。
 6. 两个合法 `ON_SHELF / stock>1` 商品未被误改；一个 `SOLD / stock>0` 商品已由业务确认修正，或保持冻结并有明确跟踪项。
-7. 数据库迁移记录、后端测试、前端测试、miniapp 测试与前端构建全部通过；多库存相关文档已与新行为同步。
+7. 数据库迁移记录、后端测试、miniapp 测试与前端构建已通过；`frontend npm test` 未完成且不是绿色证据。多库存相关文档已与新行为同步。
 8. 发布和回滚记录不包含密码、token、openid、文件完整 URL 或其他敏感值。
 9. **`yaner` 账号、密码、角色、归属和业务数据未被误改**，由实际使用者完成登录与只读访问验证。
 

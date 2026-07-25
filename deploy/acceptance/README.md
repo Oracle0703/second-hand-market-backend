@@ -123,7 +123,7 @@ Run the checked-in fail-fast preflight:
 set -o pipefail
 docker compose exec -T mysql sh -ec '
   MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
-    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/sql/preflight.sql
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/migrations/0004_merchant_multi_stock.preflight.sql
 ' | tee evidence/preflight.txt
 ```
 
@@ -178,7 +178,7 @@ Run the checked-in post-migration gate before starting the API:
 set -o pipefail
 docker compose exec -T mysql sh -ec '
   MYSQL_PWD="$MYSQL_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 \
-    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/sql/post-migration.sql
+    -u"$MYSQL_USER" "$MYSQL_DATABASE" < /acceptance/migrations/0004_merchant_multi_stock.postflight.sql
 ' | tee evidence/post-migration.txt
 ```
 
