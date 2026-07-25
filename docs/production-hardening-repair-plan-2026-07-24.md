@@ -552,7 +552,8 @@ Gate G1 资质私有化和 G2 miniapp 身份限制按业务触发条件独立安
 - ~~frontend logout 调用服务端（F-08）~~ **本分支已修复（2026-07-26）**：`api.logout()` + Layout 失败容忍退出；设计见 `docs/superpowers/specs/2026-07-26-frontend-server-logout-design.md`。随下次 frontend 发布上线。
 - access token 吊销策略（F-14）和幂等原子性（F-15）。
 - 买家意向 open 唯一索引迁移（F-11），仅在恢复意向入口前实施。
-- migration、AutoMigrate 和文件表名一致性（F-09）；选定单一 schema 来源。
+- migration、AutoMigrate 和文件表名一致性（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`file_records` 为唯一契约；`0005` preflight/up/postflight 已入库（up 在 rename/no-op 前重复列与索引校验）；完整八态矩阵与文件流通过。现网已是 `file_records`，维护窗预期 no-op。
+- 分类 schema 一致性（F-16）：**本地修复并通过同一隔离矩阵的 AutoMigrate RED→GREEN 审核；生产未部署**。模型与 SQL 均为 `(parent_id,name)`，API 与独立 seed 按父级查找且不再移动身份字段。
 - 在统一 `file_records` schema 后，为匿名营业执照上传增加高熵一次性绑定凭证；注册时校验凭证并原子绑定到新商家账号，商家重提时继续按登录账号校验归属。
 
 ### 9.3 常规运维治理

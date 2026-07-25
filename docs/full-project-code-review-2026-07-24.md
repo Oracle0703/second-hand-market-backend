@@ -49,14 +49,14 @@
 | F-06 | P2 | 匿名上传缺少限流、配额和清理机制 | 下一次后端/网关发布；当前保留 10 MB 入口限制 |
 | F-07 | P1 | 后台允许多库存，但订单没有数量、预占和扣减逻辑 | 立即核对 3 个异常商品，商家多库存订单发布前修正规则 |
 | F-08 | P2 | frontend 退出登录未注销服务端 session | **本分支已修复（2026-07-26）**；随下次 frontend 发布生效 |
-| F-09 | P2 | migration 表名与 GORM 表名不一致 | 下一次新建数据库或关闭 AutoMigrate 前 |
+| F-09 | P2 | migration 表名与 GORM 表名不一致 | **本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005** |
 | F-10 | P2 | Git 跟踪本地业务数据库 | 下一次共享仓库历史或轮换会话前完成处置 |
 | F-11 | P2 | 买家意向唯一索引只允许一笔已关闭历史记录 | 恢复买家意向入口前 |
 | F-12 | P1 | 生产买家登录使用 mock 身份 | 立即限制新 mock 身份，完成迁移方案后再切 real |
 | F-13 | P1 | 营业执照通过公开静态目录匿名可读 | 立即隔离现有 1 份执照，不影响商品图片 |
 | F-14 | P2 | 注销 session 后 access token 仍可继续访问 | 下一次认证发布；先确认可接受的吊销时延 |
 | F-15 | P2 | 幂等记录在业务执行后写入且忽略写入错误 | 关键写流量扩大或依赖幂等保证前 |
-| F-16 | P3 | 分类模型、migration 和初始化查询的唯一性语义不一致 | 分类扩展或 schema 迁移前 |
+| F-16 | P3 | 分类模型、migration 和初始化查询的唯一性语义不一致 | **本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署** |
 
 部署环境另有 7 项独立发现，避免与代码缺陷编号混用：
 
@@ -235,19 +235,30 @@ access token 过期时，请求在到达刷新分支前已经失败。客户端�
 
 ### F-09 [P2] SQL migration 与 GORM 表名不一致
 
-证据：
+**状态：本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**
+
+设计：`docs/superpowers/specs/2026-07-26-file-record-schema-alignment-design.md`
+计划：`docs/superpowers/plans/2026-07-26-file-record-schema-alignment.md`
+
+本地实现摘要：
+
+- `FileRecord.TableName()` 显式返回 `file_records`（`backend/internal/model/models.go` + `models_test.go`）。
+- 新增 `0005_file_records_table.{preflight,up,postflight}.sql`：仅 `files` 时原子 rename；仅 `file_records` 时 verified no-op；双表/无表 fail-closed；up 在 mutation 前重复列与索引形态校验；无 destructive down。
+- 本地迁移制品测试：`backend/migrations/file_records_migration_test.go`。
+- Opt-in MySQL 上传流测试：`backend/tests/file_schema_mysql_test.go`（`FILE_SCHEMA_MYSQL_TEST=1`）。
+- 隔离矩阵入口：`make acceptance-file-schema-smoke` / `deploy/acceptance/file-record-schema-smoke.sh`（含 canonical 行数断言与 preflight→up 漂移失败用例）。
+
+隔离验收：
+
+- 专用测试服务器 MySQL 8.4.8 八态矩阵退出 0；migration-only 文件流与随后 `AUTO_MIGRATE=true` 启动通过。
+- 脱敏证据和 SHA-256：`docs/superpowers/reviews/2026-07-26-file-category-schema-isolated-acceptance.md`。
+- 生产已知为 `file_records`（历史 AutoMigrate）；`0005` 对生产应为 no-op 分支，仍须单独授权执行。
+
+历史证据（修复前）：
 
 - `backend/migrations/0001_init.up.sql:150` 创建表 `files`。
-- `backend/internal/model/models.go:201` 定义 `FileRecord`，但没有 `TableName()`，GORM 默认使用 `file_records`。
+- `backend/internal/model/models.go` 定义 `FileRecord`，但没有 `TableName()`，GORM 默认使用 `file_records`。
 - 当前由 AutoMigrate 生成的 SQLite 数据库实际使用 `file_records`。
-
-影响：
-
-如果生产环境只执行 SQL migration 并关闭 AutoMigrate，文件相关接口会访问不存在的 `file_records` 表。继续同时依赖手写 migration 和 AutoMigrate 还会扩大 schema 漂移。
-
-建议：
-
-选定唯一 schema 管理方式，并使模型表名与 migration 完全一致。为全新数据库增加从 migration 启动服务的集成测试。
 
 ### F-10 [P2] Git 跟踪本地业务数据库
 
@@ -362,7 +373,19 @@ UNIQUE constraint failed: buyer_intents.buyer_id, buyer_intents.product_id, buye
 
 ### F-16 [P3] 分类唯一性语义在三处不一致
 
-证据：
+**状态：本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**
+
+设计：`docs/superpowers/specs/2026-07-26-category-schema-alignment-design.md`
+计划：`docs/superpowers/plans/2026-07-26-category-schema-alignment.md`
+
+修复摘要：
+
+- GORM `uk_parent_name` 已对齐历史 SQL 为唯一 `(parent_id,name)`。
+- API 启动 seed 与独立 seed 命令均按父级 + 名称查询，不再更新身份字段 `parent_id`。
+- 真实 GORM/SQLite 测试覆盖跨父同名、幂等、身份稳定和可变字段修正。
+- 修复前隔离 MySQL AutoMigrate 因 `Duplicate key name 'uk_parent_name'` 失败；修复后同一测试通过。
+
+历史证据（修复前）：
 
 - `backend/migrations/0001_init.up.sql:71` 定义 `(parent_id, name)` 复合唯一索引。
 - `backend/internal/model/models.go:121` 的 `ParentID` 没有加入 `uk_parent_name`，GORM AutoMigrate 实际只对 `name` 建唯一索引。
@@ -428,14 +451,14 @@ UNIQUE constraint failed: buyer_intents.buyer_id, buyer_intents.product_id, buye
 | F-06 | 部分缓解，核心风险仍存在 | 宿主 Nginx 为 20 MB、Web 容器为 10 MB，可限制公网单请求体；应用仍按 40 MB 处理，匿名上传没有频率、总量、配额或清理机制，线上已有 13 个未绑定商品文件记录。 |
 | F-07 | 目标流程未实现，且已有一条明确不一致 | 9 个未删除商品中有 2 个 `ON_SHELF` 商品库存大于 1，符合已确认的多库存需求，但现有订单无法按数量成交；另有 1 个 `SOLD` 商品库存仍为 6，状态与库存明确冲突。 |
 | F-08 | **本分支代码已修复（2026-07-26）**；线上待 frontend 发布后生效 | 本地已调用 `POST /auth/logout` 并覆盖失败降级测试。线上若仍跑旧 frontend bundle，退出行为与修复前相同，发布后关闭。 |
-| F-09 | 漂移已确认，当前运行被 AutoMigrate 暂时兜住 | 线上只有 `file_records`，且 `AUTO_MIGRATE=true`，所以当前上传链路没有因表名直接失效；关闭 AutoMigrate 或从 SQL migration 新建环境仍会出错。 |
+| F-09 | **本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005** | 已固定 `file_records` 契约并提供兼容 rename；up 重复形态校验。完整 SQL 链、漂移拒绝、文件流与 AutoMigrate 兼容已在专用服务器通过；线上仍未执行 `0005`。 |
 | F-10 | 仓库问题已确认，非当前线上数据库 | `backend/app.db` 仍被 Git 跟踪并存在历史提交；生产实际使用 MySQL，因此该文件不是线上运行库，但仓库历史泄露风险不受影响。 |
 | F-11 | schema 已确认，尚未触发 | 线上存在错误的三列唯一索引，但 `buyer_intents=0`，当前没有业务数据撞约束。 |
 | F-12 | 线上已发生 | 生产微信登录明确为 mock，抖音漏配后也默认 mock；19 个现有买家全部为微信 mock 身份。 |
 | F-13 | 线上已发生 | 生产为本地公开存储；在不输出 URL 或内容的前提下，现有营业执照匿名 GET 返回 HTTP 200、`image/png`。 |
 | F-14 | 代码适用，动态利用未验证 | 线上有 2 个 revoked session，但中间件不查询 session；因未持有注销前 access token，本轮没有动态验证剩余 TTL 内的访问。 |
 | F-15 | 代码适用，线上尚未使用 | 线上 `idempotency_records=0`，说明当前没有可供核对的幂等历史；并发竞态由控制流静态确认。 |
-| F-16 | schema 已确认，当前数据未冲突 | 线上分类唯一索引只有 `name`；现有 20 个分类无重名，风险会在跨父级同名或切换 schema 管理方式时出现。 |
+| F-16 | **本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署** | 线上分类唯一索引仍只有 `name`；现有 20 个分类无重名。新模型/seed 已对齐 `(parent_id,name)`，待后端发布后生效。 |
 
 ## 6. 部署环境新增发现
 
@@ -703,7 +726,7 @@ Grok 二次反馈没有推翻上述源码、schema 或线上核验事实；本�
 
 ### 常规版本与运维治理
 
-1. ~~完成 frontend logout~~ **F-08 已修复（2026-07-26）**；其余：access token 吊销策略（F-14）、幂等原子性（F-15）、migration/AutoMigrate/分类 schema 一致性，以及 Git 中业务数据库的合规处置。
+1. ~~完成 frontend logout~~ **F-08 已修复（2026-07-26）**；F-09/F-16 **本地修复并通过隔离 MySQL 8.4 测试服务器审核，生产未执行/未部署**；其余：access token 吊销策略（F-14）、幂等原子性（F-15）以及 Git 中业务数据库的合规处置。
 2. 将非敏感部署配置纳入版本控制，为镜像写入 commit/digest，并逐步增加 healthcheck、资源限制、日志轮转、安全响应头和可验证的备份演练。
 3. 补齐 CI/lint，在干净依赖环境中执行 backend、frontend、miniapp 的测试、构建和入口级 smoke。
 

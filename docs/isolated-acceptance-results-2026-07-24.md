@@ -141,3 +141,69 @@
 3. 买家小程序当前仍不开放直接下单；本轮只完善商家后台，不提前实现未确认的买家下单需求。
 4. F-12、F-13 和营业执照治理按已约定的真实用户/真实资质接入门槛另行处理。
 5. 隔离容器和 volume 已保留供复核，三个服务已执行 `docker compose stop` 释放内存；未执行 `down --volumes`。
+
+## 8. F-09 文件表 schema 对齐（2026-07-26 追加）
+
+范围：`file_records` 唯一契约、`0005` 兼容迁移门禁、本地测试与隔离矩阵入口。
+设计：`docs/superpowers/specs/2026-07-26-file-record-schema-alignment-design.md`。
+
+状态：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。
+
+### 8.1 本机已完成
+
+| 项 | 结果 |
+| --- | --- |
+| `FileRecord.TableName()` → `file_records` | 通过（`go test ./internal/model`） |
+| `0005` preflight / up / postflight 制品 | 已入库；`go test ./migrations` 契约通过 |
+| up 在 rename/no-op 前重复列与索引形态校验 | 已入库（F09-R1） |
+| 无 destructive `0005` down | 契约测试断言不存在 |
+| Opt-in MySQL 文件流测试 | 已入库；本地无 `FILE_SCHEMA_MYSQL_TEST=1` 时显式 skip |
+| 隔离 harness | `make acceptance-file-schema-smoke` + `deploy/acceptance/file-record-schema-smoke.sh` |
+| canonical no-op 行数断言 | harness 已比较 `COUNT(*)` before/after（F09-R4） |
+| preflight→up 漂移失败用例 | harness 已覆盖缺列/缺索引且表名不变（F09-R1） |
+| clean-chain 前 `reset_file_tables` | 漂移断言后清空双表，避免 `0001` down 只删 `files` 导致双表残留（F09-FU1） |
+| harness 契约测试 | `TestFileSchemaSmokeResetsBeforeCleanChain` 断言 clean-chain 前 reset + 空表态 |
+| 本地安全门 | 无确认变量时 Make 目标 fail-closed；`bash -n` 脚本语法通过 |
+
+### 8.2 隔离 MySQL 矩阵（2026-07-26 已通过）
+
+矩阵在专用验收目录与 Compose project
+`secondhand-file-schema-acceptance` 中从干净卷执行，MySQL 版本为 8.4.8，
+命令退出 0。开发工作站仍不直接运行 Docker；服务器执行记录如下：
+
+1. legacy `files`-only rename + sentinel 行不变
+2. canonical `file_records`-only no-op（sentinel hash + 总行数不变）
+3. both-table preflight fail，双表数据保留
+4. neither-table preflight fail，不建表
+5. 全链 SQL + `AUTO_MIGRATE=false` 上传流
+6. 随后 `AUTO_MIGRATE=true` 不产生竞争 `files` 表
+7. preflight 通过后故意去掉 required 列：up 失败且表仍名 `files`
+8. preflight 通过后故意去掉 `(biz_type,created_at)` 索引：up 失败且表仍名 `file_records`
+
+执行命令：
+
+```bash
+# after deploy/acceptance/prepare.sh
+FILE_SCHEMA_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_SCHEMA_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-file-schema-smoke
+```
+
+已记录（脱敏，不含凭据/DSN/token/完整 URL/生产数据）：
+
+- 命令与退出码
+- MySQL `VERSION()`（harness 写入 `mysql-version.txt`）
+- 证据路径：`deploy/acceptance/evidence/file-record-schema/`
+  - `legacy.txt` / `canonical.txt` / `full-chain.txt` / `file-flow.txt`
+  - `drift-legacy-column.txt` / `drift-canonical-index.txt`
+- 稳定 marker：`file_records_preflight_passed`、`file_records_migration_renamed|noop`、`file_records_postflight_passed`、`--- PASS: TestFileFlowWithMigrationOnlyMySQL`
+
+Compose 项目名固定：`secondhand-file-schema-acceptance`（未指向生产）。
+完整标记、F-16 修复前 1061 失败、修复后 PASS、证据哈希及生产容器只读前后对比见
+`docs/superpowers/reviews/2026-07-26-file-category-schema-isolated-acceptance.md`。
+
+### 8.3 生产边界
+
+- 生产当前表名为 `file_records`；维护窗执行 `0005` 预期走 no-op 分支。
+- `0005` 尚未在生产执行，须单独授权。
+- 应用回滚保留 `file_records`，不得 destructive rename 回 `files`。

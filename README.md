@@ -222,7 +222,7 @@ make acceptance-mysql-smoke
 
 ## Production multi-stock release boundary
 
-Isolated acceptance on a production-data clone passed MySQL 8.4.8 migration, index, CHECK, AutoMigrate compatibility, concurrency, administrator security, and desktop/mobile browser checks. `frontend npm run build` passed. `frontend npm test` did not complete because it hung during Ant Design module initialization; it is not green evidence. Production migration, deployment, administrator rotation, and real production write verification remain undone.
+Isolated acceptance on a production-data clone passed MySQL 8.4.8 migration, index, CHECK, AutoMigrate compatibility, concurrency, administrator security, and desktop/mobile browser checks. `frontend npm run build` and `frontend npm test` pass on the current branch. Production migration, deployment, administrator rotation, and real production write verification remain undone.
 
 The production maintenance window must use this exact order:
 
@@ -232,6 +232,9 @@ recoverable backup evidence
 -> 0004 preflight
 -> 0004 up migration exactly once
 -> 0004 postflight
+-> 0005 file_records preflight
+-> 0005 file_records up migration exactly once
+-> 0005 file_records postflight
 -> deploy API and admin frontend together
 -> health/auth/read checks
 -> controlled dedicated test product create/close/complete
@@ -239,17 +242,37 @@ recoverable backup evidence
 -> 30-60 minute observation
 ```
 
-The canonical gate files are:
+The canonical multi-stock gate files are:
 
 - `backend/migrations/0004_merchant_multi_stock.preflight.sql`
 - `backend/migrations/0004_merchant_multi_stock.up.sql`
 - `backend/migrations/0004_merchant_multi_stock.postflight.sql`
 
+The canonical file-table gate files are:
+
+```text
+0005_file_records_table.preflight.sql
+-> 0005_file_records_table.up.sql
+-> 0005_file_records_table.postflight.sql
+```
+
+- `backend/migrations/0005_file_records_table.preflight.sql`
+- `backend/migrations/0005_file_records_table.up.sql`
+- `backend/migrations/0005_file_records_table.postflight.sql`
+
+The canonical file table is `file_records`. Migration `0005` renames the
+legacy `files`-only state, treats the existing `file_records`-only state as a
+verified no-op, and stops when both or neither table exists. Local model and
+migration-artifact tests pass. The complete MySQL 8.4.8 matrix passed with
+`make acceptance-file-schema-smoke` on the dedicated acceptance host, including
+the F-16 category AutoMigrate RED-to-GREEN check. Migration `0005` has not been
+run in production and still requires separate production authorization.
+
 Stop before migration when active orders are nonzero, `LOCKED` products are nonzero, the old index shape differs from the expected unique `(product_id,is_active)` definition, recoverable backup evidence is missing, or `yaner` is absent/duplicated or its pre-release fingerprint cannot be captured. For `LOCKED > 0`, report affected row IDs and active-order counts for explicit business approval; do not apply a blanket status rewrite.
 
 Production must not run `smoke-mysql-concurrency.mjs`. Production write validation uses only a dedicated test merchant/product with small quantities and performs create -> close and create -> complete. It must not use `yaner` data or rotate an existing administrator password merely for testing. Once multi-stock orders exist, production rollback is forward-fix only: do not restore the old unique index or old order code.
 
-F-12, F-13, license governance, miniapp ordering, MySQL root rotation, and the Vitest investigation remain outside this release.
+F-12, F-13, license governance, miniapp ordering, and MySQL root rotation remain outside this release.
 
 ## restricted login 边界
 

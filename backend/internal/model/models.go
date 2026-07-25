@@ -118,7 +118,7 @@ type MerchantAuditLog struct {
 
 type Category struct {
 	ID        uint64         `gorm:"primaryKey" json:"id"`
-	ParentID  *uint64        `gorm:"index:idx_parent_sort,priority:1" json:"parent_id"`
+	ParentID  *uint64        `gorm:"uniqueIndex:uk_parent_name,priority:1;index:idx_parent_sort,priority:1" json:"parent_id"`
 	Level     int8           `gorm:"index:idx_level_status_sort,priority:1" json:"level"`
 	Name      string         `gorm:"size:64;uniqueIndex:uk_parent_name,priority:2" json:"name"`
 	Status    string         `gorm:"size:16;index:idx_level_status_sort,priority:2" json:"status"`
@@ -211,6 +211,10 @@ type FileRecord struct {
 	UploaderID   *uint64
 	ScanStatus   string    `gorm:"size:16"`
 	CreatedAt    time.Time `gorm:"index:idx_biz_type_created,priority:2"`
+}
+
+func (FileRecord) TableName() string {
+	return "file_records"
 }
 
 type OperationLog struct {

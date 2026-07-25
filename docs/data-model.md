@@ -224,7 +224,7 @@
 索引建议：
 1. `idx_order_created(order_id, created_at)`
 
-### 2.10 files（文件元数据）
+### 2.10 file_records（文件元数据）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -242,6 +242,9 @@
 索引建议：
 1. `uk_object_key(object_key)`
 2. `idx_biz_type_created(biz_type, created_at)`
+
+表名以完整 SQL migration 链和 `FileRecord.TableName()` 的
+`file_records` 为准；历史 `0001` 中的 `files` 由 `0005` 兼容迁移收敛。
 
 ### 2.11 operation_logs（操作审计日志）
 

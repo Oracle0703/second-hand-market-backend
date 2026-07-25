@@ -1,4 +1,4 @@
-.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke
+.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke
 
 backend-test:
 	cd backend && mkdir -p .cache/go/mod .cache/go/build && GOMODCACHE=$$(pwd)/.cache/go/mod GOCACHE=$$(pwd)/.cache/go/build GOPROXY=https://goproxy.cn,direct go test ./...
@@ -15,3 +15,8 @@ acceptance-mysql-smoke:
 	@test "$${ACCEPTANCE_CONFIRM_ISOLATED:-}" = "I_UNDERSTAND_THIS_WRITES_TEST_DATA" || { echo "set ACCEPTANCE_CONFIRM_ISOLATED for the isolated destructive smoke" >&2; exit 1; }
 	@test "$${ACCEPTANCE_DB_ENGINE:-}" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
 	node scripts/smoke-mysql-concurrency.mjs
+
+acceptance-file-schema-smoke:
+	@test "$${FILE_SCHEMA_ACCEPTANCE_CONFIRM:-}" = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_SCHEMA_DATA" || { echo "set FILE_SCHEMA_ACCEPTANCE_CONFIRM for the isolated file schema smoke" >&2; exit 1; }
+	@test "$${ACCEPTANCE_DB_ENGINE:-}" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
+	./deploy/acceptance/file-record-schema-smoke.sh

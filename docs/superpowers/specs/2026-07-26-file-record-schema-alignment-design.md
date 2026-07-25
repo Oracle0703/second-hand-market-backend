@@ -2,21 +2,33 @@
 
 **Date:** 2026-07-26
 **Finding:** F-09 - SQL migration and GORM use different file table names
-**Status:** Approved for implementation planning
+**Status:** 本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005
 **Scope:** File metadata table naming, migration gates, and isolated verification
+
+## Implementation status
+
+| Item | Status |
+| --- | --- |
+| `FileRecord.TableName()` → `file_records` | Done |
+| `0005` preflight / up / postflight | Done (up re-validates columns/indexes before rename/no-op) |
+| Local model + migration artifact tests | Done |
+| Opt-in MySQL file-flow test | Done (skips without `FILE_SCHEMA_MYSQL_TEST=1`) |
+| `make acceptance-file-schema-smoke` harness | Done (row-count no-op + preflight→up drift cases) |
+| Isolated MySQL 8.4 matrix | Done on dedicated acceptance host; MySQL 8.4.8, exit 0 |
+| Production `0005` execution | Not run; requires separate authorization |
 
 ## Context
 
-The repository currently has two schema contracts for the same model:
+Before this change, the repository had two schema contracts for the same model:
 
 - `backend/migrations/0001_init.up.sql` creates `files`.
-- `backend/internal/model/models.go` defines `FileRecord` without an explicit
-  `TableName()`, so GORM resolves it to `file_records`.
-- Production currently contains `file_records`, not `files`, because it has
+- `backend/internal/model/models.go` defined `FileRecord` without an explicit
+  `TableName()`, so GORM resolved it to `file_records`.
+- Production already contained `file_records`, not `files`, because it had
   run with `AUTO_MIGRATE=true`.
 
-This makes a migration-only database incompatible with the application when
-`AUTO_MIGRATE=false`. The file API then queries `file_records`, while the SQL
+That split made a migration-only database incompatible with the application when
+`AUTO_MIGRATE=false`. The file API then queried `file_records`, while the SQL
 migration created only `files`.
 
 ## Goals
@@ -98,11 +110,15 @@ table exists. It also verifies the columns required by the current
 keys are the primary key on `id`, uniqueness of `object_key`, and a composite
 index whose leading columns are `biz_type, created_at`.
 
-The up migration repeats the state check to avoid a time-of-check/time-of-use
-assumption. It uses `RENAME TABLE files TO file_records` only for the legacy
-state. MySQL performs that single-table rename atomically. If `file_records`
-already exists alone, the migration returns a no-op marker. The stable output
-markers are `file_records_preflight_passed`,
+The up migration repeats the existence check and the required column, primary
+key, `object_key` uniqueness, and leading `(biz_type, created_at)` index
+validation before any rename or canonical no-op marker. This closes
+preflight-to-up drift: an incomplete schema fails inside up without emitting a
+success marker and without renaming the table. It uses
+`RENAME TABLE files TO file_records` only for the legacy state. MySQL performs
+that single-table rename atomically. If `file_records` already exists alone and
+still matches the required shape, the migration returns a no-op marker. The
+stable output markers are `file_records_preflight_passed`,
 `file_records_migration_renamed` or `file_records_migration_noop`, and
 `file_records_postflight_passed`.
 

@@ -204,7 +204,13 @@ func ensureDefaultCategories(db *gorm.DB) error {
 
 func findOrCreateCategory(db *gorm.DB, parentID *uint64, level int8, name string, sort int) (model.Category, error) {
 	var cat model.Category
-	if err := db.Model(&model.Category{}).Where("name = ?", name).First(&cat).Error; err != nil {
+	query := db.Model(&model.Category{}).Where("name = ?", name)
+	if parentID == nil {
+		query = query.Where("parent_id IS NULL")
+	} else {
+		query = query.Where("parent_id = ?", *parentID)
+	}
+	if err := query.First(&cat).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			cat = model.Category{
 				ParentID: parentID,
@@ -218,9 +224,6 @@ func findOrCreateCategory(db *gorm.DB, parentID *uint64, level int8, name string
 		return model.Category{}, err
 	}
 	updates := map[string]interface{}{}
-	if !sameParentID(cat.ParentID, parentID) {
-		updates["parent_id"] = parentID
-	}
 	if cat.Level != level {
 		updates["level"] = level
 	}
@@ -234,20 +237,11 @@ func findOrCreateCategory(db *gorm.DB, parentID *uint64, level int8, name string
 		if err := db.Model(&model.Category{}).Where("id = ?", cat.ID).Updates(updates).Error; err != nil {
 			return model.Category{}, err
 		}
+		cat.Level = level
 		cat.Status = model.CategoryEnabled
 		cat.Sort = sort
 	}
 	return cat, nil
-}
-
-func sameParentID(a, b *uint64) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
 }
 
 func (s *Server) registerRoutes() {

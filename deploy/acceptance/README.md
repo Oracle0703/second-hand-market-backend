@@ -354,6 +354,25 @@ recreating the API later without the same override uses `.env=false` and no
 longer reproduces the tested container configuration. Record the override in
 the evidence; it does not choose the eventual production setting.
 
+## File record schema acceptance
+
+This matrix uses the separate Compose project
+`secondhand-file-schema-acceptance`; it never accepts a DSN and never targets
+production. Prepare acceptance-only secrets with `./prepare.sh`, then run from
+the repository root:
+
+```bash
+FILE_SCHEMA_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_SCHEMA_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-file-schema-smoke
+```
+
+The command covers files-only rename, file_records-only no-op, both-table and
+neither-table failures, the full SQL migration chain, an `AUTO_MIGRATE=false`
+file upload flow, and one `AUTO_MIGRATE=true` compatibility startup. It leaves
+the isolated project and evidence in place for inspection. It does not deploy
+or migrate production.
+
 ## 7. Inspect and tear down
 
 Capture only sanitized evidence:

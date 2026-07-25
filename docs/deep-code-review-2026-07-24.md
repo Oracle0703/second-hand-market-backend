@@ -74,7 +74,7 @@
 | R-06 | P1 | 匿名上传缺少限流、配额和请求体前置限制 | 磁盘 / 内存资源可被耗尽 |
 | R-07 | P1 | 库存字段与订单完成逻辑冲突 | 多库存商品首次成交后即错误售罄 |
 | R-08 | P2 | frontend 退出登录未注销服务端 session | **已修复（2026-07-26）**；对应 full-project **F-08** |
-| R-09 | P2 | SQL migration 表名与 GORM 默认表名不一致 | 纯 migration 部署时上传链路可能不可用 |
+| R-09 | P2 | SQL migration 表名与 GORM 默认表名不一致 | **本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**；对应 full-project **F-09** |
 | R-10 | P2 | Git 跟踪本地业务数据库 | 业务数据与会话元数据可能进入仓库历史 |
 | R-11 | P2 | 买家小程序登录默认 mock 模式 | 生产漏配时可用任意 code 登录 |
 | R-12 | P2 | 资质文件经 `/uploads` 公开可读 | 执照直链可被猜测或枚举访问 |
@@ -204,15 +204,22 @@ access token 过期时，请求在到达刷新逻辑前已经失败。客户端�
 
 ### R-09 [P2] SQL migration 与 GORM 表名不一致
 
-证据：
+**状态：本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**（对应 full-project **F-09**）
+
+设计：`docs/superpowers/specs/2026-07-26-file-record-schema-alignment-design.md`
+
+本地实现摘要：
+
+- `FileRecord.TableName()` → `file_records`。
+- `0005` preflight/up/postflight：legacy rename / canonical no-op / 双表与无表 fail-closed；up 在 rename/no-op 前重复列与索引形态校验。
+- 本地制品测试 + opt-in MySQL 文件流测试；隔离入口 `make acceptance-file-schema-smoke`（含 preflight→up 漂移失败用例）。
+- 专用测试服务器 MySQL 8.4.8 八态矩阵、文件流与 AutoMigrate 兼容启动已通过；生产 `0005` 仍待单独维护窗授权。
+
+历史证据（修复前）：
 
 - `backend/migrations/0001_init.up.sql` 创建表 `files`。
 - `backend/internal/model/models.go` 中 `FileRecord` 未定义 `TableName()`，GORM 默认使用 `file_records`。
 - 运行时默认 `AUTO_MIGRATE=true`，本地 SQLite 路径依赖 AutoMigrate 更容易“看起来正常”。
-
-影响：
-
-若生产只执行 SQL migration 并关闭 AutoMigrate，文件相关接口会访问不存在的 `file_records` 表。同时维护手写 migration 与 AutoMigrate 会持续放大 schema 漂移。
 
 ### R-10 [P2] Git 跟踪本地业务数据库
 
@@ -348,7 +355,7 @@ P0/P1 类边界问题缺少强制回归；前端与跨端契约更容易静默�
 | 类别 | 编号 | 发布态度 |
 | --- | --- | --- |
 | 阻断 | R-01 ~ R-07 | 修复前不应上生产 |
-| 上线前应处理 | R-09 ~ R-12（~~R-08~~ **已修复 2026-07-26**） | 否则存在会话、数据、隐私与运维风险 |
+| 上线前应处理 | R-10 ~ R-12（~~R-08~~ **已修复 2026-07-26**；R-09 本地修复并通过隔离 MySQL 8.4 测试服务器审核，生产未执行 0005） | 否则存在会话、数据、隐私与运维风险 |
 | 应纳入后续治理 | R-13 ~ R-17 | 不影响“能否跑起来”，但影响长期正确性与可维护性 |
 
 **最终判断：当前版本不满足生产发布条件。**
