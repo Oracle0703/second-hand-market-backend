@@ -48,7 +48,7 @@
 | F-05 | P2 | miniapp 的 401 自动刷新分支不可达 | 下一次 miniapp 发布 |
 | F-06 | P2 | 匿名上传缺少限流、配额和清理机制 | 下一次后端/网关发布；当前保留 10 MB 入口限制 |
 | F-07 | P1 | 后台允许多库存，但订单没有数量、预占和扣减逻辑 | 立即核对 3 个异常商品，商家多库存订单发布前修正规则 |
-| F-08 | P2 | frontend 退出登录未注销服务端 session | 下一次 frontend 发布 |
+| F-08 | P2 | frontend 退出登录未注销服务端 session | **本分支已修复（2026-07-26）**；随下次 frontend 发布生效 |
 | F-09 | P2 | migration 表名与 GORM 表名不一致 | 下一次新建数据库或关闭 AutoMigrate 前 |
 | F-10 | P2 | Git 跟踪本地业务数据库 | 下一次共享仓库历史或轮换会话前完成处置 |
 | F-11 | P2 | 买家意向唯一索引只允许一笔已关闭历史记录 | 恢复买家意向入口前 |
@@ -213,18 +213,25 @@ access token 过期时，请求在到达刷新分支前已经失败。客户端�
 
 ### F-08 [P2] frontend 退出登录没有注销服务端 session
 
-证据：
+**状态：已修复（2026-07-26）**
 
-- `frontend/src/app/Layout.tsx:37` 退出时只清理 localStorage 并跳转。
+设计：`docs/superpowers/specs/2026-07-26-frontend-server-logout-design.md`
+
+修复摘要：
+
+- `frontend/src/services/api.ts` 新增 `api.logout()`，调用已有 `POST /auth/logout`。
+- `frontend/src/app/Layout.tsx` 退出时先 `await api.logout()`，在 `finally` 中清理本地凭证并跳转；请求失败仍完成本地退出；按钮 loading 防重复点击。
+- `frontend/src/app/Layout.test.tsx` 覆盖商家成功、管理端失败降级、重复点击；HTTP 边界 mock + 真实 `api.logout()`。
+- 验证：`cd frontend && npm test`（8/8）、`npm run build` 通过。
+
+残余（非本项范围）：
+
+- 商家 access token 在 TTL 内仍可能可用，见 **F-14**。Admin 因既有 `RequireActiveAdminSession` 会在 session 吊销后立即失效。
+
+历史证据（修复前）：
+
+- `frontend/src/app/Layout.tsx` 退出时只清理 localStorage 并跳转。
 - `frontend/src/services/api.ts` 没有调用 `/auth/logout` 的退出方法。
-
-影响：
-
-用户界面看起来已经退出，但对应 refresh token 和服务端 session 仍然有效。此前泄露的 refresh token 仍可继续换取 access token。
-
-建议：
-
-退出时先调用服务端 logout，再清理本地状态；即使服务端请求失败也应完成本地退出。补充测试验证 logout 请求和异常降级行为。
 
 ### F-09 [P2] SQL migration 与 GORM 表名不一致
 
@@ -420,7 +427,7 @@ UNIQUE constraint failed: buyer_intents.buyer_id, buyer_intents.product_id, buye
 | F-05 | 线上已确认 | 线上受保护买家接口对无效 access token 返回 HTTP 401 和业务码 `10002`；部署基线的 miniapp 请求层在读取业务码前先对非 2xx 抛错，刷新路径不可达。 |
 | F-06 | 部分缓解，核心风险仍存在 | 宿主 Nginx 为 20 MB、Web 容器为 10 MB，可限制公网单请求体；应用仍按 40 MB 处理，匿名上传没有频率、总量、配额或清理机制，线上已有 13 个未绑定商品文件记录。 |
 | F-07 | 目标流程未实现，且已有一条明确不一致 | 9 个未删除商品中有 2 个 `ON_SHELF` 商品库存大于 1，符合已确认的多库存需求，但现有订单无法按数量成交；另有 1 个 `SOLD` 商品库存仍为 6，状态与库存明确冲突。 |
-| F-08 | 代码适用，无法由聚合数据证明已被利用 | 线上部署的 frontend 与本地相同，退出仍只清理浏览器状态；session 数量不能证明某个 refresh token 在用户退出后被再次使用。 |
+| F-08 | **本分支代码已修复（2026-07-26）**；线上待 frontend 发布后生效 | 本地已调用 `POST /auth/logout` 并覆盖失败降级测试。线上若仍跑旧 frontend bundle，退出行为与修复前相同，发布后关闭。 |
 | F-09 | 漂移已确认，当前运行被 AutoMigrate 暂时兜住 | 线上只有 `file_records`，且 `AUTO_MIGRATE=true`，所以当前上传链路没有因表名直接失效；关闭 AutoMigrate 或从 SQL migration 新建环境仍会出错。 |
 | F-10 | 仓库问题已确认，非当前线上数据库 | `backend/app.db` 仍被 Git 跟踪并存在历史提交；生产实际使用 MySQL，因此该文件不是线上运行库，但仓库历史泄露风险不受影响。 |
 | F-11 | schema 已确认，尚未触发 | 线上存在错误的三列唯一索引，但 `buyer_intents=0`，当前没有业务数据撞约束。 |
@@ -665,12 +672,12 @@ Grok 二次反馈没有推翻上述源码、schema 或线上核验事实；本�
 - 匿名上传请求体上限、频率和未绑定文件清理
 - 多数量订单的预占、释放、完成扣减和库存归零售罄
 - 并发创建订单时预占总量不得超过可售库存
-- frontend 退出登录调用服务端 logout
+- ~~frontend 退出登录调用服务端 logout~~ **已补（2026-07-26，`Layout.test.tsx`）**
 - 仅通过 SQL migrations 初始化空库后的文件上传流程
 - 同一买家对同一商品连续创建并关闭两笔意向
 - 生产配置拒绝微信或抖音 mock 登录模式
 - 营业执照只能通过授权或短期签名地址访问
-- logout 后旧 access token 的预期行为
+- logout 后旧 access token 的预期行为（仍属 F-14）
 - 相同 Idempotency-Key 的并发请求只执行一次业务副作用
 - 幂等记录的过期与清理
 - migration 与 AutoMigrate 生成相同的分类复合唯一索引
@@ -696,7 +703,7 @@ Grok 二次反馈没有推翻上述源码、schema 或线上核验事实；本�
 
 ### 常规版本与运维治理
 
-1. 完成 frontend logout、access token 吊销策略、幂等原子性、migration/AutoMigrate/分类 schema 一致性，以及 Git 中业务数据库的合规处置。
+1. ~~完成 frontend logout~~ **F-08 已修复（2026-07-26）**；其余：access token 吊销策略（F-14）、幂等原子性（F-15）、migration/AutoMigrate/分类 schema 一致性，以及 Git 中业务数据库的合规处置。
 2. 将非敏感部署配置纳入版本控制，为镜像写入 commit/digest，并逐步增加 healthcheck、资源限制、日志轮转、安全响应头和可验证的备份演练。
 3. 补齐 CI/lint，在干净依赖环境中执行 backend、frontend、miniapp 的测试、构建和入口级 smoke。
 

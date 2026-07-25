@@ -75,3 +75,19 @@ export function PageContainer({ children }: { children?: ReactNode }) {
 export function ProCard({ children }: { children?: ReactNode }) {
   return <section>{children}</section>
 }
+
+type ProLayoutProps = {
+  children?: ReactNode
+  actionsRender?: () => ReactNode
+  title?: ReactNode
+}
+
+export function ProLayout({ children, actionsRender, title }: ProLayoutProps) {
+  return (
+    <div data-testid="pro-layout">
+      {title ? <div data-testid="pro-layout-title">{title}</div> : null}
+      <div data-testid="pro-layout-actions">{actionsRender?.()}</div>
+      <div data-testid="pro-layout-content">{children}</div>
+    </div>
+  )
+}

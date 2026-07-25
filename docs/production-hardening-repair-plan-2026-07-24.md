@@ -549,7 +549,7 @@ Gate G1 资质私有化和 G2 miniapp 身份限制按业务触发条件独立安
 - miniapp HTTP 401 刷新（F-05）。
 - 匿名上传限流、配额和未绑定文件清理（F-06）。
 - 商品/执照 **file_id 归属与类型绑定**（F-02 全量）。
-- frontend logout 调用服务端（F-08）。
+- ~~frontend logout 调用服务端（F-08）~~ **本分支已修复（2026-07-26）**：`api.logout()` + Layout 失败容忍退出；设计见 `docs/superpowers/specs/2026-07-26-frontend-server-logout-design.md`。随下次 frontend 发布上线。
 - access token 吊销策略（F-14）和幂等原子性（F-15）。
 - 买家意向 open 唯一索引迁移（F-11），仅在恢复意向入口前实施。
 - migration、AutoMigrate 和文件表名一致性（F-09）；选定单一 schema 来源。

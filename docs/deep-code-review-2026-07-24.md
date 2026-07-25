@@ -73,7 +73,7 @@
 | R-05 | P1 | miniapp 的 401 自动刷新分支不可达 | access token 过期后会话无法恢复 |
 | R-06 | P1 | 匿名上传缺少限流、配额和请求体前置限制 | 磁盘 / 内存资源可被耗尽 |
 | R-07 | P1 | 库存字段与订单完成逻辑冲突 | 多库存商品首次成交后即错误售罄 |
-| R-08 | P2 | frontend 退出登录未注销服务端 session | refresh token 在退出后仍可使用 |
+| R-08 | P2 | frontend 退出登录未注销服务端 session | **已修复（2026-07-26）**；对应 full-project **F-08** |
 | R-09 | P2 | SQL migration 表名与 GORM 默认表名不一致 | 纯 migration 部署时上传链路可能不可用 |
 | R-10 | P2 | Git 跟踪本地业务数据库 | 业务数据与会话元数据可能进入仓库历史 |
 | R-11 | P2 | 买家小程序登录默认 mock 模式 | 生产漏配时可用任意 code 登录 |
@@ -186,15 +186,21 @@ access token 过期时，请求在到达刷新逻辑前已经失败。客户端�
 
 ### R-08 [P2] frontend 退出登录没有注销服务端 session
 
-证据：
+**状态：已修复（2026-07-26）**（对应 full-project **F-08**）
+
+设计：`docs/superpowers/specs/2026-07-26-frontend-server-logout-design.md`
+
+修复摘要：
+
+- `api.logout()` → `POST /auth/logout`；`Layout` 先 await 服务端吊销，失败仍本地退出。
+- 测试：`frontend/src/app/Layout.test.tsx`（成功 / 失败降级 / 防重复点击）。
+- 残余：商家 access 即时吊销仍属 **R-16 / F-14**，本项只保证 refresh session 被撤销。
+
+历史证据（修复前）：
 
 - `frontend/src/app/Layout.tsx` 退出时只清理本地状态并跳转登录页。
 - 前端 API 封装未在退出路径调用 `/auth/logout`。
 - 后端与 miniapp 已具备 logout 能力；买家流程测试覆盖了 logout 后 refresh 失效。
-
-影响：
-
-界面看起来已退出，但对应 refresh token 与服务端 session 仍然有效。此前泄露的 refresh token 仍可继续换取 access token。
 
 ### R-09 [P2] SQL migration 与 GORM 表名不一致
 
@@ -325,7 +331,7 @@ P0/P1 类边界问题缺少强制回归；前端与跨端契约更容易静默�
 - 多个并发 401 只触发一次 refresh
 - 匿名上传请求体上限、频率和未绑定文件清理
 - 库存大于 1 时的下单、扣减和售罄状态
-- frontend 退出登录调用服务端 logout
+- ~~frontend 退出登录调用服务端 logout~~ **已补（2026-07-26，`Layout.test.tsx`）**
 - 仅通过 SQL migrations 初始化空库后的文件上传流程
 - mock 登录模式在生产配置下被拒绝
 
@@ -342,7 +348,7 @@ P0/P1 类边界问题缺少强制回归；前端与跨端契约更容易静默�
 | 类别 | 编号 | 发布态度 |
 | --- | --- | --- |
 | 阻断 | R-01 ~ R-07 | 修复前不应上生产 |
-| 上线前应处理 | R-08 ~ R-12 | 否则存在会话、数据、隐私与运维风险 |
+| 上线前应处理 | R-09 ~ R-12（~~R-08~~ **已修复 2026-07-26**） | 否则存在会话、数据、隐私与运维风险 |
 | 应纳入后续治理 | R-13 ~ R-17 | 不影响“能否跑起来”，但影响长期正确性与可维护性 |
 
 **最终判断：当前版本不满足生产发布条件。**

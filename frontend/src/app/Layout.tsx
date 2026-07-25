@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   AppstoreOutlined,
   AuditOutlined,
@@ -12,6 +13,7 @@ import {
 import { ProLayout, type MenuDataItem } from '@ant-design/pro-components'
 import { Button } from 'antd'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { api } from '../services/api'
 import { useAuthStore } from '../stores/auth-store'
 
 const adminMenus: MenuDataItem[] = [
@@ -35,10 +37,20 @@ export function Layout() {
   const { clear, user } = useAuthStore()
   const isAdmin = String(user?.role || '').includes('ADMIN')
   const menuData = isAdmin ? adminMenus : merchantMenus
+  const [loggingOut, setLoggingOut] = useState(false)
 
-  const logout = () => {
-    clear()
-    navigate(isAdmin ? '/admin/login' : '/login')
+  const logout = async () => {
+    if (loggingOut) return
+    const destination = isAdmin ? '/admin/login' : '/login'
+    setLoggingOut(true)
+    try {
+      await api.logout()
+    } catch {
+      // Local logout must proceed even when server revocation fails.
+    } finally {
+      clear()
+      navigate(destination)
+    }
   }
 
   return (
@@ -66,7 +78,14 @@ export function Layout() {
         <span key="role" className="topbar-role">
           {String(user?.role || '')}
         </span>,
-        <Button key="logout" type="link" icon={<LogoutOutlined />} onClick={logout}>
+        <Button
+          key="logout"
+          type="link"
+          icon={<LogoutOutlined />}
+          loading={loggingOut}
+          disabled={loggingOut}
+          onClick={logout}
+        >
           退出
         </Button>
       ]}
