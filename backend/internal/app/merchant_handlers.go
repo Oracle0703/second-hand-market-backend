@@ -51,6 +51,16 @@ func (s *Server) handleMerchantReapply(c *gin.Context) {
 		if !stateflow.CanTransitionMerchant(merchant.ReviewStatus, model.ReviewPending) {
 			return common.ErrInvalidTransition
 		}
+		if req.LicenseFileID != nil {
+			if err := validateMerchantFilesForBinding(
+				tx,
+				actor.MerchantID,
+				[]uint64{*req.LicenseFileID},
+				model.FileBizMerchantLicense,
+			); err != nil {
+				return err
+			}
+		}
 		if req.MerchantName != nil {
 			merchant.MerchantName = *req.MerchantName
 		}

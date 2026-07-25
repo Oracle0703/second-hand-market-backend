@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/common"
@@ -16,6 +17,29 @@ func minimalJPEG() []byte {
 		0x00, 0x01, 0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00,
 		0xFF, 0xD9,
 	}
+}
+
+func createReadyOwnedFile(
+	t *testing.T,
+	srv *app.Server,
+	ownerMerchantID uint64,
+	bizType string,
+) model.FileRecord {
+	t.Helper()
+	file := model.FileRecord{
+		BizType:         bizType,
+		ObjectKey:       fmt.Sprintf("test/%d-%d.jpg", ownerMerchantID, time.Now().UnixNano()),
+		URL:             "/uploads/test-owned.jpg",
+		MimeType:        "image/jpeg",
+		SizeBytes:       22,
+		UploaderType:    model.UserTypeMerchant,
+		ScanStatus:      model.FileScanPass,
+		OwnerMerchantID: &ownerMerchantID,
+	}
+	if err := srv.DB.Create(&file).Error; err != nil {
+		t.Fatalf("create owned file: %v", err)
+	}
+	return file
 }
 
 func uploadReadyPublicLicense(t *testing.T, srv *app.Server) (uint64, string) {

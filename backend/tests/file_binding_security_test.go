@@ -147,3 +147,110 @@ func TestRegisterLicenseCapabilityCannotBeReplayed(t *testing.T) {
 		t.Fatalf("replay changed registration rows: merchants=%d accounts=%d audits=%d", merchants, accounts, audits)
 	}
 }
+
+func TestMerchantReapplyValidatesLicenseBinding(t *testing.T) {
+	tests := []struct {
+		name     string
+		prepare  func(*testing.T, *app.Server, uint64, uint64) model.FileRecord
+		wantCode int
+	}{
+		{
+			name: "foreign license",
+			prepare: func(t *testing.T, srv *app.Server, _ uint64, merchantB uint64) model.FileRecord {
+				return createReadyOwnedFile(t, srv, merchantB, model.FileBizMerchantLicense)
+			},
+			wantCode: common.CodeInvalidFileBinding,
+		},
+		{
+			name: "wrong type",
+			prepare: func(t *testing.T, srv *app.Server, merchantA uint64, _ uint64) model.FileRecord {
+				return createReadyOwnedFile(t, srv, merchantA, model.FileBizProductImage)
+			},
+			wantCode: common.CodeInvalidFileBinding,
+		},
+		{
+			name: "pending",
+			prepare: func(t *testing.T, srv *app.Server, merchantA uint64, _ uint64) model.FileRecord {
+				file := createReadyOwnedFile(t, srv, merchantA, model.FileBizMerchantLicense)
+				if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", file.ID).Updates(map[string]interface{}{
+					"scan_status": model.FileScanPending,
+					"url":         "",
+				}).Error; err != nil {
+					t.Fatalf("make pending file: %v", err)
+				}
+				return file
+			},
+			wantCode: common.CodeInvalidFileBinding,
+		},
+		{
+			name: "valid own license",
+			prepare: func(t *testing.T, srv *app.Server, merchantA uint64, _ uint64) model.FileRecord {
+				return createReadyOwnedFile(t, srv, merchantA, model.FileBizMerchantLicense)
+			},
+			wantCode: common.CodeOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			merchantA, usernameA, passwordA := registerMerchant(t, srv, "reapply_a")
+			merchantB, _, _ := registerMerchant(t, srv, "reapply_b")
+			adminToken := adminAccessToken(t, srv)
+			rejectMerchant(t, srv, adminToken, merchantA)
+			rejectMerchant(t, srv, adminToken, merchantB)
+
+			login := merchantLogin(t, srv, usernameA, passwordA)
+			if login.Code != common.CodeOK || str(login.Data["token_scope"]) != "onboarding" {
+				t.Fatalf("onboarding login: %+v", login)
+			}
+			var before model.Merchant
+			if err := srv.DB.First(&before, merchantA).Error; err != nil {
+				t.Fatalf("load merchant before reapply: %v", err)
+			}
+			var auditBefore int64
+			if err := srv.DB.Model(&model.MerchantAuditLog{}).
+				Where("merchant_id = ? AND action = ?", merchantA, "REAPPLY").
+				Count(&auditBefore).Error; err != nil {
+				t.Fatalf("count reapply audits: %v", err)
+			}
+
+			file := tt.prepare(t, srv, merchantA, merchantB)
+			resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/reapply", map[string]interface{}{
+				"license_file_id": file.ID,
+			}, map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"])})
+			if resp.Code != tt.wantCode {
+				t.Fatalf("reapply response = %+v", resp)
+			}
+
+			var after model.Merchant
+			if err := srv.DB.First(&after, merchantA).Error; err != nil {
+				t.Fatalf("load merchant after reapply: %v", err)
+			}
+			var auditAfter int64
+			if err := srv.DB.Model(&model.MerchantAuditLog{}).
+				Where("merchant_id = ? AND action = ?", merchantA, "REAPPLY").
+				Count(&auditAfter).Error; err != nil {
+				t.Fatalf("count reapply audits after: %v", err)
+			}
+
+			if tt.wantCode == common.CodeOK {
+				if after.ReviewStatus != model.ReviewPending || after.LicenseFileID == nil || *after.LicenseFileID != file.ID {
+					t.Fatalf("valid reapply not persisted: %+v", after)
+				}
+				if auditAfter != auditBefore+1 {
+					t.Fatalf("reapply audit count = %d, want %d", auditAfter, auditBefore+1)
+				}
+				return
+			}
+
+			if after.ReviewStatus != model.ReviewRejected || before.LicenseFileID == nil || after.LicenseFileID == nil ||
+				*after.LicenseFileID != *before.LicenseFileID {
+				t.Fatalf("invalid reapply changed merchant: before=%+v after=%+v", before, after)
+			}
+			if auditAfter != auditBefore {
+				t.Fatalf("invalid reapply added audit: before=%d after=%d", auditBefore, auditAfter)
+			}
+		})
+	}
+}
