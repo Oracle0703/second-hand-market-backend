@@ -16,11 +16,16 @@ function normalizeImageMIME(file: File) {
   return 'image/jpeg'
 }
 
+type UploadedLicense = {
+  fileID: number
+  fileToken: string
+  fileName: string
+}
+
 export function RegisterPage() {
   const navigate = useNavigate()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [licenseFileID, setLicenseFileID] = useState<number | null>(null)
-  const [licenseFileName, setLicenseFileName] = useState('')
+  const [uploadedLicense, setUploadedLicense] = useState<UploadedLicense | null>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
 
@@ -38,13 +43,21 @@ export function RegisterPage() {
         file_size: file.size,
         mime_type: mimeType
       })
+      const fileToken = String(presign.data.data.file_token ?? '').trim()
+      if (!fileToken) {
+        throw new Error('文件上传凭证无效，请重新选择')
+      }
       const formData = new FormData()
       formData.append('file_id', String(presign.data.data.file_id))
       formData.append('object_key', String(presign.data.data.object_key))
+      formData.append('file_token', fileToken)
       formData.append('file', file)
       await api.uploadFile(formData)
-      setLicenseFileID(Number(presign.data.data.file_id))
-      setLicenseFileName(file.name || 'license.jpg')
+      setUploadedLicense({
+        fileID: Number(presign.data.data.file_id),
+        fileToken,
+        fileName: file.name || 'license.jpg'
+      })
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -60,7 +73,7 @@ export function RegisterPage() {
     password: string
   }) => {
     setError('')
-    if (!licenseFileID) {
+    if (!uploadedLicense) {
       setError('请先上传营业执照图片（最多1张）')
       return false
     }
@@ -71,7 +84,8 @@ export function RegisterPage() {
         phone: values.phone,
         username: values.username,
         password: values.password,
-        license_file_id: licenseFileID
+        license_file_id: uploadedLicense.fileID,
+        license_file_token: uploadedLicense.fileToken
       })
       message.success('注册申请已提交')
       navigate('/login')
@@ -154,8 +168,8 @@ export function RegisterPage() {
             {uploading ? '上传中...' : '选择并上传图片'}
           </Button>
           <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 40MB，服务端自动压缩。</Typography.Text>
-          <Typography.Text type={licenseFileID ? 'success' : 'secondary'}>
-            {licenseFileID ? `已上传：${licenseFileName || '执照图片'}（file_id: ${licenseFileID}）` : '未上传'}
+          <Typography.Text type={uploadedLicense ? 'success' : 'secondary'}>
+            {uploadedLicense ? `已上传：${uploadedLicense.fileName}（file_id: ${uploadedLicense.fileID}）` : '未上传'}
           </Typography.Text>
         </Space>
       </div>

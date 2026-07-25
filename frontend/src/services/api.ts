@@ -1,6 +1,13 @@
 import { http, type APIResponse } from './http'
 import type { LoginResponse, LoginType } from '../types/auth'
 
+type PresignResponse = {
+  file_id: number
+  object_key: string
+  file_token?: string
+  expire_at?: string
+}
+
 export const api = {
   login(payload: { login_type: LoginType; username: string; password: string }) {
     return http.post<APIResponse<LoginResponse>>('/auth/login', payload)
@@ -15,6 +22,7 @@ export const api = {
     username: string
     password: string
     license_file_id: number
+    license_file_token: string
   }) {
     return http.post('/auth/register', payload)
   },
@@ -31,7 +39,7 @@ export const api = {
     return http.get('/merchant/categories', { params })
   },
   presign(payload: { biz_type: string; file_name: string; file_size: number; mime_type: string }) {
-    return http.post('/files/presign', payload)
+    return http.post<APIResponse<PresignResponse>>('/files/presign', payload)
   },
   uploadFile(formData: FormData) {
     return http.post('/files/upload', formData)
