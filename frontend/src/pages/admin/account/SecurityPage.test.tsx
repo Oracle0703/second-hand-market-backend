@@ -8,6 +8,8 @@ import { useAuthStore } from '@/stores/auth-store'
 const mockNavigate = vi.fn()
 const mockChangePassword = vi.fn()
 
+vi.mock('@ant-design/pro-components', () => import('@/test/pro-components-stub'))
+
 vi.mock('@/services/api', () => ({
   api: {
     adminChangePassword: (...args: unknown[]) => mockChangePassword(...args)

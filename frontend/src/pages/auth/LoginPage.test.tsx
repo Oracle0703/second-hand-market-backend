@@ -7,6 +7,8 @@ import { useAuthStore } from '@/stores/auth-store'
 const mockNavigate = vi.fn()
 const mockLogin = vi.fn()
 
+vi.mock('@ant-design/pro-components', () => import('@/test/pro-components-stub'))
+
 vi.mock('@/services/api', () => ({
   api: {
     login: (...args: unknown[]) => mockLogin(...args)
@@ -57,6 +59,11 @@ describe('LoginPage', () => {
 
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/register/status')
+    })
+    expect(mockLogin).toHaveBeenCalledWith({
+      login_type: 'MERCHANT',
+      username: 'merchant_user',
+      password: 'Passw0rd!2026'
     })
     expect(useAuthStore.getState().tokenScope).toBe('onboarding')
   })
