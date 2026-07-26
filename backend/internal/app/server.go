@@ -14,6 +14,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 
 	"second-hand-market-backend/backend/internal/common"
@@ -125,7 +126,7 @@ func openDB(cfg Config) (*gorm.DB, error) {
 }
 
 func migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&model.Merchant{},
 		&model.MerchantAccount{},
 		&model.AdminUser{},
@@ -136,6 +137,7 @@ func migrate(db *gorm.DB) error {
 		&model.Order{},
 		&model.OrderEvent{},
 		&model.FileRecord{},
+		&model.FileQuotaGuard{},
 		&model.OperationLog{},
 		&model.AuthSession{},
 		&model.IdempotencyRecord{},
@@ -144,7 +146,21 @@ func migrate(db *gorm.DB) error {
 		&model.BuyerFavorite{},
 		&model.BuyerHistory{},
 		&model.BuyerIntent{},
-	)
+	); err != nil {
+		return err
+	}
+	guard := model.FileQuotaGuard{ID: 1, GuardName: "file_records"}
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&guard).Error; err != nil {
+		return fmt.Errorf("seed file quota guard: %w", err)
+	}
+	var guards []model.FileQuotaGuard
+	if err := db.Find(&guards).Error; err != nil {
+		return fmt.Errorf("verify file quota guard: %w", err)
+	}
+	if len(guards) != 1 || guards[0].ID != 1 || guards[0].GuardName != "file_records" {
+		return fmt.Errorf("file quota guard is missing or drifted")
+	}
+	return nil
 }
 
 func seedDefaults(db *gorm.DB) error {

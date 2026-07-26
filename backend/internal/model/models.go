@@ -207,17 +207,32 @@ type FileRecord struct {
 	URL                 string `gorm:"size:500"`
 	MimeType            string `gorm:"size:64"`
 	SizeBytes           int64
-	UploaderType        string `gorm:"size:16"`
+	UploaderType        string `gorm:"size:16;index:idx_file_cleanup_candidate,priority:1"`
 	UploaderID          *uint64
 	ScanStatus          string     `gorm:"size:16;index:idx_file_owner_biz_scan,priority:3"`
-	OwnerMerchantID     *uint64    `gorm:"index:idx_file_owner_biz_scan,priority:1"`
+	OwnerMerchantID     *uint64    `gorm:"index:idx_file_owner_biz_scan,priority:1;index:idx_file_cleanup_candidate,priority:2"`
 	CapabilityTokenHash *string    `gorm:"type:char(64);uniqueIndex:uk_file_capability_token"`
 	CapabilityExpiresAt *time.Time `gorm:"index:idx_file_capability_expires"`
-	CreatedAt           time.Time  `gorm:"index:idx_biz_type_created,priority:2"`
+	SourceIPHash        *string    `gorm:"type:char(64);index:idx_file_source_created,priority:1"`
+	CleanupAfter        *time.Time `gorm:"index:idx_file_cleanup_candidate,priority:3"`
+	CleanupClaimedAt    *time.Time `gorm:"index:idx_file_cleanup_candidate,priority:4"`
+	CleanupClaimToken   *string    `gorm:"type:char(64)"`
+	CleanupAttempts     uint32     `gorm:"not null;default:0"`
+	CreatedAt           time.Time  `gorm:"index:idx_biz_type_created,priority:2;index:idx_file_source_created,priority:2"`
 }
 
 func (FileRecord) TableName() string {
 	return "file_records"
+}
+
+type FileQuotaGuard struct {
+	ID        uint8     `gorm:"primaryKey;autoIncrement:false"`
+	GuardName string    `gorm:"size:32;not null;uniqueIndex:uk_file_quota_guard_name"`
+	CreatedAt time.Time `gorm:"not null"`
+}
+
+func (FileQuotaGuard) TableName() string {
+	return "file_quota_guards"
 }
 
 type OperationLog struct {
