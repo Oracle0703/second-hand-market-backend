@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
 
@@ -85,7 +86,7 @@ func newFileCapability(now time.Time) (string, string, time.Time, error) {
 	return raw, fileCapabilityHash(raw), now.Add(fileCapabilityTTL), nil
 }
 
-func claimPublicMerchantLicense(
+func (s *Server) claimPublicMerchantLicense(
 	tx *gorm.DB,
 	fileID uint64,
 	rawToken string,
@@ -95,10 +96,43 @@ func claimPublicMerchantLicense(
 	if fileID == 0 || merchantID == 0 || strings.TrimSpace(rawToken) == "" {
 		return common.ErrInvalidFileBinding
 	}
+	if err := lockFileQuotaGuard(tx); err != nil {
+		return err
+	}
+
+	var file model.FileRecord
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(
+			"id = ? AND biz_type = ? AND scan_status = ? AND object_key <> '' AND uploader_type = ? AND owner_merchant_id IS NULL AND capability_token_hash = ? AND capability_expires_at > ? AND cleanup_claim_token IS NULL",
+			fileID,
+			model.FileBizMerchantLicense,
+			model.FileScanPass,
+			model.UserTypePublic,
+			fileCapabilityHash(rawToken),
+			now,
+		).
+		Take(&file).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return common.ErrInvalidFileBinding
+		}
+		return common.ErrInternal
+	}
+	if file.SizeBytes <= 0 {
+		return common.ErrInternal
+	}
+	merchantBytes, err := sumFileBytes(
+		tx.Model(&model.FileRecord{}).Where("owner_merchant_id = ?", merchantID),
+	)
+	if err != nil {
+		return common.ErrInternal
+	}
+	if quotaWouldExceed(merchantBytes, file.SizeBytes, s.cfg.FileUploadMerchantQuotaBytes) {
+		return common.ErrUploadQuotaExceeded
+	}
 
 	result := tx.Model(&model.FileRecord{}).
 		Where(
-			"id = ? AND biz_type = ? AND scan_status = ? AND object_key <> '' AND uploader_type = ? AND owner_merchant_id IS NULL AND capability_token_hash = ? AND capability_expires_at > ?",
+			"id = ? AND biz_type = ? AND scan_status = ? AND object_key <> '' AND uploader_type = ? AND owner_merchant_id IS NULL AND capability_token_hash = ? AND capability_expires_at > ? AND cleanup_claim_token IS NULL",
 			fileID,
 			model.FileBizMerchantLicense,
 			model.FileScanPass,
@@ -112,7 +146,7 @@ func claimPublicMerchantLicense(
 			"capability_expires_at": nil,
 		})
 	if result.Error != nil {
-		return result.Error
+		return common.ErrInternal
 	}
 	if result.RowsAffected != 1 {
 		return common.ErrInvalidFileBinding

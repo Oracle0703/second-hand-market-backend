@@ -36,7 +36,12 @@ func newTestServerWithUploadDir(t *testing.T) (*app.Server, string) {
 
 func newTestServerWithStorage(t *testing.T, provider string) (*app.Server, string) {
 	t.Helper()
-	uploadDir := t.TempDir()
+	cfg := newTestAppConfig(t, provider)
+	return newTestServerFromConfig(t, cfg), cfg.FileUploadLocalDir
+}
+
+func newTestAppConfig(t *testing.T, provider string) app.Config {
+	t.Helper()
 	cfg := app.Config{
 		Addr:                     ":0",
 		DBDriver:                 "sqlite",
@@ -47,11 +52,16 @@ func newTestServerWithStorage(t *testing.T, provider string) (*app.Server, strin
 		RefreshTTL:               app.LoadConfig().RefreshTTL,
 		AutoMigrate:              true,
 		FileStorageProvider:      provider,
-		FileUploadLocalDir:       uploadDir,
+		FileUploadLocalDir:       t.TempDir(),
 		ImageCompressTargetBytes: 20 * 1024 * 1024,
 		ImageProcessorDriver:     "passthrough",
 	}
 	configureTestUploadGovernance(&cfg)
+	return cfg
+}
+
+func newTestServerFromConfig(t *testing.T, cfg app.Config) *app.Server {
+	t.Helper()
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server error: %v", err)
@@ -67,7 +77,7 @@ func newTestServerWithStorage(t *testing.T, provider string) (*app.Server, strin
 	if err := srv.DB.Create(&admins).Error; err != nil {
 		t.Fatalf("create test admins: %v", err)
 	}
-	return srv, uploadDir
+	return srv
 }
 
 func configureTestUploadGovernance(cfg *app.Config) {

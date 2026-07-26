@@ -12,19 +12,28 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func newFileBindingTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open file binding test db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.FileRecord{}); err != nil {
+	if err := db.AutoMigrate(&model.FileRecord{}, &model.FileQuotaGuard{}); err != nil {
 		t.Fatalf("migrate file binding test db: %v", err)
 	}
+	if err := db.Create(&model.FileQuotaGuard{ID: 1, GuardName: "file_records"}).Error; err != nil {
+		t.Fatalf("seed file quota guard: %v", err)
+	}
 	return db
+}
+
+func newFileBindingTestServer(t *testing.T, db *gorm.DB) *Server {
+	t.Helper()
+	return &Server{cfg: securityTestConfig(t), DB: db}
 }
 
 func createBindingFile(
@@ -138,17 +147,18 @@ func createClaimableLicense(t *testing.T, db *gorm.DB, now time.Time, rawToken s
 
 func TestClaimPublicMerchantLicenseConsumesTokenOnce(t *testing.T) {
 	db := newFileBindingTestDB(t)
+	srv := newFileBindingTestServer(t, db)
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	raw := "test-only-public-license-token"
 	file := createClaimableLicense(t, db, now, raw)
 
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		return claimPublicMerchantLicense(tx, file.ID, raw, 77, now)
+	if err := srv.withQuotaTransaction(func(tx *gorm.DB) error {
+		return srv.claimPublicMerchantLicense(tx, file.ID, raw, 77, now)
 	}); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		return claimPublicMerchantLicense(tx, file.ID, raw, 88, now)
+	if err := srv.withQuotaTransaction(func(tx *gorm.DB) error {
+		return srv.claimPublicMerchantLicense(tx, file.ID, raw, 88, now)
 	}); !errors.Is(err, common.ErrInvalidFileBinding) {
 		t.Fatalf("second claim = %v", err)
 	}
@@ -201,6 +211,7 @@ func TestClaimPublicMerchantLicenseRejectsInvalidClaims(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := newFileBindingTestDB(t)
+			srv := newFileBindingTestServer(t, db)
 			file := createClaimableLicense(t, db, now, "valid-token")
 			if tt.mutate != nil {
 				tt.mutate(&file)
@@ -212,8 +223,8 @@ func TestClaimPublicMerchantLicenseRejectsInvalidClaims(t *testing.T) {
 			if tt.fileID != nil {
 				fileID = tt.fileID(file)
 			}
-			err := db.Transaction(func(tx *gorm.DB) error {
-				return claimPublicMerchantLicense(tx, fileID, tt.raw, 77, now)
+			err := srv.withQuotaTransaction(func(tx *gorm.DB) error {
+				return srv.claimPublicMerchantLicense(tx, fileID, tt.raw, 77, now)
 			})
 			if !errors.Is(err, common.ErrInvalidFileBinding) {
 				t.Fatalf("claim error = %v", err)
@@ -224,13 +235,14 @@ func TestClaimPublicMerchantLicenseRejectsInvalidClaims(t *testing.T) {
 
 func TestClaimPublicMerchantLicenseCanRetryAfterTransactionRollback(t *testing.T) {
 	db := newFileBindingTestDB(t)
+	srv := newFileBindingTestServer(t, db)
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	raw := "rollback-retry-token"
 	file := createClaimableLicense(t, db, now, raw)
 	rollback := errors.New("force rollback")
 
-	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := claimPublicMerchantLicense(tx, file.ID, raw, 77, now); err != nil {
+	err := srv.withQuotaTransaction(func(tx *gorm.DB) error {
+		if err := srv.claimPublicMerchantLicense(tx, file.ID, raw, 77, now); err != nil {
 			return err
 		}
 		return rollback
@@ -239,9 +251,36 @@ func TestClaimPublicMerchantLicenseCanRetryAfterTransactionRollback(t *testing.T
 		t.Fatalf("rollback transaction = %v", err)
 	}
 
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		return claimPublicMerchantLicense(tx, file.ID, raw, 88, now)
+	if err := srv.withQuotaTransaction(func(tx *gorm.DB) error {
+		return srv.claimPublicMerchantLicense(tx, file.ID, raw, 88, now)
 	}); err != nil {
 		t.Fatalf("retry after rollback: %v", err)
+	}
+}
+
+func TestClaimPublicMerchantLicenseRejectsCleanupClaim(t *testing.T) {
+	db := newFileBindingTestDB(t)
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	raw := "cleanup-claimed-license-token"
+	file := createClaimableLicense(t, db, now, raw)
+	claimToken := "cleanup-claim-token"
+	if err := db.Model(&model.FileRecord{}).Where("id = ?", file.ID).
+		Update("cleanup_claim_token", claimToken).Error; err != nil {
+		t.Fatalf("claim file for cleanup: %v", err)
+	}
+	srv := newFileBindingTestServer(t, db)
+	err := srv.withQuotaTransaction(func(tx *gorm.DB) error {
+		return srv.claimPublicMerchantLicense(tx, file.ID, raw, 77, now)
+	})
+	if !errors.Is(err, common.ErrInvalidFileBinding) {
+		t.Fatalf("cleanup-claimed binding error = %v", err)
+	}
+	var after model.FileRecord
+	if err := db.First(&after, file.ID).Error; err != nil {
+		t.Fatalf("reload cleanup-claimed file: %v", err)
+	}
+	if after.OwnerMerchantID != nil || after.CapabilityTokenHash == nil ||
+		after.CleanupClaimToken == nil || *after.CleanupClaimToken != claimToken {
+		t.Fatalf("cleanup-claimed file mutated: %+v", after)
 	}
 }

@@ -216,7 +216,8 @@ func TestRegisterClaimsUploadedLicense(t *testing.T) {
 		t.Fatalf("load claimed license: %v", err)
 	}
 	if file.OwnerMerchantID == nil || *file.OwnerMerchantID != merchantID ||
-		file.CapabilityTokenHash != nil || file.CapabilityExpiresAt != nil {
+		file.CapabilityTokenHash != nil || file.CapabilityExpiresAt != nil ||
+		file.SourceIPHash == nil || file.CleanupAfter == nil {
 		t.Fatalf("license was not consumed atomically: %+v", file)
 	}
 	var merchant model.Merchant
@@ -225,6 +226,42 @@ func TestRegisterClaimsUploadedLicense(t *testing.T) {
 	}
 	if merchant.LicenseFileID == nil || *merchant.LicenseFileID != fileID {
 		t.Fatalf("merchant license = %v, want %d", merchant.LicenseFileID, fileID)
+	}
+}
+
+func TestRegisterRejectsMerchantQuotaAndRollsBackAllRows(t *testing.T) {
+	cfg := newTestAppConfig(t, "local")
+	cfg.FileUploadMerchantQuotaBytes = int64(len(minimalJPEG()) - 1)
+	srv := newTestServerFromConfig(t, cfg)
+	fileID, rawToken := uploadReadyPublicLicense(t, srv)
+	var before model.FileRecord
+	if err := srv.DB.First(&before, fileID).Error; err != nil {
+		t.Fatalf("load license before registration: %v", err)
+	}
+	merchantsBefore, accountsBefore, auditsBefore := countRegistrationRows(t, srv)
+
+	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/register",
+		registrationPayload(uniqueUsername("merchant_quota"), fileID, rawToken), nil)
+	if resp.Code != common.CodeUploadQuotaExceeded {
+		t.Fatalf("registration quota response = %+v", resp)
+	}
+	merchantsAfter, accountsAfter, auditsAfter := countRegistrationRows(t, srv)
+	if merchantsAfter != merchantsBefore || accountsAfter != accountsBefore || auditsAfter != auditsBefore {
+		t.Fatalf(
+			"quota rejection persisted registration rows: merchants %d->%d accounts %d->%d audits %d->%d",
+			merchantsBefore, merchantsAfter, accountsBefore, accountsAfter, auditsBefore, auditsAfter,
+		)
+	}
+	var after model.FileRecord
+	if err := srv.DB.First(&after, fileID).Error; err != nil {
+		t.Fatalf("load license after registration: %v", err)
+	}
+	if after.OwnerMerchantID != nil || after.CapabilityTokenHash == nil || after.CapabilityExpiresAt == nil ||
+		after.CleanupClaimedAt != before.CleanupClaimedAt || after.CleanupClaimToken != before.CleanupClaimToken ||
+		after.SourceIPHash == nil || before.SourceIPHash == nil || *after.SourceIPHash != *before.SourceIPHash ||
+		*after.CapabilityTokenHash != *before.CapabilityTokenHash ||
+		!after.CapabilityExpiresAt.Equal(*before.CapabilityExpiresAt) {
+		t.Fatalf("quota rejection mutated license: before=%+v after=%+v", before, after)
 	}
 }
 

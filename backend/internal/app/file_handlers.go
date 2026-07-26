@@ -85,6 +85,8 @@ func (s *Server) handlePresign(c *gin.Context) {
 	var ownerMerchantID *uint64
 	var capabilityTokenHash *string
 	var capabilityExpiresAt *time.Time
+	var sourceIPHash *string
+	var cleanupAfter *time.Time
 	fileToken := ""
 	if actorPtr == nil {
 		var tokenHash string
@@ -96,6 +98,14 @@ func (s *Server) handlePresign(c *gin.Context) {
 		}
 		capabilityTokenHash = &tokenHash
 		capabilityExpiresAt = &expiresAt
+		hash, err := s.anonymousSourceHash(c.ClientIP())
+		if err != nil {
+			common.Fail(c, err)
+			return
+		}
+		sourceIPHash = &hash
+		cleanup := expiresAt.Add(s.cfg.FileUploadCleanupGrace)
+		cleanupAfter = &cleanup
 	} else if actor.UserType == model.UserTypeMerchant {
 		ownerMerchantID = &actor.MerchantID
 	}
@@ -119,9 +129,12 @@ func (s *Server) handlePresign(c *gin.Context) {
 		OwnerMerchantID:     ownerMerchantID,
 		CapabilityTokenHash: capabilityTokenHash,
 		CapabilityExpiresAt: capabilityExpiresAt,
+		SourceIPHash:        sourceIPHash,
+		CleanupAfter:        cleanupAfter,
+		CreatedAt:           now,
 	}
-	if err := s.DB.Create(&file).Error; err != nil {
-		common.Fail(c, common.ErrInternal)
+	if err := s.reserveFileRecord(&file, now); err != nil {
+		common.Fail(c, err)
 		return
 	}
 	response := gin.H{

@@ -10,9 +10,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/model"
@@ -59,6 +61,32 @@ func requestMultipart(
 	var resp apiResp
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response failed: %v, raw=%s", err, w.Body.String())
+	}
+	return resp
+}
+
+func requestAnonymousPresignFromIP(t *testing.T, srv *app.Server, remoteAddr, forwardedFor string, fileSize int64) apiResp {
+	t.Helper()
+	body, err := json.Marshal(map[string]interface{}{
+		"biz_type":  model.FileBizMerchantLicense,
+		"file_name": "license.jpg",
+		"file_size": fileSize,
+		"mime_type": "image/jpeg",
+	})
+	if err != nil {
+		t.Fatalf("marshal presign request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/presign", bytes.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Content-Type", "application/json")
+	if forwardedFor != "" {
+		req.Header.Set("X-Forwarded-For", forwardedFor)
+	}
+	out := httptest.NewRecorder()
+	srv.Router.ServeHTTP(out, req)
+	var resp apiResp
+	if err := json.Unmarshal(out.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode presign response: %v, raw=%s", err, out.Body.String())
 	}
 	return resp
 }
@@ -293,6 +321,169 @@ func TestMerchantAndAdminPresignOwnership(t *testing.T) {
 	}
 	if adminFile.OwnerMerchantID != nil {
 		t.Fatalf("admin file must remain unowned: %+v", adminFile)
+	}
+}
+
+func TestAnonymousPresignPersistsHMACAndCleanupAfter(t *testing.T) {
+	srv := newTestServer(t)
+	const rawIP = "192.0.2.10"
+	const spoofedIP = "198.51.100.7"
+	resp := requestAnonymousPresignFromIP(t, srv, rawIP+":12345", spoofedIP, 22)
+	if resp.Code != common.CodeOK {
+		t.Fatalf("anonymous presign: %+v", resp)
+	}
+	var file model.FileRecord
+	if err := srv.DB.First(&file, numToUint64(resp.Data["file_id"])).Error; err != nil {
+		t.Fatalf("load anonymous presign: %v", err)
+	}
+	const expectedHMAC = "db73c546bca8da58498b32a1de02e529633a74d2d803507cb7f11e0fcea1a598"
+	if file.SourceIPHash == nil || *file.SourceIPHash != expectedHMAC {
+		t.Fatalf("source hash = %v", file.SourceIPHash)
+	}
+	if file.CapabilityExpiresAt == nil || file.CleanupAfter == nil ||
+		!file.CleanupAfter.Equal(file.CapabilityExpiresAt.Add(30*time.Minute)) {
+		t.Fatalf("capability/cleanup timestamps = %v/%v", file.CapabilityExpiresAt, file.CleanupAfter)
+	}
+	if dump := fmt.Sprintf("%+v", file); strings.Contains(dump, rawIP) || strings.Contains(dump, spoofedIP) {
+		t.Fatalf("file row disclosed source IP: %s", dump)
+	}
+}
+
+func TestAnonymousPresignRatePersistsAcrossServerInstances(t *testing.T) {
+	cfg := newTestAppConfig(t, "local")
+	cfg.FileUploadAnonPresignPerHour = 1
+	first, err := app.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("first server: %v", err)
+	}
+	if resp := requestAnonymousPresignFromIP(t, first, "192.0.2.20:1000", "", 1); resp.Code != common.CodeOK {
+		t.Fatalf("first presign: %+v", resp)
+	}
+	second, err := app.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("second server: %v", err)
+	}
+	resp := requestAnonymousPresignFromIP(t, second, "192.0.2.20:2000", "", 1)
+	if resp.Code != common.CodeRateLimit {
+		t.Fatalf("second presign = %+v", resp)
+	}
+	var count int64
+	if err := second.DB.Model(&model.FileRecord{}).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("file count = %d, err=%v", count, err)
+	}
+}
+
+func TestAnonymousPresignRejectsActiveFileAndByteQuotaWithoutCreatingRows(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*app.Config)
+		firstSize  int64
+		secondSize int64
+	}{
+		{
+			name:       "active file count",
+			configure:  func(cfg *app.Config) { cfg.FileUploadAnonActiveFiles = 1 },
+			firstSize:  1,
+			secondSize: 1,
+		},
+		{
+			name:       "active bytes",
+			configure:  func(cfg *app.Config) { cfg.FileUploadAnonActiveBytes = 2 },
+			firstSize:  2,
+			secondSize: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newTestAppConfig(t, "local")
+			tc.configure(&cfg)
+			srv := newTestServerFromConfig(t, cfg)
+			if resp := requestAnonymousPresignFromIP(t, srv, "192.0.2.30:1000", "", tc.firstSize); resp.Code != common.CodeOK {
+				t.Fatalf("first presign: %+v", resp)
+			}
+			resp := requestAnonymousPresignFromIP(t, srv, "192.0.2.30:2000", "", tc.secondSize)
+			if resp.Code != common.CodeUploadQuotaExceeded {
+				t.Fatalf("quota response = %+v", resp)
+			}
+			var count int64
+			if err := srv.DB.Model(&model.FileRecord{}).Count(&count).Error; err != nil || count != 1 {
+				t.Fatalf("file count = %d, err=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestMerchantAndGlobalPresignQuotaRejectWithoutCreatingRows(t *testing.T) {
+	t.Run("merchant", func(t *testing.T) {
+		cfg := newTestAppConfig(t, "local")
+		cfg.FileUploadMerchantQuotaBytes = int64(len(minimalJPEG()))
+		srv := newTestServerFromConfig(t, cfg)
+		_, username, password := registerMerchant(t, srv, "merchant_quota")
+		login := merchantLogin(t, srv, username, password)
+		if login.Code != common.CodeOK {
+			t.Fatalf("merchant login: %+v", login)
+		}
+		var before int64
+		_ = srv.DB.Model(&model.FileRecord{}).Count(&before).Error
+		resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+			"biz_type": model.FileBizMerchantLicense, "file_name": "extra.jpg", "file_size": 1, "mime_type": "image/jpeg",
+		}, map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"])})
+		if resp.Code != common.CodeUploadQuotaExceeded {
+			t.Fatalf("merchant quota response: %+v", resp)
+		}
+		var after int64
+		_ = srv.DB.Model(&model.FileRecord{}).Count(&after).Error
+		if after != before {
+			t.Fatalf("merchant rejection created row: %d -> %d", before, after)
+		}
+	})
+
+	t.Run("global", func(t *testing.T) {
+		cfg := newTestAppConfig(t, "local")
+		cfg.FileUploadGlobalQuotaBytes = int64(len(minimalJPEG()) + 1)
+		srv := newTestServerFromConfig(t, cfg)
+		registerMerchant(t, srv, "global_quota")
+		var before int64
+		_ = srv.DB.Model(&model.FileRecord{}).Count(&before).Error
+		resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+			"biz_type": model.FileBizProductImage, "file_name": "admin.jpg", "file_size": 2, "mime_type": "image/jpeg",
+		}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
+		if resp.Code != common.CodeUploadQuotaExceeded {
+			t.Fatalf("global quota response: %+v", resp)
+		}
+		var after int64
+		_ = srv.DB.Model(&model.FileRecord{}).Count(&after).Error
+		if after != before {
+			t.Fatalf("global rejection created row: %d -> %d", before, after)
+		}
+	})
+}
+
+func TestAuthenticatedPresignDoesNotPersistAnonymousGovernanceFields(t *testing.T) {
+	srv := newTestServer(t)
+	_, username, password := registerMerchant(t, srv, "governance_fields")
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != common.CodeOK {
+		t.Fatalf("merchant login: %+v", login)
+	}
+	merchantResp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": model.FileBizMerchantLicense, "file_name": "merchant.jpg", "file_size": 1, "mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"])})
+	adminResp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": model.FileBizProductImage, "file_name": "admin.jpg", "file_size": 1, "mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
+	for name, resp := range map[string]apiResp{"merchant": merchantResp, "admin": adminResp} {
+		if resp.Code != common.CodeOK {
+			t.Fatalf("%s presign: %+v", name, resp)
+		}
+		var file model.FileRecord
+		if err := srv.DB.First(&file, numToUint64(resp.Data["file_id"])).Error; err != nil {
+			t.Fatalf("load %s file: %v", name, err)
+		}
+		if file.SourceIPHash != nil || file.CleanupAfter != nil || file.CleanupClaimedAt != nil ||
+			file.CleanupClaimToken != nil || file.CleanupAttempts != 0 {
+			t.Fatalf("%s file has anonymous governance fields: %+v", name, file)
+		}
 	}
 }
 

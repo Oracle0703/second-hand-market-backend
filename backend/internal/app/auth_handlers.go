@@ -49,7 +49,8 @@ func (s *Server) handleRegister(c *gin.Context) {
 		Status:       model.AccountStatusActive,
 	}
 
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+	now := time.Now()
+	if err := s.withQuotaTransaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&merchant).Error; err != nil {
 			return err
 		}
@@ -57,7 +58,7 @@ func (s *Server) handleRegister(c *gin.Context) {
 		if err := tx.Create(&acct).Error; err != nil {
 			return err
 		}
-		if err := claimPublicMerchantLicense(tx, req.LicenseFileID, req.LicenseFileToken, merchant.ID, time.Now()); err != nil {
+		if err := s.claimPublicMerchantLicense(tx, req.LicenseFileID, req.LicenseFileToken, merchant.ID, now); err != nil {
 			return err
 		}
 		if err := tx.Model(&model.Merchant{}).
