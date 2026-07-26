@@ -300,3 +300,4 @@ No frontend, miniapp, model, migration, production configuration, credential, da
 - Architecture approved by the user on 2026-07-27.
 - Data flow and error semantics confirmed by the user on 2026-07-27.
 - Complete design approved by the user on 2026-07-27.
+- Written specification approved by the user on 2026-07-27.
