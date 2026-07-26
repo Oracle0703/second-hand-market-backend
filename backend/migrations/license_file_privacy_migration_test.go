@@ -90,3 +90,28 @@ func TestLicenseFilePrivacyMigrationHasNoDownScript(t *testing.T) {
 		t.Fatalf("0007 down migration must not exist; stat error = %v", err)
 	}
 }
+
+func TestLicenseFilePrivacyAcceptanceScriptContracts(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/license-file-privacy-smoke.sh")
+	if err != nil {
+		t.Fatalf("read license file privacy acceptance script: %v", err)
+	}
+	text := string(raw)
+	for _, snippet := range []string{
+		"LICENSE_FILE_PRIVACY_ACCEPTANCE_CONFIRM",
+		"I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_LICENSE_PRIVACY_DATA",
+		"secondhand-license-privacy-acceptance",
+		`[[ "$mysql_version" == 8.4.* ]]`,
+		"license_file_privacy_preflight_passed",
+		"license_file_privacy_postflight_passed",
+		`ERROR 1644 \(45000\)`,
+		"TestLicenseFilePrivacyWithMigrationOnlyMySQL",
+		"AUTO_MIGRATE=false",
+		"AUTO_MIGRATE=true",
+		"isolated license file privacy acceptance passed",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Errorf("acceptance script missing %q", snippet)
+		}
+	}
+}

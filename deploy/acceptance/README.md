@@ -407,6 +407,35 @@ docker compose --project-name secondhand-file-binding-acceptance \
   down --volumes --remove-orphans
 ```
 
+## License file privacy acceptance
+
+The F-04/F-13 matrix uses the separate fixed Compose project
+`secondhand-license-privacy-acceptance`. It accepts no external DSN, refuses
+pre-existing resources with that project label, and writes sanitized evidence
+only under `evidence/license-file-privacy/`.
+
+Prepare acceptance-only secrets with `./prepare.sh`, then run from the dedicated
+acceptance checkout at the exact reviewed commit:
+
+```bash
+LICENSE_FILE_PRIVACY_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_LICENSE_PRIVACY_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-license-file-privacy-smoke
+```
+
+The command rebuilds the `0001..0006` schema for every dirty fixture, proves
+that `0007` preflight failures do not change file rows or license URLs, applies
+the clean `0006 -> 0007 -> new API/frontend` sequence, and runs the private-file
+API matrix with both `AUTO_MIGRATE=false` and `AUTO_MIGRATE=true`. It requires
+MySQL 8.4.x, retains the isolated Compose resources for review, and records
+source-independent runtime evidence under the directory above.
+
+This procedure must not execute production SQL, deploy backend or frontend
+artifacts, read or change production uploads, or mutate production data. Its
+only production interaction is read-only `docker inspect` of the named API,
+Web, and MySQL containers before and after the isolated run; the snapshots must
+match exactly before the success marker is printed.
+
 ## 7. Inspect and tear down
 
 Capture only sanitized evidence:

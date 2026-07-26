@@ -7,14 +7,147 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/model"
 )
+
+func TestLicenseFilePrivacyWithMigrationOnlyMySQL(t *testing.T) {
+	if os.Getenv("FILE_SCHEMA_MYSQL_TEST") != "1" {
+		t.Skip("set FILE_SCHEMA_MYSQL_TEST=1 only in the isolated MySQL acceptance project")
+	}
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		t.Fatal("DB_DSN is required for isolated license privacy acceptance")
+	}
+	uploadDir := os.Getenv("FILE_UPLOAD_LOCAL_DIR")
+	if uploadDir == "" {
+		t.Fatal("FILE_UPLOAD_LOCAL_DIR is required for isolated license privacy acceptance")
+	}
+
+	cfg := app.Config{
+		AppEnv:                   "test",
+		Addr:                     ":0",
+		DBDriver:                 "mysql",
+		DBDSN:                    dsn,
+		JWTAccessSecret:          "license-privacy-test-access",
+		JWTRefreshSecret:         "license-privacy-test-refresh",
+		AccessTTL:                time.Hour,
+		RefreshTTL:               24 * time.Hour,
+		AutoMigrate:              strings.EqualFold(os.Getenv("AUTO_MIGRATE"), "true"),
+		FileStorageProvider:      "local",
+		FileUploadLocalDir:       uploadDir,
+		FileUploadMaxBytes:       40 * 1024 * 1024,
+		ImageCompressTargetBytes: 20 * 1024 * 1024,
+		ImageProcessorDriver:     "passthrough",
+		BuyerWechatLoginMode:     "mock",
+		BuyerDouyinLoginMode:     "mock",
+		BuyerWechatHTTPTimeout:   5 * time.Second,
+		BuyerDouyinHTTPTimeout:   5 * time.Second,
+	}
+	srv, err := app.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("start license privacy migration-only server: %v", err)
+	}
+	assertFileTableState(t, srv, 0, 1)
+	assertFileBindingSchemaSingletons(t, srv)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(testAdminPassword), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash acceptance admin password: %v", err)
+	}
+	admin := model.AdminUser{
+		Username: "admin", DisplayName: "License Privacy Admin", Role: model.AdminRoleAdmin,
+		Status: model.AccountStatusActive, PasswordHash: string(hash),
+	}
+	if err := srv.DB.Where("username = ?", admin.Username).FirstOrCreate(&admin).Error; err != nil {
+		t.Fatalf("create acceptance admin: %v", err)
+	}
+
+	fixture := newLicensePrivacyFixtureForServer(t, srv, uploadDir)
+	productKey := fmt.Sprintf("product_image/mysql-privacy-%d.jpg", time.Now().UnixNano())
+	productBytes := []byte("isolated-public-product-image")
+	product := model.FileRecord{
+		BizType: model.FileBizProductImage, ObjectKey: productKey,
+		URL: "/uploads/" + productKey, MimeType: "image/jpeg", SizeBytes: int64(len(productBytes)),
+		UploaderType: model.UserTypePublic, ScanStatus: model.FileScanPass,
+	}
+	if err := srv.DB.Create(&product).Error; err != nil {
+		t.Fatalf("create public product record: %v", err)
+	}
+	writeUploadFixture(t, uploadDir, productKey, productBytes)
+
+	publicReq := httptest.NewRequest(http.MethodGet, "/uploads/"+productKey, nil)
+	publicW := httptest.NewRecorder()
+	srv.Router.ServeHTTP(publicW, publicReq)
+	if publicW.Code != http.StatusOK || !bytes.Equal(publicW.Body.Bytes(), productBytes) {
+		t.Fatalf("anonymous product response: status=%d body=%q", publicW.Code, publicW.Body.String())
+	}
+
+	privateReq := httptest.NewRequest(http.MethodGet, "/uploads/"+fixture.file.ObjectKey, nil)
+	privateW := httptest.NewRecorder()
+	srv.Router.ServeHTTP(privateW, privateReq)
+	if privateW.Code != http.StatusNotFound || bytes.Contains(privateW.Body.Bytes(), fixture.fileBytes) {
+		t.Fatalf("anonymous license response: status=%d body=%q", privateW.Code, privateW.Body.String())
+	}
+
+	contentW := requestAdminLicenseContent(t, fixture, fixture.adminToken)
+	if contentW.Code != http.StatusOK || !bytes.Equal(contentW.Body.Bytes(), fixture.fileBytes) {
+		t.Fatalf("admin license response: status=%d body=%q", contentW.Code, contentW.Body.String())
+	}
+	for name, want := range map[string]string{
+		"Content-Type": "image/jpeg", "Content-Disposition": "inline",
+		"Cache-Control": "private, no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff",
+	} {
+		if got := contentW.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+
+	var logs []model.OperationLog
+	if err := srv.DB.Where("action = ? AND resource_id = ?", "admin_file_read", fixture.file.ID).Find(&logs).Error; err != nil {
+		t.Fatalf("load admin file read audit: %v", err)
+	}
+	if len(logs) != 1 || string(logs[0].DetailJSON) != `{"biz_type":"MERCHANT_LICENSE","scan_status":"PASS"}` {
+		t.Fatalf("unsafe admin file read audit: %+v", logs)
+	}
+
+	jpeg := minimalJPEG()
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": model.FileBizMerchantLicense, "file_name": "new-private-license.jpg",
+		"file_size": len(jpeg), "mime_type": "image/jpeg",
+	}, nil)
+	if presign.Code != common.CodeOK {
+		t.Fatalf("private license presign: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	fileToken := str(presign.Data["file_token"])
+	upload := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprintf("%d", fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", filepath.Base(objectKey), jpeg, nil)
+	if upload.Code != common.CodeOK {
+		t.Fatalf("private license upload: %+v", upload)
+	}
+	if _, exists := upload.Data["url"]; exists {
+		t.Fatalf("private license upload exposed url: %+v", upload.Data)
+	}
+	var uploaded model.FileRecord
+	if err := srv.DB.First(&uploaded, fileID).Error; err != nil {
+		t.Fatalf("load private license upload: %v", err)
+	}
+	if uploaded.URL != "" || uploaded.ObjectKey == "" || uploaded.ScanStatus != model.FileScanPass {
+		t.Fatalf("private license upload state: %+v", uploaded)
+	}
+}
 
 func TestFileFlowWithMigrationOnlyMySQL(t *testing.T) {
 	if os.Getenv("FILE_SCHEMA_MYSQL_TEST") != "1" {
