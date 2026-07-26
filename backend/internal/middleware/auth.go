@@ -49,6 +49,13 @@ func RequireActiveSession(db *gorm.DB) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		current, err := loadAuthoritativeActor(db, actor)
+		if err != nil {
+			common.Fail(c, err)
+			c.Abort()
+			return
+		}
+		common.SetActor(c, current)
 		c.Next()
 	}
 }
@@ -70,6 +77,96 @@ func requireActiveSession(db *gorm.DB, actor common.Actor, now time.Time) error 
 		return common.ErrUnauthorized
 	}
 	return nil
+}
+
+type accountAuthorizationState struct {
+	Status string
+	Role   string
+}
+
+type merchantAuthorizationState struct {
+	AccountStatus string `gorm:"column:account_status"`
+	Role          string
+	MerchantID    uint64
+	ReviewStatus  string
+}
+
+func authorizationQueryError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return common.ErrUnauthorized
+	}
+	return common.ErrInternal
+}
+
+func loadAuthoritativeActor(db *gorm.DB, actor common.Actor) (common.Actor, error) {
+	switch actor.UserType {
+	case model.UserTypeAdmin:
+		var state accountAuthorizationState
+		if err := db.Model(&model.AdminUser{}).Select("status", "role").
+			Where("id = ?", actor.UserID).Take(&state).Error; err != nil {
+			return common.Actor{}, authorizationQueryError(err)
+		}
+		if state.Status == model.AccountStatusDisabled {
+			return common.Actor{}, common.ErrAccountDisabled
+		}
+		if state.Status != model.AccountStatusActive ||
+			(state.Role != model.AdminRoleSuper && state.Role != model.AdminRoleAdmin) {
+			return common.Actor{}, common.ErrInternal
+		}
+		actor.Role = state.Role
+		actor.MerchantID = 0
+		actor.Scope = "full"
+		return actor, nil
+
+	case model.UserTypeMerchant:
+		var state merchantAuthorizationState
+		err := db.Table("merchant_accounts AS account").
+			Select("account.status AS account_status, account.role, account.merchant_id, merchant.review_status").
+			Joins("JOIN merchants AS merchant ON merchant.id = account.merchant_id AND merchant.deleted_at IS NULL").
+			Where("account.id = ? AND account.deleted_at IS NULL", actor.UserID).
+			Take(&state).Error
+		if err != nil {
+			return common.Actor{}, authorizationQueryError(err)
+		}
+		if state.AccountStatus == model.AccountStatusDisabled || state.ReviewStatus == model.ReviewDisabled {
+			return common.Actor{}, common.ErrAccountDisabled
+		}
+		if state.AccountStatus != model.AccountStatusActive ||
+			(state.Role != model.AccountRoleOwner && state.Role != model.AccountRoleStaff) {
+			return common.Actor{}, common.ErrInternal
+		}
+		switch state.ReviewStatus {
+		case model.ReviewApproved:
+			actor.Scope = "full"
+		case model.ReviewPending, model.ReviewRejected:
+			actor.Scope = "onboarding"
+		default:
+			return common.Actor{}, common.ErrInternal
+		}
+		actor.Role = state.Role
+		actor.MerchantID = state.MerchantID
+		return actor, nil
+
+	case model.UserTypeBuyer:
+		var state struct{ Status string }
+		if err := db.Model(&model.BuyerUser{}).Select("status").
+			Where("id = ?", actor.UserID).Take(&state).Error; err != nil {
+			return common.Actor{}, authorizationQueryError(err)
+		}
+		if state.Status == model.BuyerStatusDisabled {
+			return common.Actor{}, common.ErrAccountDisabled
+		}
+		if state.Status != model.BuyerStatusActive {
+			return common.Actor{}, common.ErrInternal
+		}
+		actor.Role = model.UserTypeBuyer
+		actor.MerchantID = 0
+		actor.Scope = "full"
+		return actor, nil
+
+	default:
+		return common.Actor{}, common.ErrUnauthorized
+	}
 }
 
 func RequireAuth(userTypes ...string) gin.HandlerFunc {

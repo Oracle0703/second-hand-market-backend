@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"second-hand-market-backend/backend/internal/app"
+	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/model"
 )
 
@@ -173,6 +174,32 @@ func TestRestrictedLoginScope(t *testing.T) {
 	products := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/products", nil, map[string]string{"Authorization": "Bearer " + fullToken})
 	if products.Code != 0 {
 		t.Fatalf("approved products should be allowed: %+v", products)
+	}
+}
+
+func TestMerchantAccessTokenUsesCurrentReviewScope(t *testing.T) {
+	srv := newTestServer(t)
+	merchantID, username, password := registerMerchant(t, srv, "f14_scope")
+	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != common.CodeOK {
+		t.Fatalf("merchant login code = %d", login.Code)
+	}
+	access := str(login.Data["access_token"])
+
+	if err := srv.DB.Model(&model.Merchant{}).Where("id = ?", merchantID).
+		Update("review_status", model.ReviewRejected).Error; err != nil {
+		t.Fatalf("reject merchant after token issue: %v", err)
+	}
+	full := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/products", nil,
+		map[string]string{"Authorization": "Bearer " + access})
+	if full.Code != common.CodeReviewNotApproved {
+		t.Fatalf("stale full token code = %d", full.Code)
+	}
+	profile := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/profile", nil,
+		map[string]string{"Authorization": "Bearer " + access})
+	if profile.Code != common.CodeOK || str(profile.Data["review_status"]) != model.ReviewRejected {
+		t.Fatalf("current onboarding profile code/review = %d/%s", profile.Code, str(profile.Data["review_status"]))
 	}
 }
 
