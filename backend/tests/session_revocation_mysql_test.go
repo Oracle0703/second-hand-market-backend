@@ -285,8 +285,11 @@ func TestSessionRevocationMySQLAcceptance(t *testing.T) {
 	t.Run("concurrent logout has one winner", func(t *testing.T) {
 		username, password := createSessionAcceptanceAdmin(t, srv, suffix+"c")
 		pair := sessionAcceptanceAdminLogin(t, srv, username, password)
+		control := sessionAcceptanceAdminLogin(t, srv, username, password)
+		targetID := sessionAcceptanceSessionID(t, pair.access)
+		controlID := sessionAcceptanceSessionID(t, control.access)
 		start := make(chan struct{})
-		results := make(chan int, 2)
+		results := make(chan sessionAcceptanceResponse, 2)
 		errorsFound := make(chan error, 2)
 		var wg sync.WaitGroup
 		for i := 0; i < 2; i++ {
@@ -300,7 +303,7 @@ func TestSessionRevocationMySQLAcceptance(t *testing.T) {
 					errorsFound <- err
 					return
 				}
-				results <- response.Body.Code
+				results <- response
 			}()
 		}
 		close(start)
@@ -312,13 +315,30 @@ func TestSessionRevocationMySQLAcceptance(t *testing.T) {
 				t.Fatal("concurrent logout response failed")
 			}
 		}
-		var codes []int
-		for code := range results {
-			codes = append(codes, code)
+		var responses []sessionAcceptanceResponse
+		for response := range results {
+			responses = append(responses, response)
 		}
-		sort.Ints(codes)
-		if len(codes) != 2 || codes[0] != common.CodeOK || codes[1] != common.CodeUnauthorized {
-			t.Fatalf("concurrent logout codes = %v", codes)
+		sort.Slice(responses, func(i, j int) bool { return responses[i].Body.Code < responses[j].Body.Code })
+		if len(responses) != 2 ||
+			responses[0].HTTPStatus != http.StatusOK || responses[0].Body.Code != common.CodeOK ||
+			responses[1].HTTPStatus != http.StatusUnauthorized || responses[1].Body.Code != common.CodeUnauthorized {
+			t.Fatalf("concurrent logout status/codes = %v", responses)
+		}
+
+		var sessions []model.AuthSession
+		if err := srv.DB.Where("id IN ?", []uint64{targetID, controlID}).Find(&sessions).Error; err != nil {
+			t.Fatal("load concurrent logout sessions")
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("concurrent logout session row count = %d, want 2", len(sessions))
+		}
+		state := map[uint64]bool{}
+		for _, session := range sessions {
+			state[session.ID] = session.RevokedAt != nil
+		}
+		if !state[targetID] || state[controlID] {
+			t.Fatalf("concurrent logout target/control revoked = %t/%t, want true/false", state[targetID], state[controlID])
 		}
 	})
 

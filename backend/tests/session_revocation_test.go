@@ -20,6 +20,11 @@ type sessionTokenPair struct {
 	refresh string
 }
 
+type sessionHTTPResponse struct {
+	HTTPStatus int
+	Code       int
+}
+
 func sessionTokenPairFromResponse(t *testing.T, response apiResp) sessionTokenPair {
 	t.Helper()
 	if response.Code != common.CodeOK {
@@ -80,6 +85,13 @@ func assertOnlyFirstSessionRevoked(t *testing.T, srv *app.Server, firstID, secon
 	}
 	if !state[firstID] || state[secondID] {
 		t.Fatalf("revocation state first/second = %t/%t, want true/false", state[firstID], state[secondID])
+	}
+}
+
+func requireSessionHTTPResponse(t *testing.T, label string, response sessionHTTPResponse, wantHTTP, wantCode int) {
+	t.Helper()
+	if response.HTTPStatus != wantHTTP || response.Code != wantCode {
+		t.Fatalf("%s status/code = %d/%d, want %d/%d", label, response.HTTPStatus, response.Code, wantHTTP, wantCode)
 	}
 }
 
@@ -152,10 +164,10 @@ func TestSessionRevocationForEveryActor(t *testing.T) {
 	})
 }
 
-func requestJSONCode(handler http.Handler, method, path string, body interface{}, headers map[string]string) (int, error) {
+func requestSessionHTTPResponse(handler http.Handler, method, path string, body interface{}, headers map[string]string) (sessionHTTPResponse, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return 0, err
+		return sessionHTTPResponse{}, err
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
@@ -168,9 +180,57 @@ func requestJSONCode(handler http.Handler, method, path string, body interface{}
 		Code int `json:"code"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		return 0, err
+		return sessionHTTPResponse{}, err
 	}
-	return response.Code, nil
+	return sessionHTTPResponse{HTTPStatus: w.Code, Code: response.Code}, nil
+}
+
+func TestSessionRevocationRejectsRevokedTokenOnPublicRoute(t *testing.T) {
+	srv := newTestServer(t)
+	login := func() sessionTokenPair {
+		return sessionTokenPairFromResponse(t, requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+			"login_type": model.UserTypeAdmin,
+			"username":   "admin",
+			"password":   testAdminPassword,
+		}, nil))
+	}
+	target := login()
+	control := login()
+	targetID := sessionIDFromAccess(t, target.access)
+	controlID := sessionIDFromAccess(t, control.access)
+
+	active, err := requestSessionHTTPResponse(srv.Router, http.MethodGet, "/healthz", nil,
+		map[string]string{"Authorization": "Bearer " + target.access})
+	if err != nil {
+		t.Fatal("request active public route")
+	}
+	requireSessionHTTPResponse(t, "active public route", active, http.StatusOK, common.CodeOK)
+
+	logout := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/logout", nil,
+		map[string]string{"Authorization": "Bearer " + target.access})
+	if logout.Code != common.CodeOK {
+		t.Fatalf("logout code = %d, want %d", logout.Code, common.CodeOK)
+	}
+	revoked, err := requestSessionHTTPResponse(srv.Router, http.MethodGet, "/healthz", nil,
+		map[string]string{"Authorization": "Bearer " + target.access})
+	if err != nil {
+		t.Fatal("request revoked public route")
+	}
+	requireSessionHTTPResponse(t, "revoked public route", revoked, http.StatusUnauthorized, common.CodeUnauthorized)
+	assertOnlyFirstSessionRevoked(t, srv, targetID, controlID)
+
+	sqlDB, err := srv.DB.DB()
+	if err != nil {
+		t.Fatal("load test database handle")
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal("close test database pool")
+	}
+	anonymous, err := requestSessionHTTPResponse(srv.Router, http.MethodGet, "/healthz", nil, nil)
+	if err != nil {
+		t.Fatal("request anonymous public route after database close")
+	}
+	requireSessionHTTPResponse(t, "anonymous public route after database close", anonymous, http.StatusOK, common.CodeOK)
 }
 
 func TestSessionRevocationAllowsOnlyOneConcurrentLogout(t *testing.T) {
@@ -181,9 +241,17 @@ func TestSessionRevocationAllowsOnlyOneConcurrentLogout(t *testing.T) {
 		"password":   testAdminPassword,
 	}, nil)
 	pair := sessionTokenPairFromResponse(t, login)
+	controlLogin := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+		"login_type": model.UserTypeAdmin,
+		"username":   "admin",
+		"password":   testAdminPassword,
+	}, nil)
+	control := sessionTokenPairFromResponse(t, controlLogin)
+	targetID := sessionIDFromAccess(t, pair.access)
+	controlID := sessionIDFromAccess(t, control.access)
 
 	start := make(chan struct{})
-	results := make(chan int, 2)
+	results := make(chan sessionHTTPResponse, 2)
 	errorsFound := make(chan error, 2)
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
@@ -191,13 +259,13 @@ func TestSessionRevocationAllowsOnlyOneConcurrentLogout(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			code, err := requestJSONCode(srv.Router, http.MethodPost, "/api/v1/auth/logout", nil,
+			response, err := requestSessionHTTPResponse(srv.Router, http.MethodPost, "/api/v1/auth/logout", nil,
 				map[string]string{"Authorization": "Bearer " + pair.access})
 			if err != nil {
 				errorsFound <- err
 				return
 			}
-			results <- code
+			results <- response
 		}()
 	}
 	close(start)
@@ -209,12 +277,16 @@ func TestSessionRevocationAllowsOnlyOneConcurrentLogout(t *testing.T) {
 			t.Fatalf("concurrent logout request failed: %v", err)
 		}
 	}
-	var codes []int
-	for code := range results {
-		codes = append(codes, code)
+	var responses []sessionHTTPResponse
+	for response := range results {
+		responses = append(responses, response)
 	}
-	sort.Ints(codes)
-	if len(codes) != 2 || codes[0] != common.CodeOK || codes[1] != common.CodeUnauthorized {
-		t.Fatalf("concurrent logout codes = %v, want [%d %d]", codes, common.CodeOK, common.CodeUnauthorized)
+	sort.Slice(responses, func(i, j int) bool { return responses[i].Code < responses[j].Code })
+	if len(responses) != 2 ||
+		responses[0] != (sessionHTTPResponse{HTTPStatus: http.StatusOK, Code: common.CodeOK}) ||
+		responses[1] != (sessionHTTPResponse{HTTPStatus: http.StatusUnauthorized, Code: common.CodeUnauthorized}) {
+		t.Fatalf("concurrent logout status/codes = %v, want [%d/%d %d/%d]", responses,
+			http.StatusOK, common.CodeOK, http.StatusUnauthorized, common.CodeUnauthorized)
 	}
+	assertOnlyFirstSessionRevoked(t, srv, targetID, controlID)
 }
