@@ -37,36 +37,39 @@ func OptionalAuth(accessSecret string) gin.HandlerFunc {
 	}
 }
 
-func RequireActiveAdminSession(db *gorm.DB) gin.HandlerFunc {
+func RequireActiveSession(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		actor, ok := common.GetActor(c)
-		if !ok || actor.UserType != model.UserTypeAdmin {
+		if !ok {
 			c.Next()
 			return
 		}
-		if actor.SessionID == 0 {
-			common.Fail(c, common.ErrUnauthorized)
-			c.Abort()
-			return
-		}
-		var session model.AuthSession
-		if err := db.Where("id = ?", actor.SessionID).First(&session).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				common.Fail(c, common.ErrUnauthorized)
-			} else {
-				common.Fail(c, common.ErrInternal)
-			}
-			c.Abort()
-			return
-		}
-		if session.UserType != model.UserTypeAdmin || session.UserID != actor.UserID ||
-			session.RevokedAt != nil || !session.ExpiredAt.After(time.Now()) {
-			common.Fail(c, common.ErrUnauthorized)
+		if err := requireActiveSession(db, actor, time.Now()); err != nil {
+			common.Fail(c, err)
 			c.Abort()
 			return
 		}
 		c.Next()
 	}
+}
+
+func requireActiveSession(db *gorm.DB, actor common.Actor, now time.Time) error {
+	if actor.SessionID == 0 {
+		return common.ErrUnauthorized
+	}
+	var session model.AuthSession
+	if err := db.Select("id", "user_type", "user_id", "expired_at", "revoked_at").
+		Where("id = ?", actor.SessionID).Take(&session).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return common.ErrUnauthorized
+		}
+		return common.ErrInternal
+	}
+	if session.UserType != actor.UserType || session.UserID != actor.UserID ||
+		session.RevokedAt != nil || !session.ExpiredAt.After(now) {
+		return common.ErrUnauthorized
+	}
+	return nil
 }
 
 func RequireAuth(userTypes ...string) gin.HandlerFunc {

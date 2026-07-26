@@ -69,7 +69,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if err := r.SetTrustedProxies(cfg.TrustedProxyCIDRs); err != nil {
 		return nil, fmt.Errorf("configure trusted proxies: %w", err)
 	}
-	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret), middleware.RequireActiveAdminSession(db))
+	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret), middleware.RequireActiveSession(db))
 	s := &Server{
 		cfg:            cfg,
 		DB:             db,
