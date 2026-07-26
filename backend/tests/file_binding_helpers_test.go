@@ -26,10 +26,16 @@ func createReadyOwnedFile(
 	bizType string,
 ) model.FileRecord {
 	t.Helper()
+	objectPrefix := "product_image"
+	url := "/uploads/product_image/test-owned.jpg"
+	if bizType == model.FileBizMerchantLicense {
+		objectPrefix = "merchant_license"
+		url = ""
+	}
 	file := model.FileRecord{
 		BizType:         bizType,
-		ObjectKey:       fmt.Sprintf("test/%d-%d.jpg", ownerMerchantID, time.Now().UnixNano()),
-		URL:             "/uploads/test-owned.jpg",
+		ObjectKey:       fmt.Sprintf("%s/%d-%d.jpg", objectPrefix, ownerMerchantID, time.Now().UnixNano()),
+		URL:             url,
 		MimeType:        "image/jpeg",
 		SizeBytes:       22,
 		UploaderType:    model.UserTypeMerchant,
@@ -59,8 +65,12 @@ func createReadyOwnedFileForToken(
 		t.Fatalf("presign owned file: %+v", presign)
 	}
 	fileID := numToUint64(presign.Data["file_id"])
+	url := "/uploads/" + str(presign.Data["object_key"])
+	if bizType == model.FileBizMerchantLicense {
+		url = ""
+	}
 	if err := srv.DB.Model(&model.FileRecord{}).Where("id = ?", fileID).Updates(map[string]interface{}{
-		"url":         "/uploads/test-owned.jpg",
+		"url":         url,
 		"scan_status": model.FileScanPass,
 	}).Error; err != nil {
 		t.Fatalf("complete owned file: %v", err)

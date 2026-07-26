@@ -237,7 +237,10 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		return
 	}
 
-	url := s.publicFileURL(file.ObjectKey)
+	url := ""
+	if file.BizType == model.FileBizProductImage {
+		url = s.publicFileURL(file.ObjectKey)
+	}
 	updates := map[string]interface{}{
 		"url":         url,
 		"scan_status": model.FileScanPass,
@@ -248,7 +251,11 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, gin.H{"file_id": file.ID, "url": url, "object_key": file.ObjectKey, "status": model.FileScanPass})
+	response := gin.H{"file_id": file.ID, "object_key": file.ObjectKey, "status": model.FileScanPass}
+	if url != "" {
+		response["url"] = url
+	}
+	common.Success(c, response)
 }
 
 func (s *Server) handleConfirmUpload(c *gin.Context) {
@@ -277,12 +284,19 @@ func (s *Server) handleConfirmUpload(c *gin.Context) {
 			return
 		}
 	}
-	url := s.publicFileURL(req.ObjectKey)
+	url := ""
+	if file.BizType == model.FileBizProductImage {
+		url = s.publicFileURL(req.ObjectKey)
+	}
 	if err := s.DB.Model(&model.FileRecord{}).Where("id = ?", file.ID).Updates(map[string]interface{}{"url": url, "scan_status": model.FileScanPass}).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, gin.H{"file_id": file.ID, "url": url, "status": model.FileScanPass})
+	response := gin.H{"file_id": file.ID, "object_key": file.ObjectKey, "status": model.FileScanPass}
+	if url != "" {
+		response["url"] = url
+	}
+	common.Success(c, response)
 }
 
 func (s *Server) loadFileRecordAndAuthorize(c *gin.Context, fileID uint64, rawToken string) (*model.FileRecord, error) {

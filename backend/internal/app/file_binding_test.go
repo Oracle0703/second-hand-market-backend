@@ -94,14 +94,35 @@ func TestValidateMerchantFilesForBinding(t *testing.T) {
 	}
 }
 
+func TestValidateMerchantLicenseFilesForBindingUsesObjectKey(t *testing.T) {
+	db := newFileBindingTestDB(t)
+	merchantID := uint64(10)
+	valid := createBindingFile(t, db, model.FileBizMerchantLicense, model.FileScanPass, "", &merchantID)
+	emptyObjectKey := createBindingFile(t, db, model.FileBizMerchantLicense, model.FileScanPass, "", &merchantID)
+	if err := db.Model(&emptyObjectKey).Update("object_key", "").Error; err != nil {
+		t.Fatalf("clear license object key: %v", err)
+	}
+
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		return validateMerchantFilesForBinding(tx, merchantID, []uint64{valid.ID}, model.FileBizMerchantLicense)
+	}); err != nil {
+		t.Fatalf("private license binding = %v", err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		return validateMerchantFilesForBinding(tx, merchantID, []uint64{emptyObjectKey.ID}, model.FileBizMerchantLicense)
+	}); !errors.Is(err, common.ErrInvalidFileBinding) {
+		t.Fatalf("empty object key binding = %v", err)
+	}
+}
+
 func createClaimableLicense(t *testing.T, db *gorm.DB, now time.Time, rawToken string) model.FileRecord {
 	t.Helper()
 	hash := fileCapabilityHash(rawToken)
 	expires := now.Add(15 * time.Minute)
 	file := model.FileRecord{
 		BizType:             model.FileBizMerchantLicense,
-		ObjectKey:           fmt.Sprintf("license/%d.jpg", time.Now().UnixNano()),
-		URL:                 "/uploads/license/test.jpg",
+		ObjectKey:           fmt.Sprintf("merchant_license/%d.jpg", time.Now().UnixNano()),
+		URL:                 "",
 		MimeType:            "image/jpeg",
 		SizeBytes:           10,
 		UploaderType:        model.UserTypePublic,
@@ -165,8 +186,8 @@ func TestClaimPublicMerchantLicenseRejectsInvalidClaims(t *testing.T) {
 		{name: "pending", raw: "valid-token", mutate: func(file *model.FileRecord) {
 			file.ScanStatus = model.FileScanPending
 		}},
-		{name: "empty URL", raw: "valid-token", mutate: func(file *model.FileRecord) {
-			file.URL = ""
+		{name: "empty object key", raw: "valid-token", mutate: func(file *model.FileRecord) {
+			file.ObjectKey = ""
 		}},
 		{name: "merchant uploader", raw: "valid-token", mutate: func(file *model.FileRecord) {
 			file.UploaderType = model.UserTypeMerchant

@@ -51,13 +51,24 @@ func validateMerchantFilesForBinding(
 	for _, file := range files {
 		if file.BizType != wantBizType ||
 			file.ScanStatus != model.FileScanPass ||
-			strings.TrimSpace(file.URL) == "" ||
+			!fileHasCompletedStorage(file) ||
 			file.OwnerMerchantID == nil ||
 			*file.OwnerMerchantID != merchantID {
 			return common.ErrInvalidFileBinding
 		}
 	}
 	return nil
+}
+
+func fileHasCompletedStorage(file model.FileRecord) bool {
+	switch file.BizType {
+	case model.FileBizProductImage:
+		return strings.TrimSpace(file.URL) != ""
+	case model.FileBizMerchantLicense:
+		return strings.TrimSpace(file.ObjectKey) != ""
+	default:
+		return false
+	}
 }
 
 func fileCapabilityHash(raw string) string {
@@ -87,7 +98,7 @@ func claimPublicMerchantLicense(
 
 	result := tx.Model(&model.FileRecord{}).
 		Where(
-			"id = ? AND biz_type = ? AND scan_status = ? AND url <> '' AND uploader_type = ? AND owner_merchant_id IS NULL AND capability_token_hash = ? AND capability_expires_at > ?",
+			"id = ? AND biz_type = ? AND scan_status = ? AND object_key <> '' AND uploader_type = ? AND owner_merchant_id IS NULL AND capability_token_hash = ? AND capability_expires_at > ?",
 			fileID,
 			model.FileBizMerchantLicense,
 			model.FileScanPass,
