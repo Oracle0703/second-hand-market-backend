@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -152,6 +153,14 @@ func (s *Server) handlePresign(c *gin.Context) {
 }
 
 func (s *Server) handleUploadFile(c *gin.Context) {
+	if err := parseCappedMultipart(c, s.cfg.FileUploadMultipartMaxBytes); err != nil {
+		common.Fail(c, err)
+		return
+	}
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
+
 	fileID, err := strconv.ParseUint(strings.TrimSpace(c.PostForm("file_id")), 10, 64)
 	if err != nil || fileID == 0 {
 		common.Fail(c, common.ErrInvalidArgument)
@@ -164,8 +173,12 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 	}
 	formFile, err := c.FormFile("file")
 	limit := s.uploadSizeLimit()
-	if err != nil || formFile == nil || formFile.Size <= 0 || formFile.Size > limit {
+	if err != nil || formFile == nil || formFile.Size <= 0 {
 		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	if formFile.Size > limit {
+		common.Fail(c, common.ErrUploadTooLarge)
 		return
 	}
 
@@ -191,7 +204,15 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	if int64(len(content)) == 0 || int64(len(content)) > limit {
+	if int64(len(content)) == 0 {
+		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	if int64(len(content)) > limit {
+		common.Fail(c, common.ErrUploadTooLarge)
+		return
+	}
+	if int64(len(content)) != file.SizeBytes {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
@@ -209,7 +230,8 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	if len(processed.Content) == 0 || !media.IsAllowedImageMIME(processed.OutputMIME) {
+	if len(processed.Content) == 0 || int64(len(processed.Content)) > limit || len(processed.Content) > len(content) ||
+		!media.IsAllowedImageMIME(processed.OutputMIME) {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
@@ -270,6 +292,24 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		response["url"] = url
 	}
 	common.Success(c, response)
+}
+
+func parseCappedMultipart(c *gin.Context, requestLimit int64) error {
+	if requestLimit <= 0 {
+		return common.ErrInvalidUpload
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, requestLimit)
+	if c.Request.ContentLength > requestLimit {
+		return common.ErrUploadTooLarge
+	}
+	if err := c.Request.ParseMultipartForm(1 << 20); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return common.ErrUploadTooLarge
+		}
+		return common.ErrInvalidUpload
+	}
+	return nil
 }
 
 func (s *Server) handleConfirmUpload(c *gin.Context) {

@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,17 +23,18 @@ import (
 	"second-hand-market-backend/backend/internal/model"
 )
 
-func requestMultipart(
+type multipartTestResponse struct {
+	apiResp
+	HTTPStatus int
+}
+
+func buildMultipartBody(
 	t *testing.T,
-	h http.Handler,
-	method,
-	path string,
 	fields map[string]string,
 	fileField,
 	fileName string,
 	content []byte,
-	headers map[string]string,
-) apiResp {
+) (*bytes.Buffer, string) {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -49,9 +53,25 @@ func requestMultipart(
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer failed: %v", err)
 	}
+	return &body, writer.FormDataContentType()
+}
 
-	req := httptest.NewRequest(method, path, &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+func requestMultipart(
+	t *testing.T,
+	h http.Handler,
+	method,
+	path string,
+	fields map[string]string,
+	fileField,
+	fileName string,
+	content []byte,
+	headers map[string]string,
+) multipartTestResponse {
+	t.Helper()
+	body, contentType := buildMultipartBody(t, fields, fileField, fileName, content)
+
+	req := httptest.NewRequest(method, path, body)
+	req.Header.Set("Content-Type", contentType)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -62,7 +82,7 @@ func requestMultipart(
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response failed: %v, raw=%s", err, w.Body.String())
 	}
-	return resp
+	return multipartTestResponse{apiResp: resp, HTTPStatus: w.Code}
 }
 
 func requestAnonymousPresignFromIP(t *testing.T, srv *app.Server, remoteAddr, forwardedFor string, fileSize int64) apiResp {
@@ -93,9 +113,10 @@ func requestAnonymousPresignFromIP(t *testing.T, srv *app.Server, remoteAddr, fo
 
 func TestFileUploadLocalPublicLicense(t *testing.T) {
 	srv := newTestServer(t)
+	jpeg := minimalJPEG()
 
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 32, "mime_type": "image/jpeg",
+		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": len(jpeg), "mime_type": "image/jpeg",
 	}, nil)
 	if presign.Code != 0 {
 		t.Fatalf("presign failed: %+v", presign)
@@ -118,7 +139,6 @@ func TestFileUploadLocalPublicLicense(t *testing.T) {
 		t.Fatal("raw file token must not be persisted")
 	}
 
-	jpeg := minimalJPEG()
 	upload := requestMultipart(
 		t,
 		srv.Router,
@@ -189,8 +209,9 @@ func TestProductImageUploadRemainsPublic(t *testing.T) {
 
 func TestAnonymousFileUploadRequiresMatchingCapability(t *testing.T) {
 	srv := newTestServer(t)
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 22, "mime_type": "image/jpeg",
+		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": len(jpeg), "mime_type": "image/jpeg",
 	}, nil)
 	if presign.Code != common.CodeOK {
 		t.Fatalf("presign failed: %+v", presign)
@@ -198,8 +219,6 @@ func TestAnonymousFileUploadRequiresMatchingCapability(t *testing.T) {
 	fileID := numToUint64(presign.Data["file_id"])
 	objectKey := str(presign.Data["object_key"])
 	fileToken := str(presign.Data["file_token"])
-	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
-
 	for _, tc := range []struct {
 		name  string
 		token string
@@ -231,8 +250,9 @@ func TestAnonymousFileUploadRequiresMatchingCapability(t *testing.T) {
 
 func TestAnonymousFileConfirmRequiresMatchingCapability(t *testing.T) {
 	srv := newTestServer(t)
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 22, "mime_type": "image/jpeg",
+		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": len(jpeg), "mime_type": "image/jpeg",
 	}, nil)
 	if presign.Code != common.CodeOK {
 		t.Fatalf("presign failed: %+v", presign)
@@ -242,7 +262,7 @@ func TestAnonymousFileConfirmRequiresMatchingCapability(t *testing.T) {
 	fileToken := str(presign.Data["file_token"])
 	upload := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
 		"file_id": fmt.Sprintf("%d", fileID), "object_key": objectKey, "file_token": fileToken,
-	}, "file", "license.jpg", []byte{0xFF, 0xD8, 0xFF, 0xD9}, nil)
+	}, "file", "license.jpg", jpeg, nil)
 	if upload.Code != common.CodeOK {
 		t.Fatalf("upload failed: %+v", upload)
 	}
@@ -545,6 +565,197 @@ type fakeProcessor struct {
 	err    error
 }
 
+type countingProcessor struct {
+	calls  int
+	result media.ProcessResult
+	err    error
+}
+
+func (p *countingProcessor) Process(_ context.Context, _ media.ProcessRequest) (media.ProcessResult, error) {
+	p.calls++
+	if p.err != nil {
+		return media.ProcessResult{}, p.err
+	}
+	return p.result, nil
+}
+
+func requireNoUploadArtifacts(t *testing.T, uploadDir string) {
+	t.Helper()
+	if err := filepath.WalkDir(uploadDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != uploadDir && !entry.IsDir() {
+			t.Errorf("rejected upload wrote file %q", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("inspect upload directory: %v", err)
+	}
+}
+
+func decodeMultipartResponse(t *testing.T, out *httptest.ResponseRecorder) multipartTestResponse {
+	t.Helper()
+	var resp apiResp
+	if err := json.Unmarshal(out.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v, raw=%s", err, out.Body.String())
+	}
+	return multipartTestResponse{apiResp: resp, HTTPStatus: out.Code}
+}
+
+func anonymousUploadReservation(t *testing.T, srv *app.Server, fileSize int64) (uint64, string, string) {
+	t.Helper()
+	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type": model.FileBizMerchantLicense, "file_name": "license.jpg", "file_size": fileSize, "mime_type": "image/jpeg",
+	}, nil)
+	if resp.Code != common.CodeOK {
+		t.Fatalf("presign upload: %+v", resp)
+	}
+	return numToUint64(resp.Data["file_id"]), str(resp.Data["object_key"]), str(resp.Data["file_token"])
+}
+
+func TestFileUploadRejectsContentLengthOver11MiBBeforeMultipartParsing(t *testing.T) {
+	processor := &countingProcessor{}
+	srv, uploadDir := newTestServerWithUploadDir(t)
+	srv.SetImageProcessor(processor)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/upload", strings.NewReader("not multipart"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=upload-boundary")
+	req.ContentLength = 11*1024*1024 + 1
+	out := httptest.NewRecorder()
+
+	srv.Router.ServeHTTP(out, req)
+
+	resp := decodeMultipartResponse(t, out)
+	if resp.HTTPStatus != http.StatusRequestEntityTooLarge || resp.Code != common.CodeInvalidUpload {
+		t.Fatalf("response = status %d, body %+v", resp.HTTPStatus, resp.apiResp)
+	}
+	if processor.calls != 0 {
+		t.Fatalf("processor calls = %d, want 0", processor.calls)
+	}
+	requireNoUploadArtifacts(t, uploadDir)
+}
+
+func TestFileUploadRejectsChunkedBodyOver11MiBWithJSON413(t *testing.T) {
+	processor := &countingProcessor{}
+	srv, uploadDir := newTestServerWithUploadDir(t)
+	srv.SetImageProcessor(processor)
+	body, contentType := buildMultipartBody(t, nil, "file", "huge.jpg", make([]byte, 11*1024*1024))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/upload", body)
+	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = -1
+	out := httptest.NewRecorder()
+
+	srv.Router.ServeHTTP(out, req)
+
+	resp := decodeMultipartResponse(t, out)
+	if resp.HTTPStatus != http.StatusRequestEntityTooLarge || resp.Code != common.CodeInvalidUpload {
+		t.Fatalf("response = status %d, body %+v", resp.HTTPStatus, resp.apiResp)
+	}
+	if processor.calls != 0 {
+		t.Fatalf("processor calls = %d, want 0", processor.calls)
+	}
+	requireNoUploadArtifacts(t, uploadDir)
+}
+
+func TestFileUploadRejectsFileOver10MiBWithJSON413(t *testing.T) {
+	processor := &countingProcessor{}
+	srv, uploadDir := newTestServerWithUploadDir(t)
+	srv.SetImageProcessor(processor)
+	fileID, objectKey, fileToken := anonymousUploadReservation(t, srv, 10*1024*1024)
+
+	resp := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprint(fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", "huge.jpg", make([]byte, 10*1024*1024+1), nil)
+
+	if resp.HTTPStatus != http.StatusRequestEntityTooLarge || resp.Code != common.CodeInvalidUpload {
+		t.Fatalf("response = status %d, body %+v", resp.HTTPStatus, resp.apiResp)
+	}
+	if processor.calls != 0 {
+		t.Fatalf("processor calls = %d, want 0", processor.calls)
+	}
+	requireNoUploadArtifacts(t, uploadDir)
+}
+
+func TestFileUploadRejectsDeclaredActualSizeMismatchBeforeProcessor(t *testing.T) {
+	processor := &countingProcessor{}
+	srv, uploadDir := newTestServerWithUploadDir(t)
+	srv.SetImageProcessor(processor)
+	content := minimalJPEG()
+	fileID, objectKey, fileToken := anonymousUploadReservation(t, srv, int64(len(content)+1))
+
+	resp := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprint(fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", "license.jpg", content, nil)
+
+	if resp.HTTPStatus != http.StatusBadRequest || resp.Code != common.CodeInvalidUpload {
+		t.Fatalf("response = status %d, body %+v", resp.HTTPStatus, resp.apiResp)
+	}
+	if processor.calls != 0 {
+		t.Fatalf("processor calls = %d, want 0", processor.calls)
+	}
+	requireNoUploadArtifacts(t, uploadDir)
+}
+
+func TestFileUploadRejectsProcessorExpansionWithoutWrite(t *testing.T) {
+	content := minimalJPEG()
+	processor := &countingProcessor{result: media.ProcessResult{
+		OutputMIME: "image/jpeg",
+		OutputExt:  ".jpg",
+		Content:    append(append([]byte(nil), content...), 0),
+	}}
+	srv, uploadDir := newTestServerWithUploadDir(t)
+	srv.SetImageProcessor(processor)
+	fileID, objectKey, fileToken := anonymousUploadReservation(t, srv, int64(len(content)))
+
+	resp := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprint(fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", "license.jpg", content, nil)
+
+	if resp.HTTPStatus != http.StatusBadRequest || resp.Code != common.CodeInvalidUpload {
+		t.Fatalf("response = status %d, body %+v", resp.HTTPStatus, resp.apiResp)
+	}
+	if processor.calls != 1 {
+		t.Fatalf("processor calls = %d, want 1", processor.calls)
+	}
+	requireNoUploadArtifacts(t, uploadDir)
+}
+
+func TestFileUploadAcceptsExact10MiB(t *testing.T) {
+	content := make([]byte, 10*1024*1024)
+	copy(content, minimalJPEG())
+	processor := &countingProcessor{result: media.ProcessResult{
+		OutputMIME: "image/jpeg",
+		OutputExt:  ".jpg",
+		Content:    content,
+	}}
+	srv, uploadDir := newTestServerWithUploadDir(t)
+	srv.SetImageProcessor(processor)
+	fileID, objectKey, fileToken := anonymousUploadReservation(t, srv, int64(len(content)))
+
+	resp := requestMultipart(t, srv.Router, http.MethodPost, "/api/v1/files/upload", map[string]string{
+		"file_id": fmt.Sprint(fileID), "object_key": objectKey, "file_token": fileToken,
+	}, "file", "license.jpg", content, nil)
+
+	if resp.HTTPStatus != http.StatusOK || resp.Code != common.CodeOK {
+		t.Fatalf("response = status %d, body %+v", resp.HTTPStatus, resp.apiResp)
+	}
+	if processor.calls != 1 {
+		t.Fatalf("processor calls = %d, want 1", processor.calls)
+	}
+	finalPath := filepath.Join(uploadDir, filepath.FromSlash(objectKey))
+	if stat, err := os.Stat(finalPath); err != nil || stat.Size() != int64(len(content)) {
+		t.Fatalf("stored file = size %v, err %v", func() interface{} {
+			if stat == nil {
+				return nil
+			}
+			return stat.Size()
+		}(), err)
+	}
+	if _, err := os.Stat(finalPath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file remains: %v", err)
+	}
+}
+
 func (p fakeProcessor) Process(_ context.Context, _ media.ProcessRequest) (media.ProcessResult, error) {
 	if p.err != nil {
 		return media.ProcessResult{}, p.err
@@ -554,6 +765,7 @@ func (p fakeProcessor) Process(_ context.Context, _ media.ProcessRequest) (media
 
 func TestFileUploadStoresProcessedMetadata(t *testing.T) {
 	processed := []byte("processed-image-content")
+	original := []byte("original-image-content-with-padding")
 	srv := newTestServerWithProcessor(t, fakeProcessor{
 		result: media.ProcessResult{
 			OutputMIME: "image/heic",
@@ -564,7 +776,7 @@ func TestFileUploadStoresProcessedMetadata(t *testing.T) {
 	adminToken := adminAccessToken(t, srv)
 
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "PRODUCT_IMAGE", "file_name": "product.heic", "file_size": 2048, "mime_type": "image/heic",
+		"biz_type": "PRODUCT_IMAGE", "file_name": "product.heic", "file_size": len(original), "mime_type": "image/heic",
 	}, map[string]string{"Authorization": "Bearer " + adminToken})
 	if presign.Code != 0 {
 		t.Fatalf("presign failed: %+v", presign)
@@ -583,7 +795,7 @@ func TestFileUploadStoresProcessedMetadata(t *testing.T) {
 		},
 		"file",
 		"product.heic",
-		[]byte("original-image-content"),
+		original,
 		map[string]string{"Authorization": "Bearer " + adminToken},
 	)
 	if upload.Code != 0 {

@@ -2,25 +2,20 @@ package media
 
 import "testing"
 
-func TestPolicyAllowsUploadWhenOriginalWithin40MB(t *testing.T) {
-	policy := UploadPolicy{
-		MaxOriginalBytes: 40 * 1024 * 1024,
-		TargetBytes:      20 * 1024 * 1024,
+func TestPolicyAllowsExact10MiB(t *testing.T) {
+	policy := DefaultUploadPolicy()
+	if policy.MaxOriginalBytes != 10*1024*1024 {
+		t.Fatalf("default original limit = %d", policy.MaxOriginalBytes)
 	}
-
-	if err := policy.ValidateOriginalSize(40 * 1024 * 1024); err != nil {
-		t.Fatalf("expected 40MB to be accepted: %v", err)
+	if err := policy.ValidateOriginalSize(10 * 1024 * 1024); err != nil {
+		t.Fatalf("expected 10 MiB to be accepted: %v", err)
 	}
 }
 
-func TestPolicyRejectsOriginalOver40MB(t *testing.T) {
-	policy := UploadPolicy{
-		MaxOriginalBytes: 40 * 1024 * 1024,
-		TargetBytes:      20 * 1024 * 1024,
-	}
-
-	if err := policy.ValidateOriginalSize(40*1024*1024 + 1); err == nil {
-		t.Fatal("expected oversize original file to be rejected")
+func TestPolicyRejectsOneByteOver10MiB(t *testing.T) {
+	policy := DefaultUploadPolicy()
+	if err := policy.ValidateOriginalSize(10*1024*1024 + 1); err == nil {
+		t.Fatal("expected one byte over 10 MiB to be rejected")
 	}
 }
 

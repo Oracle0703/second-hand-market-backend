@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DefaultMaxOriginalBytes int64 = 40 * 1024 * 1024
+	DefaultMaxOriginalBytes int64 = 10 * 1024 * 1024
 	DefaultTargetBytes      int64 = 20 * 1024 * 1024
 )
 
