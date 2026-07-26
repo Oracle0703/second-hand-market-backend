@@ -98,7 +98,8 @@ write_source_manifest() {
       find backend -type f \( -name '*.go' -o -name '*.sql' -o -name 'go.mod' -o -name 'go.sum' -o -name 'Dockerfile' \) \
         ! -path '*/.cache/*' ! -path '*/uploads/*' ! -name 'app.db' -print0
       find frontend/src -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) -print0
-      printf '%s\0' frontend/package.json frontend/package-lock.json
+      printf '%s\0' frontend/package.json frontend/package-lock.json frontend/index.html \
+        frontend/tsconfig.json frontend/vite.config.ts frontend/vitest.config.ts
       find deploy/acceptance -maxdepth 2 -type f \
         ! -name '.env' ! -path '*/secrets/*' ! -path '*/backups/*' ! -path '*/evidence/*' -print0
     } | LC_ALL=C sort -z | xargs -0 sha256sum
@@ -136,7 +137,7 @@ reset_schema() {
   "
 }
 
-apply_chain_0001_0007() {
+apply_chain_0001_0006() {
   reset_schema
   mysql_file /acceptance/migrations/0001_init.up.sql
   mysql_file /acceptance/migrations/0002_buyer_domain.up.sql
@@ -150,9 +151,52 @@ apply_chain_0001_0007() {
   mysql_file /acceptance/migrations/0006_file_binding_ownership.preflight.sql
   mysql_file /acceptance/migrations/0006_file_binding_ownership.up.sql
   mysql_file /acceptance/migrations/0006_file_binding_ownership.postflight.sql
+}
+
+apply_chain_0001_0007() {
+  apply_chain_0001_0006
   mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql
   mysql_file /acceptance/migrations/0007_license_file_privacy.up.sql
   mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql
+}
+
+expect_skipped_0007_failure() {
+  apply_chain_0001_0006
+  mysql_sql "
+    INSERT INTO file_records
+      (id,biz_type,object_key,url,mime_type,size_bytes,uploader_type,scan_status,created_at)
+    VALUES
+      (860003,'MERCHANT_LICENSE','merchant_license/f06-skipped-0007.png',
+       '/uploads/merchant_license/f06-skipped-0007.png','image/png',25,
+       'PUBLIC','PENDING',CURRENT_TIMESTAMP(3) - INTERVAL 2 DAY);
+  "
+  mysql_sql "
+    SELECT CONCAT('id=',id,'|digest=',SHA2(CONCAT_WS('#',id,biz_type,object_key,url,
+      mime_type,size_bytes,uploader_type,scan_status,DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s.%f')),256))
+    FROM file_records WHERE id=860003;
+  " >"$evidence_dir/skipped-0007-before.txt"
+  if mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql >"$evidence_dir/skipped-0007-error.txt" 2>&1; then
+    echo "expected 0008 preflight to reject a skipped 0007 migration" >&2
+    exit 1
+  fi
+  grep -Eq -- 'ERROR 1644 \(45000\)' "$evidence_dir/skipped-0007-error.txt" || {
+    echo "skipped 0007 did not fail 0008 preflight with SQLSTATE 45000" >&2
+    exit 1
+  }
+  grep -Fq -- 'upload governance preflight: 0007 merchant license URL remains public' \
+    "$evidence_dir/skipped-0007-error.txt" || {
+    echo "skipped 0007 failed 0008 preflight for an unexpected reason" >&2
+    exit 1
+  }
+  mysql_sql "
+    SELECT CONCAT('id=',id,'|digest=',SHA2(CONCAT_WS('#',id,biz_type,object_key,url,
+      mime_type,size_bytes,uploader_type,scan_status,DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s.%f')),256))
+    FROM file_records WHERE id=860003;
+  " >"$evidence_dir/skipped-0007-after.txt"
+  cmp -s "$evidence_dir/skipped-0007-before.txt" "$evidence_dir/skipped-0007-after.txt" || {
+    echo "skipped-0007 preflight changed its historical fixture" >&2
+    exit 1
+  }
 }
 
 run_0008() {
@@ -261,6 +305,7 @@ printf '%s\n' "$mysql_version" >"$evidence_dir/mysql-version.txt"
 
 "${compose[@]}" --profile tools build bootstrap-admin frontend-test
 
+expect_skipped_0007_failure
 expect_0008_preflight_failure partial-column setup_partial_0008 \
   'upload governance preflight: partial 0008 schema exists'
 expect_0008_preflight_failure drifted-column setup_drifted_0008 \

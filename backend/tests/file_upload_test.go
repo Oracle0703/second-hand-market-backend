@@ -344,7 +344,7 @@ func TestMerchantAndAdminPresignOwnership(t *testing.T) {
 	}
 }
 
-func TestAnonymousPresignPersistsHMACAndCleanupAfter(t *testing.T) {
+func TestAnonymousPresignPersistsHMACAndRateSafeCleanupAfter(t *testing.T) {
 	srv := newTestServer(t)
 	const rawIP = "192.0.2.10"
 	const spoofedIP = "198.51.100.7"
@@ -361,7 +361,8 @@ func TestAnonymousPresignPersistsHMACAndCleanupAfter(t *testing.T) {
 		t.Fatalf("source hash = %v", file.SourceIPHash)
 	}
 	if file.CapabilityExpiresAt == nil || file.CleanupAfter == nil ||
-		!file.CleanupAfter.Equal(file.CapabilityExpiresAt.Add(30*time.Minute)) {
+		!file.CleanupAfter.Equal(file.CreatedAt.Add(time.Hour)) ||
+		file.CleanupAfter.Before(file.CapabilityExpiresAt.Add(30*time.Minute)) {
 		t.Fatalf("capability/cleanup timestamps = %v/%v", file.CapabilityExpiresAt, file.CleanupAfter)
 	}
 	if dump := fmt.Sprintf("%+v", file); strings.Contains(dump, rawIP) || strings.Contains(dump, spoofedIP) {

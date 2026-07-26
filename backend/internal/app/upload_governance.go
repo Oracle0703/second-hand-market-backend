@@ -16,6 +16,17 @@ import (
 	"second-hand-market-backend/backend/internal/model"
 )
 
+const anonymousPresignRateWindow = time.Hour
+
+func anonymousUploadCleanupAfter(createdAt, capabilityExpiresAt time.Time, grace time.Duration) time.Time {
+	cleanupAfter := capabilityExpiresAt.Add(grace)
+	rateWindowEnd := createdAt.Add(anonymousPresignRateWindow)
+	if cleanupAfter.Before(rateWindowEnd) {
+		return rateWindowEnd
+	}
+	return cleanupAfter
+}
+
 func (s *Server) anonymousSourceHash(rawIP string) (string, error) {
 	if strings.TrimSpace(s.cfg.FileUploadIPHashSecret) == "" {
 		return "", common.ErrInternal
@@ -128,7 +139,7 @@ func (s *Server) checkAnonymousReservation(tx *gorm.DB, file *model.FileRecord, 
 	base := tx.Model(&model.FileRecord{}).
 		Where("uploader_type = ? AND source_ip_hash = ?", model.UserTypePublic, *file.SourceIPHash)
 	var recentCount int64
-	if err := base.Where("created_at > ?", now.Add(-time.Hour)).Count(&recentCount).Error; err != nil {
+	if err := base.Where("created_at > ?", now.Add(-anonymousPresignRateWindow)).Count(&recentCount).Error; err != nil {
 		return common.ErrInternal
 	}
 	if recentCount >= s.cfg.FileUploadAnonPresignPerHour {

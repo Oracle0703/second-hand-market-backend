@@ -22,6 +22,33 @@ BEGIN
   END IF;
 
   SELECT COUNT(*) INTO v_count
+  FROM file_records
+  WHERE biz_type = 'MERCHANT_LICENSE' AND COALESCE(url, '') <> '';
+  IF v_count <> 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance postflight: 0007 merchant license URL remains public';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM file_records
+  WHERE biz_type = 'MERCHANT_LICENSE'
+    AND LEFT(object_key, 17) <> 'merchant_license/';
+  IF v_count <> 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance postflight: 0007 merchant license object key is invalid';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM file_records
+  WHERE biz_type = 'PRODUCT_IMAGE'
+    AND scan_status = 'PASS'
+    AND COALESCE(url, '') = '';
+  IF v_count <> 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance postflight: 0007 completed product image URL is empty';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
   FROM information_schema.columns
   WHERE table_schema = DATABASE()
     AND table_name = 'file_records'

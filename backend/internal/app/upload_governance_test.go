@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"math"
@@ -265,6 +266,45 @@ func TestReserveFileRecordPersistsLimitsAcrossServerRestart(t *testing.T) {
 	}
 	candidate := governanceFile("restart-second", 1, now, &sourceHash, &cleanupAfter, nil)
 	assertReservationRejectedWithoutRow(t, second, &candidate, now, common.ErrRateLimit)
+}
+
+func TestAnonymousCleanupCannotEraseRollingRateEvidenceEarly(t *testing.T) {
+	srv := governanceUnitServer(t)
+	srv.cfg.FileUploadAnonPresignPerHour = 1
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	sourceHash := strings.Repeat("d", 64)
+	capabilityExpiresAt := now.Add(fileCapabilityTTL)
+	cleanupAfter := anonymousUploadCleanupAfter(now, capabilityExpiresAt, srv.cfg.FileUploadCleanupGrace)
+	first := governanceFile("rate-cleanup-first", 1, now, &sourceHash, &cleanupAfter, nil)
+	if err := srv.reserveFileRecord(&first, now); err != nil {
+		t.Fatalf("reserve first file: %v", err)
+	}
+
+	beforeWindowEnd := now.Add(45 * time.Minute)
+	summary, err := srv.runUploadCleanupBatch(context.Background(), beforeWindowEnd)
+	if err != nil {
+		t.Fatalf("cleanup before rate window end: %v", err)
+	}
+	if summary.Claimed != 0 || summary.Deleted != 0 {
+		t.Fatalf("cleanup erased rolling-rate evidence early: %+v", summary)
+	}
+	blockedCleanupAfter := beforeWindowEnd.Add(time.Hour)
+	blocked := governanceFile("rate-cleanup-blocked", 1, beforeWindowEnd, &sourceHash, &blockedCleanupAfter, nil)
+	assertReservationRejectedWithoutRow(t, srv, &blocked, beforeWindowEnd, common.ErrRateLimit)
+
+	windowEnd := now.Add(time.Hour)
+	summary, err = srv.runUploadCleanupBatch(context.Background(), windowEnd)
+	if err != nil {
+		t.Fatalf("cleanup at rate window end: %v", err)
+	}
+	if summary.Claimed != 1 || summary.Deleted != 1 || summary.Failed != 0 {
+		t.Fatalf("cleanup at rate window end = %+v", summary)
+	}
+	allowedCleanupAfter := windowEnd.Add(time.Hour)
+	allowed := governanceFile("rate-cleanup-allowed", 1, windowEnd, &sourceHash, &allowedCleanupAfter, nil)
+	if err := srv.reserveFileRecord(&allowed, windowEnd); err != nil {
+		t.Fatalf("reserve after rolling window ended: %v", err)
+	}
 }
 
 func TestQuotaTransactionRollsBackCallbackWrites(t *testing.T) {

@@ -105,7 +105,7 @@ func (s *Server) handlePresign(c *gin.Context) {
 			return
 		}
 		sourceIPHash = &hash
-		cleanup := expiresAt.Add(s.cfg.FileUploadCleanupGrace)
+		cleanup := anonymousUploadCleanupAfter(now, expiresAt, s.cfg.FileUploadCleanupGrace)
 		cleanupAfter = &cleanup
 	} else if actor.UserType == model.UserTypeMerchant {
 		ownerMerchantID = &actor.MerchantID
