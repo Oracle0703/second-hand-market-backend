@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ type Server struct {
 	Router         *gin.Engine
 	limiter        *memoryRateLimiter
 	imageProcessor media.Processor
+	cleanupLogf    func(string, ...interface{})
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -74,6 +76,7 @@ func NewServer(cfg Config) (*Server, error) {
 		Router:         r,
 		limiter:        newMemoryRateLimiter(),
 		imageProcessor: buildImageProcessor(cfg),
+		cleanupLogf:    log.Printf,
 	}
 	if strings.EqualFold(cfg.FileStorageProvider, "local") {
 		r.GET("/uploads/*path", s.handlePublicProductImage)
@@ -354,6 +357,9 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) Run() error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.runUploadCleanupLoop(ctx)
 	log.Printf("server listening on %s", s.cfg.Addr)
 	return s.Router.Run(s.cfg.Addr)
 }
