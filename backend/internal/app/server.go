@@ -331,6 +331,7 @@ func (s *Server) registerRoutes() {
 			admin.GET("/merchants/:id", s.handleAdminMerchantDetail)
 			admin.POST("/merchants/:id/approve", s.handleAdminMerchantApprove)
 			admin.POST("/merchants/:id/reject", s.handleAdminMerchantReject)
+			admin.GET("/files/:id/content", s.handleAdminFileContent)
 			admin.GET("/logs", s.handleAdminLogs)
 		}
 	}
@@ -396,13 +397,14 @@ func (s *Server) dbError(err error) error {
 }
 
 func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) {
+	logItem := s.buildOperationLog(c, resourceType, resourceID, action, fromStatus, toStatus, code, merchantID, detail)
+	_ = s.insertOperationLog(tx, &logItem)
+}
+
+func (s *Server) buildOperationLog(c *gin.Context, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) model.OperationLog {
 	actor, _ := common.GetActor(c)
-	target := s.DB
-	if tx != nil {
-		target = tx
-	}
 	payload, _ := json.Marshal(detail)
-	_ = target.Create(&model.OperationLog{
+	return model.OperationLog{
 		RequestID:    common.RequestIDFromContext(c),
 		OperatorType: actor.UserType,
 		OperatorID:   actor.UserID,
@@ -418,7 +420,15 @@ func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType str
 		UserAgent:    c.Request.UserAgent(),
 		ResultCode:   code,
 		DetailJSON:   payload,
-	}).Error
+	}
+}
+
+func (s *Server) insertOperationLog(tx *gorm.DB, logItem *model.OperationLog) error {
+	target := s.DB
+	if tx != nil {
+		target = tx
+	}
+	return target.Create(logItem).Error
 }
 
 func abortWithErr(c *gin.Context, err error) {

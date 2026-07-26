@@ -94,6 +94,15 @@ BEGIN
 
   SELECT COUNT(*) INTO v_count
   FROM file_records
+  WHERE biz_type = 'MERCHANT_LICENSE'
+    AND LEFT(object_key, 17) <> 'merchant_license/';
+  IF v_count <> 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'license privacy postflight: merchant license has a public object key prefix';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM file_records
   WHERE biz_type = 'PRODUCT_IMAGE'
     AND scan_status = 'PASS'
     AND COALESCE(url, '') = '';

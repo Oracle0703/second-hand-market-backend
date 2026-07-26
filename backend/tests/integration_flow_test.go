@@ -31,6 +31,11 @@ func newTestServer(t *testing.T) *app.Server {
 
 func newTestServerWithUploadDir(t *testing.T) (*app.Server, string) {
 	t.Helper()
+	return newTestServerWithStorage(t, "local")
+}
+
+func newTestServerWithStorage(t *testing.T, provider string) (*app.Server, string) {
+	t.Helper()
 	uploadDir := t.TempDir()
 	cfg := app.Config{
 		Addr:                     ":0",
@@ -41,7 +46,7 @@ func newTestServerWithUploadDir(t *testing.T) (*app.Server, string) {
 		AccessTTL:                app.LoadConfig().AccessTTL,
 		RefreshTTL:               app.LoadConfig().RefreshTTL,
 		AutoMigrate:              true,
-		FileStorageProvider:      "local",
+		FileStorageProvider:      provider,
 		FileUploadLocalDir:       uploadDir,
 		FileUploadMaxBytes:       40 * 1024 * 1024,
 		ImageCompressTargetBytes: 20 * 1024 * 1024,

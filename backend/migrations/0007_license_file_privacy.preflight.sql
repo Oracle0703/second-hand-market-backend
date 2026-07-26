@@ -115,6 +115,7 @@ BEGIN
   FROM file_records
   WHERE biz_type = 'MERCHANT_LICENSE'
     AND (COALESCE(object_key, '') = ''
+      OR LEFT(object_key, 17) <> 'merchant_license/'
       OR mime_type NOT IN ('image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif')
       OR scan_status NOT IN ('PENDING', 'PASS', 'BLOCKED'));
   IF v_bad_license <> 0 THEN
