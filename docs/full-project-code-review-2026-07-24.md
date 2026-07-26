@@ -380,6 +380,13 @@ UNIQUE constraint failed: buyer_intents.buyer_id, buyer_intents.product_id, buye
 
 明确产品接受的吊销时延。管理端若要求即时退出或强制下线，应在中间件校验 session/账号状态，或采用短 access TTL 加集中式吊销版本。至少增加“logout 后旧 access token”的契约测试。
 
+**Follow-up status (2026-07-27): code-side fixed; isolated test-server review pending; production not deployed**
+
+Design: `docs/superpowers/specs/2026-07-27-session-access-revocation-design.md`
+Plan: `docs/superpowers/plans/2026-07-27-session-access-revocation.md`
+
+The branch now validates the active identity-matched session and current account state for administrators, merchants, and buyers on every authenticated request. Logout immediately invalidates the current access and refresh token, while unrelated sessions remain active. Local focused, full Go, race, vet, and acceptance-harness contract gates passed. No source was transferred for F-14, no isolated server was run, and production data/services were not changed.
+
 ### F-15 [P2] 幂等记录写入不是原子操作
 
 证据：
