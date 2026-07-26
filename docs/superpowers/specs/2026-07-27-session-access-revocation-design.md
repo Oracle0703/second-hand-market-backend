@@ -4,7 +4,7 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** Design approved; implementation not started
+**Status:** Design and written specification approved; code-side fixed; isolated test-server review pending; production not deployed
 
 **Finding:** F-14 - access tokens remain usable after their auth session is revoked
 
