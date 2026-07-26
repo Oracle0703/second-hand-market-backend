@@ -41,7 +41,7 @@
 | `backend/tests/session_revocation_test.go` | Three-actor API logout, disablement, scope downgrade, and unrelated-session regressions |
 | `backend/tests/buyer_flow_test.go` | Extend existing buyer logout contract to assert old access-token rejection |
 | `backend/tests/session_revocation_mysql_test.go` | Opt-in MySQL 8.4 API/concurrency/query-plan acceptance matrix |
-| `backend/tests/session_revocation_acceptance_contract_test.go` | Static safety contract for the guarded acceptance harness |
+| `backend/tests/session_revocation_acceptance_contract_test.go` | Executable fail-closed guard behavior for the acceptance harness |
 | `deploy/acceptance/session-revocation-smoke.sh` | Dedicated Compose project, MySQL setup, tests, evidence sanitization, and production snapshot comparison |
 | `deploy/acceptance/README.md` | Exact F-14 isolated-run procedure and prohibitions |
 | `Makefile` | Guarded `acceptance-session-revocation-smoke` target |
@@ -705,42 +705,51 @@ git commit -m "fix(auth): revoke access tokens at logout"
 - Consumes: committed F-14 middleware/logout behavior, existing acceptance `docker-compose.yml` and `prepare.sh`, current `0001..0008` migration chain, and isolated `DB_DSN` pointing to `mysql:3306/second_hand_market_acceptance`.
 - Produces: opt-in `TestSessionRevocationMySQLAcceptance`, guarded Make target `acceptance-session-revocation-smoke`, final marker `isolated session access revocation acceptance passed`, and sanitized evidence under `deploy/acceptance/evidence/session-access-revocation/`.
 
-- [ ] **Step 1: Write the RED acceptance-script contract test**
+- [ ] **Step 1: Write the RED acceptance-script guard behavior test**
 
-Create a test that reads `../../deploy/acceptance/session-revocation-smoke.sh` and requires every safety marker:
+Create a test that executes `../../deploy/acceptance/session-revocation-smoke.sh` with unsafe environments. Put a fake `docker` executable first on `PATH`; every case must exit nonzero before that fake is invoked:
 
 ```go
-func TestSessionRevocationAcceptanceScriptContract(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/acceptance/session-revocation-smoke.sh")
-	if err != nil {
-		t.Fatalf("read acceptance script: %v", err)
+func TestSessionRevocationAcceptanceRejectsUnsafeEnvironmentBeforeDocker(t *testing.T) {
+	script := "../../deploy/acceptance/session-revocation-smoke.sh"
+	stubDir := t.TempDir()
+	dockerCalled := filepath.Join(stubDir, "docker-called")
+	dockerStub := filepath.Join(stubDir, "docker")
+	stub := "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"
+	if err := os.WriteFile(dockerStub, []byte(stub), 0o700); err != nil {
+		t.Fatalf("write docker stub: %v", err)
 	}
-	script := string(raw)
-	required := []string{
-		"set -euo pipefail",
-		"SESSION_REVOCATION_ACCEPTANCE_CONFIRM",
-		"I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA",
-		"ACCEPTANCE_DB_ENGINE",
-		"mysql8.4",
-		"secondhand-session-revocation-acceptance",
-		"TestSessionRevocationMySQLAcceptance",
-		"SESSION_REVOCATION_MYSQL_TEST=1",
-		"production-before.txt",
-		"production-after.txt",
-		"source-sha256.txt",
-		"evidence-sha256.txt",
-		"isolated session access revocation acceptance passed",
+	cases := []struct {
+		name    string
+		confirm string
+		engine  string
+		project string
+	}{
+		{name: "missing confirmation", engine: "mysql8.4"},
+		{name: "wrong confirmation", confirm: "unsafe", engine: "mysql8.4"},
+		{name: "wrong database engine", confirm: "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA", engine: "mysql8.0"},
+		{name: "wrong compose project", confirm: "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA", engine: "mysql8.4", project: "secondhand-market"},
 	}
-	for _, needle := range required {
-		if !strings.Contains(script, needle) {
-			t.Errorf("acceptance script missing %q", needle)
-		}
-	}
-	forbidden := []string{"set -x", "backend/app.db", "docs/first-round-fix-review-2026-07-24.md"}
-	for _, needle := range forbidden {
-		if strings.Contains(script, needle) {
-			t.Errorf("acceptance script contains forbidden path/mode %q", needle)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(dockerCalled); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reset docker marker: %v", err)
+			}
+			cmd := exec.Command("/bin/bash", script)
+			cmd.Env = append(os.Environ(),
+				"PATH="+stubDir+":/usr/bin:/bin",
+				"DOCKER_CALLED="+dockerCalled,
+				"SESSION_REVOCATION_ACCEPTANCE_CONFIRM="+tc.confirm,
+				"ACCEPTANCE_DB_ENGINE="+tc.engine,
+				"COMPOSE_PROJECT_NAME="+tc.project,
+			)
+			if err := cmd.Run(); err == nil {
+				t.Fatal("unsafe acceptance environment succeeded")
+			}
+			if _, err := os.Stat(dockerCalled); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("unsafe acceptance environment reached docker")
+			}
+		})
 	}
 }
 ```
@@ -749,7 +758,7 @@ func TestSessionRevocationAcceptanceScriptContract(t *testing.T) {
 
 ```bash
 cd backend
-go test ./tests -run '^TestSessionRevocationAcceptanceScriptContract$' -count=1 -v
+go test ./tests -run '^TestSessionRevocationAcceptanceRejectsUnsafeEnvironmentBeforeDocker$' -count=1 -v
 ```
 
 Expected: FAIL because the script does not exist.
@@ -875,7 +884,7 @@ Document the exact remote path, project, confirmation, MySQL version, retained e
 ```bash
 bash -n deploy/acceptance/session-revocation-smoke.sh
 cd backend
-go test ./tests -run '^TestSessionRevocationAcceptanceScriptContract$' -count=1 -v
+go test ./tests -run '^TestSessionRevocationAcceptanceRejectsUnsafeEnvironmentBeforeDocker$' -count=1 -v
 go test ./tests -run '^TestSessionRevocationMySQLAcceptance$' -count=1 -v
 cd ..
 env -u SESSION_REVOCATION_ACCEPTANCE_CONFIRM -u ACCEPTANCE_DB_ENGINE \
