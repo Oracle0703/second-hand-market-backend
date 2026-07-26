@@ -140,7 +140,6 @@ func migrate(db *gorm.DB) error {
 		&model.Order{},
 		&model.OrderEvent{},
 		&model.FileRecord{},
-		&model.FileQuotaGuard{},
 		&model.OperationLog{},
 		&model.AuthSession{},
 		&model.IdempotencyRecord{},
@@ -151,6 +150,29 @@ func migrate(db *gorm.DB) error {
 		&model.BuyerIntent{},
 	); err != nil {
 		return err
+	}
+	if err := migrateFileQuotaGuard(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateFileQuotaGuard(db *gorm.DB) error {
+	if db.Dialector.Name() == "mysql" {
+		if err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS file_quota_guards (
+				id TINYINT UNSIGNED NOT NULL,
+				guard_name VARCHAR(32) NOT NULL,
+				created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+				PRIMARY KEY (id),
+				UNIQUE KEY uk_file_quota_guard_name (guard_name)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`).Error; err != nil {
+			return fmt.Errorf("migrate file quota guard: %w", err)
+		}
+	} else if !db.Migrator().HasTable(&model.FileQuotaGuard{}) {
+		if err := db.AutoMigrate(&model.FileQuotaGuard{}); err != nil {
+			return fmt.Errorf("migrate file quota guard: %w", err)
+		}
 	}
 	guard := model.FileQuotaGuard{ID: 1, GuardName: "file_records"}
 	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&guard).Error; err != nil {
