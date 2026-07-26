@@ -130,6 +130,9 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => {
+    if (response.config.responseType === 'blob' && response.data instanceof Blob) {
+      return response
+    }
     const payload = response.data as APIResponse<unknown>
     if (payload.code !== 0) {
       const msg = ERROR_MESSAGES[payload.code] ?? payload.message

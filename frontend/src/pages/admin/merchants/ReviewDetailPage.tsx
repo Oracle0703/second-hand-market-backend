@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions, ProTable, type ProColumns } from '@ant-design/pro-components'
-import { Alert, Button, Input, Space, Tag, message } from 'antd'
+import { Alert, Button, Image, Input, Space, Spin, Tag, Typography, message } from 'antd'
+import { isAxiosError } from 'axios'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { getCommonStatusText, getStatusColor, getStatusText, MERCHANT_REVIEW_STATUS_META, type MerchantReviewStatus } from '@/constants/status'
 import { api } from '@/services/api'
@@ -44,11 +45,32 @@ export function ReviewDetailPage() {
   const queryClient = useQueryClient()
   const [rejectReason, setRejectReason] = useState('')
   const [approveComment, setApproveComment] = useState('')
+  const [licensePreviewURL, setLicensePreviewURL] = useState<string | null>(null)
+  const [licenseImageDamaged, setLicenseImageDamaged] = useState(false)
 
   const detailQuery = useQuery({
     queryKey: ['admin-merchant-detail', merchantId],
     queryFn: async () => (await api.adminMerchantReviewDetail(merchantId)).data.data as AdminMerchantDetailResp
   })
+  const licenseFileID = detailQuery.data?.merchant_detail.license_file_id
+  const licenseQuery = useQuery({
+    queryKey: ['admin-license-content', licenseFileID],
+    enabled: Boolean(licenseFileID),
+    retry: false,
+    queryFn: async () => (await api.adminLicenseContent(licenseFileID!)).data
+  })
+
+  useEffect(() => {
+    setLicenseImageDamaged(false)
+    if (!licenseQuery.data) {
+      setLicensePreviewURL(null)
+      return
+    }
+
+    const nextURL = URL.createObjectURL(licenseQuery.data)
+    setLicensePreviewURL(nextURL)
+    return () => URL.revokeObjectURL(nextURL)
+  }, [licenseFileID, licenseQuery.data])
 
   const approveMutation = useMutation({
     mutationFn: async () => api.adminMerchantApprove(merchantId, approveComment || undefined),
@@ -84,6 +106,9 @@ export function ReviewDetailPage() {
   const merchant = detail.merchant_detail
   const auditLogs = detail.audit_logs ?? []
   const status = merchant.review_status
+  const licenseAuthFailed =
+    (isAxiosError(licenseQuery.error) && [401, 403].includes(licenseQuery.error.response?.status ?? 0)) ||
+    (licenseQuery.error instanceof Error && licenseQuery.error.message.includes('登录已过期'))
   const auditColumns: ProColumns<AuditLogItem>[] = [
     {
       title: '时间',
@@ -147,6 +172,33 @@ export function ReviewDetailPage() {
           { title: '更新时间', dataIndex: 'updated_at', valueType: 'dateTime' }
         ]}
       />
+
+      <ProCard title="营业执照" style={{ marginTop: 16 }}>
+        <div
+          data-license-preview
+          style={{ minHeight: 280, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          {!licenseFileID ? (
+            <Typography.Text type="secondary">暂无营业执照</Typography.Text>
+          ) : licenseQuery.isLoading ? (
+            <Spin aria-label="营业执照加载中" />
+          ) : licenseAuthFailed ? (
+            <Typography.Text type="danger">营业执照鉴权失败</Typography.Text>
+          ) : licenseQuery.error || licenseImageDamaged || !licensePreviewURL ? (
+            <Typography.Text type="danger">营业执照不可用</Typography.Text>
+          ) : (
+            <Space direction="vertical" align="center">
+              <Image
+                alt="营业执照"
+                src={licensePreviewURL}
+                style={{ maxHeight: 520, objectFit: 'contain' }}
+                onError={() => setLicenseImageDamaged(true)}
+              />
+              <Typography.Text type="secondary">文件 ID：{licenseFileID}</Typography.Text>
+            </Space>
+          )}
+        </div>
+      </ProCard>
 
       {status === 'PENDING' ? (
         <ProCard title="审核动作" style={{ marginTop: 16 }}>

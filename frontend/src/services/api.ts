@@ -125,6 +125,9 @@ export const api = {
   adminMerchantReviewDetail(merchantId: string | number) {
     return http.get(`/admin/merchants/${merchantId}`)
   },
+  adminLicenseContent(fileID: string | number) {
+    return http.get<Blob>(`/admin/files/${fileID}/content`, { responseType: 'blob' })
+  },
   adminMerchantApprove(merchantId: string | number, comment?: string) {
     return http.post(`/admin/merchants/${merchantId}/approve`, comment ? { comment } : {})
   },
