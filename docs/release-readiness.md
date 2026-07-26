@@ -1,6 +1,6 @@
 # 发布前问题清单（release-readiness）
 
-更新时间：2026-07-26
+更新时间：2026-07-27
 
 ## 1. 当前版本状态
 
@@ -9,7 +9,7 @@
 - 小程序没有增加下单入口；买家只读 API 的兼容字段 `stock` 返回可售库存。
 - 本地实现尚未部署到生产，`0004_merchant_multi_stock` 与 `0005_file_records_table` 尚未在生产数据库执行，管理员生产口令也尚未轮换。
 - `yaner`、`admin`、`superadmin` 必须保留；本地实现和测试不修改任何现网账号或数据。
-- 商家/管理端退出登录已调用服务端 `POST /auth/logout`（F-08，2026-07-26）；本分支已提交，随下次 frontend 发布生效。商家 access token 即时吊销仍属 F-14，不在本发布范围。
+- 商家/管理端退出登录已调用服务端 `POST /auth/logout`（F-08，2026-07-26）；本分支已提交，随下次 frontend 发布生效。F-14 已在代码侧要求每个已认证请求校验当前 session 和账号状态，隔离测试服务器审核仍待单独授权，生产尚未部署。
 - 文件元数据表名以 `file_records` 为唯一契约（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`FileRecord.TableName()` 已固定；`0005` preflight/up/postflight 已入库（up 重复形态校验）。
 - 分类唯一性以 `(parent_id,name)` 为唯一契约（F-16）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**。GORM 模型和两条 seed 路径已对齐历史 SQL migration。
 - F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
