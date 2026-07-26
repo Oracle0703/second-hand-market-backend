@@ -196,6 +196,26 @@ access token 过期时，请求在到达刷新分支前已经失败。客户端�
 
 在路由或反向代理层限制请求体大小；对匿名上传实施 IP/设备限流和短期上传凭证；定期清理未绑定文件，并设置账号、商家和全局存储配额。
 
+#### 2026-07-26 F-06 / D-03 后续核验
+
+状态：
+
+```text
+代码侧状态：已修复
+测试服务器状态：未审核
+生产状态：未执行 0008、未部署、未修改生产数据或文件
+```
+
+批准设计与实施计划分别为 `docs/superpowers/specs/2026-07-26-anonymous-upload-resource-governance-design.md` 和 `docs/superpowers/plans/2026-07-26-anonymous-upload-resource-governance.md`。代码提交 `39aed02..c598f38` 完成以下闭环：
+
+- 前端、presign、实际读取和图片处理统一为 10 MiB 文件上限；multipart 请求体固定为 11 MiB，应用和 acceptance Nginx 都返回 JSON HTTP 413 / `10008`。
+- 匿名来源只保存可信客户端 IP 的 HMAC-SHA256；数据库固定 guard 在 READ COMMITTED 下串行执行 20 次/小时、5 个活跃文件、50 MiB 活跃字节、2 GiB 商家和 20 GiB 全局限制，配额错误为 HTTP 409 / `10013`。
+- `0008` preflight/up/postflight 不回填历史治理字段，校验 `0007` 隐私数据不变量和 InnoDB 引擎；迁移前、认证和已绑定记录不会进入自动清理集合。
+- 清理采用有界 claim、TTL、幂等缺失文件处理、失败释放和 owner/token 二次校验。审查修正 `cleanup_after=max(capability 到期+grace, created_at+1 hour)`，防止清理提前抹掉滚动限频证据。
+- 审查额外修复了 GORM AutoMigrate 改写 migration-owned guard schema 的问题；既有 guard 不再由通用 AutoMigrate 重建。
+
+本地新鲜证据：`make test` 全部 Go 包通过，`go vet ./...` 通过，frontend 为 12/12 test files、25/25 tests，`npm run build` 成功，acceptance 脚本通过 `bash -n`。当前本机没有 Docker，不能据此声称 MySQL 8.4 并发、dirty migration、AutoMigrate 和 Nginx 入口已审核；这些仍须在专用项目 `secondhand-upload-governance-acceptance` 运行后更新状态。原始线上 10/20/40 MB 与 13 条未绑定记录的审查事实保留为 2026-07-24 基线，不因本分支实现而改写为生产已生效。
+
 ### F-07 [P1] 多库存字段没有对应的订单数量和库存事务
 
 证据：

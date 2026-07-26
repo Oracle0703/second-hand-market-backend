@@ -32,7 +32,19 @@
 | `FILE_STORAGE_PROVIDER` | `local` | 文件存储方式（当前支持 `local`，后续可扩展 OSS） |
 | `FILE_UPLOAD_LOCAL_DIR` | `uploads` | 本地上传落盘目录 |
 | `FILE_PUBLIC_BASE_URL` | 空 | 文件对外访问前缀；为空时默认 `/uploads` |
-| `FILE_UPLOAD_MAX_MB` | `40` | 图片原图上传上限（MB） |
+| `FILE_UPLOAD_MAX_MB` | `10` | 单文件业务上限，按 MiB 计算（10,485,760 bytes） |
+| `FILE_UPLOAD_MULTIPART_MAX_MB` | `11` | multipart 请求体上限，按 MiB 计算（11,534,336 bytes） |
+| `FILE_UPLOAD_IP_HASH_SECRET` | 无 | 匿名来源 HMAC-SHA256 密钥；生产必须显式设置且至少 32 bytes |
+| `FILE_UPLOAD_ANON_PRESIGN_PER_HOUR` | `20` | 每个匿名来源每滚动一小时成功 presign 上限 |
+| `FILE_UPLOAD_ANON_ACTIVE_FILES` | `5` | 每个匿名来源活跃未绑定文件数上限 |
+| `FILE_UPLOAD_ANON_ACTIVE_MB` | `50` | 每个匿名来源活跃未绑定字节上限（MiB） |
+| `FILE_UPLOAD_MERCHANT_QUOTA_MB` | `2048` | 每个商家文件记录配额（MiB） |
+| `FILE_UPLOAD_GLOBAL_QUOTA_MB` | `20480` | 全部文件记录配额（MiB） |
+| `FILE_UPLOAD_CLEANUP_INTERVAL_SECONDS` | `300` | 匿名孤儿文件清理周期 |
+| `FILE_UPLOAD_CLEANUP_BATCH_SIZE` | `50` | 单批最多 claim 的清理记录数 |
+| `FILE_UPLOAD_CLEANUP_CLAIM_TTL_SECONDS` | `600` | 崩溃 claim 可重试时间 |
+| `FILE_UPLOAD_CLEANUP_GRACE_SECONDS` | `1800` | capability 过期后的最小清理宽限期 |
+| `TRUSTED_PROXY_CIDRS` | `none` | 可信代理 CIDR；`none` 表示只信任直连 peer |
 | `IMAGE_COMPRESS_TARGET_MB` | `20` | 服务端图片压缩目标大小（MB） |
 | `IMAGE_PROCESSOR_DRIVER` | `vips` | 图片处理驱动（`vips/passthrough`） |
 | `IMAGE_PROCESSOR_BIN` | `vips` | 图片处理命令路径 |
@@ -74,6 +86,9 @@ Nginx 示例：
 server {
     server_name market.meaningful.ink;
 
+    client_max_body_size 11m;
+    error_page 413 = @upload_too_large;
+
     location /api/v1/ {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
@@ -81,12 +96,19 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
+
+    location @upload_too_large {
+        internal;
+        default_type application/json;
+        return 413 '{"code":10008,"message":"upload file too large","request_id":"$request_id"}';
+    }
 }
 ```
 
 说明：
 - 后端服务自身已经注册 `/api/v1/*` 路由，因此 `proxy_pass` 指向后端根地址即可，不要改成 `http://127.0.0.1:8080/api/`。
 - 如果线上当前存在 `/api/api/v1/*`，需要同步调整 Nginx 或网关规则后再重新发布前端和小程序。
+- 两层生产 Nginx 都必须使用 11 MiB request-body 上限和 JSON 413；用户可见的文件上限仍是 10 MiB。生产代理变更尚未执行。
 
 微信构建：
 ```bash
@@ -131,9 +153,11 @@ CGO_ENABLED=0 go run ./cmd/server
 - 在 macOS 未同意 Xcode License 时，`go run` 可能因为 cgo 失败；可用 `CGO_ENABLED=0` 启动。
 - 如需真实微信登录，需额外设置 `BUYER_WECHAT_LOGIN_MODE=real` 与微信密钥变量。
 - 如需真实抖音登录，需额外设置 `BUYER_DOUYIN_LOGIN_MODE=real` 与抖音密钥变量。
-- 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过 `/uploads/<object_key>` 提供访问（可通过 `FILE_PUBLIC_BASE_URL` 切换到 CDN/OSS 域名）。
+- 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`；只有已通过检查的商品图片允许通过 `/uploads/<object_key>` 公开访问，营业执照只能走管理员鉴权内容接口。
 - 当前支持 `jpg/jpeg/png/webp/heic/heif`，苹果 `Live Photo` 仅支持其中静态图，不支持配套 `mov`。
-- 原图大小上限为 `40MB`；后端会统一压缩，优先将图片控制在 `20MB` 内。
+- 原图业务上限为 10 MiB；presign、multipart 文件头、实际读取和处理结果执行同一字节边界，multipart 请求体上限为 11 MiB。
+- 匿名 presign 使用可信来源 IP 的 HMAC 标识，并由数据库 guard 串行执行 20 次/小时、5 个活跃文件、50 MiB 活跃字节限制；商家和全局配额分别为 2 GiB 与 20 GiB。
+- 自动清理仅处理迁移后创建、匿名、未绑定且 `cleanup_after` 到期的记录；迁移前记录、认证上传和已绑定文件不会进入候选集合。
 - 本地如未安装 `vips/libheif`，可临时设置 `IMAGE_PROCESSOR_DRIVER=passthrough`；生产 Docker 应使用 `vips`。
 
 ### 后端 Docker
@@ -172,6 +196,16 @@ make test
 当前已覆盖：
 - 状态机单元测试（`backend/internal/stateflow`）
 - 主流程集成测试（`backend/tests/integration_flow_test.go`）
+
+F-06 的隔离 MySQL 8.4 验收必须使用专用路径和 Compose project，并在取得单独书面授权后运行：
+
+```bash
+ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-anonymous-upload-governance-smoke
+```
+
+该命令不得指向生产数据库或生产上传目录；当前状态为代码侧已修复、测试服务器未审核、生产未执行 `0008` 且未部署。
 
 ## 发布前回归命令
 

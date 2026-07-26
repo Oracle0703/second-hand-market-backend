@@ -193,12 +193,15 @@ onboarding scope 黑名单：
 
 失败场景：
 1. 仅允许 `jpeg/png/webp/heic/heif` 静态图片；`mov` 等视频返回 `10008`。
-2. 原图超过 `40MB` 返回 `10008`。
-3. 服务端会统一压缩图片，压缩目标为 `20MB`，但不是最终拒绝门槛。
-4. `onboarding` token 上传 `PRODUCT_IMAGE` 返回 `10006`。
-5. `PUBLIC` 身份上传非资质类文件返回 `10003`。
-6. PUBLIC 匿名上传只允许 `MERCHANT_LICENSE`；`presign` 返回的原始 `file_token` 不持久化到前端存储，必须原样传给 `upload`、`confirm` 和最终 `auth/register.license_file_token`。
-7. capability 缺失、不匹配、过期、已使用，或文件类型/状态/URL 不符合绑定条件时返回 `10012`；并发注册同一 token 只允许一个事务成功。
+2. 单文件业务上限固定为 10 MiB（10,485,760 bytes）。`presign.file_size` 超过上限时返回 HTTP 400 / `10008`，且不创建文件记录。
+3. multipart 请求体上限固定为 11 MiB（11,534,336 bytes）。请求体或 multipart 文件超过对应边界时返回 HTTP 413 / `10008` / `upload file too large`；实际读取大小与 presign 声明不一致时返回 HTTP 400 / `10008`，且不覆盖目标文件。
+4. 第 21 个同来源匿名成功 presign 返回 HTTP 429 / `10009`；5 个活跃文件、50 MiB 活跃字节、2 GiB 商家配额或 20 GiB 全局配额超限时返回 HTTP 409 / `10013`。响应不暴露使用量、来源 hash 或限制配置。
+5. `onboarding` token 上传 `PRODUCT_IMAGE` 返回 `10006`。
+6. `PUBLIC` 身份上传非资质类文件返回 `10003`。
+7. PUBLIC 匿名上传只允许 `MERCHANT_LICENSE`；`presign` 返回的原始 `file_token` 不持久化到前端存储，必须原样传给 `upload`、`confirm` 和最终 `auth/register.license_file_token`。
+8. capability 缺失、不匹配、过期、已使用，或文件类型/状态/URL 不符合绑定条件时返回 `10012`；并发注册同一 token 只允许一个事务成功。
+
+治理说明：匿名来源只保存可信客户端 IP 规范化后的 HMAC-SHA256；所有会增加配额的 presign/绑定路径先锁定固定数据库 guard。自动清理只选择迁移后、匿名、未绑定且到期的治理记录，迁移前、认证或已绑定记录均排除。
 
 ## 10. 审计日志模块（operation-logs）
 

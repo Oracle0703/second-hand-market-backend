@@ -61,6 +61,21 @@
 - 本地后端、前端构建和 miniapp 测试均已通过；`frontend npm test` 在 Ant Design 模块初始化阶段挂起，未完成，不是绿色证据。三条 smoke 脚本已通过语法检查，但未对现网执行会产生业务数据的 smoke。
 - 本轮没有执行生产 SQL、部署、管理员改密或任何 `yaner` 数据变更。MySQL 8.4.8 的迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全及桌面/移动浏览器验收已在生产数据克隆隔离环境通过。
 
+### 0.5 2026-07-26：F-06 匿名上传资源治理代码侧记录
+
+```text
+代码侧状态：已修复
+测试服务器状态：未审核
+生产状态：未执行 0008、未部署、未修改生产数据或文件
+```
+
+- 书面设计和规格已批准，实施提交范围为 `39aed02..c598f38`。业务文件上限统一为 10 MiB，multipart transport 上限为 11 MiB；代理侧 413 与应用侧均使用 code `10008`。
+- 新增数据库串行的匿名频率/活跃配额、商家配额和全局配额，错误 code 为 `10009` 或 `10013`；来源 IP 仅保存 HMAC-SHA256，不记录原始值。
+- 新增 `0008` 三段迁移与 InnoDB fail-closed 门禁；历史行治理字段保持 NULL，`0007` 执照隐私和商品图 URL 不变量是 `0008` 的强前置条件。
+- 新增有界匿名孤儿 claim/清理；`cleanup_after` 取 capability 过期宽限与 `created_at+1 hour` 的较晚值，保证滚动限频证据不会提前删除。
+- 本地 `make test`、`go vet ./...`、frontend 12 files / 25 tests、frontend build 和 smoke 脚本语法均通过。现有构建 warning 未扩大为 F-06 行为失败。
+- F-06 的测试服务器审核必须另行授权固定路径 `/home/yu/services/secondhand-upload-governance-acceptance-20260726` 和 Compose project `secondhand-upload-governance-acceptance`。此前 F-02/F-04/F-05 的授权不复用。
+
 ## 1. 目标与原则
 
 本方案不做停站重构。目标是在保持现有低流量服务可用的前提下，先关闭已经生效的安全暴露，再完善商家管理后台的多库存订单能力，最后按业务入口处理其余问题。
@@ -547,7 +562,7 @@ Gate G1 资质私有化和 G2 miniapp 身份限制按业务触发条件独立安
 ### 9.2 下一相关版本
 
 - miniapp HTTP 401 刷新（F-05）。
-- 匿名上传限流、配额和未绑定文件清理（F-06）。
+- ~~匿名上传限流、配额和未绑定文件清理（F-06）~~：**代码侧已修复，测试服务器未审核，生产未执行 `0008` 且未部署**。专用 MySQL 8.4/代理验收和后续生产维护窗仍是独立门禁。
 - 商品/执照 **file_id 归属与类型绑定**（F-02 全量）。
 - ~~frontend logout 调用服务端（F-08）~~ **本分支已修复（2026-07-26）**：`api.logout()` + Layout 失败容忍退出；设计见 `docs/superpowers/specs/2026-07-26-frontend-server-logout-design.md`。随下次 frontend 发布上线。
 - access token 吊销策略（F-14）和幂等原子性（F-15）。

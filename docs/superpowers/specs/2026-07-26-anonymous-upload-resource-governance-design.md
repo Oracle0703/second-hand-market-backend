@@ -4,7 +4,7 @@
 
 **分支：** `codex/reconcile-code-reviews`
 
-**状态：** 设计与书面规格已批准；实施未开始
+**状态：** 设计与书面规格已批准；代码侧已修复；测试服务器未审核；生产未执行 `0008`、未部署、未修改生产数据或文件
 
 **问题：** F-06 - 匿名上传缺少持久化频率限制、存储配额和孤儿文件清理，应用、代理与前端的上传大小契约不一致
 
@@ -177,7 +177,7 @@ idx_file_cleanup_candidate
 只有迁移后成功创建的匿名 presign 同时写入：
 
 - `source_ip_hash = HMAC(client IP)`；
-- `cleanup_after = capability_expires_at + cleanup grace`；
+- `cleanup_after = max(capability_expires_at + cleanup grace, created_at + 1 hour)`；
 - claim 字段为 `NULL`，attempts 为 0。
 
 认证商家、管理员和所有迁移前记录的 `source_ip_hash`、`cleanup_after`、claim 字段均为 `NULL`。这个 `NULL` 是不可跨越的历史保护标记，不由 migration 回填。
@@ -189,19 +189,19 @@ idx_file_cleanup_candidate
 ```text
 id          TINYINT UNSIGNED PRIMARY KEY
 guard_name  VARCHAR(32) NOT NULL UNIQUE
-created_at  DATETIME(3) NOT NULL
+created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
 ```
 
-迁移只插入固定行 `(1, 'file_records')`。运行时若 guard 缺失，presign 和匿名绑定返回内部错误并记录不含敏感信息的结构错误；不得绕过配额继续创建记录。
+迁移只插入固定行 `(1, 'file_records')`。`file_records` 与 `file_quota_guards` 必须使用 InnoDB，否则 preflight/up/postflight 以 SQLSTATE `45000` fail closed。运行时若 guard 缺失，presign 和匿名绑定返回内部错误并记录不含敏感信息的结构错误；不得绕过配额继续创建记录。为避免 GORM smart migrate 删除 `CURRENT_TIMESTAMP(3)` 默认值或重建既有 guard 表，应用的 AutoMigrate 不再把已存在的 guard 表交给通用 ORM 改写；MySQL 缺表时使用与 `0008` 对齐的 DDL 创建，再校验唯一固定行。
 
 ### 7.3 Preflight / up / postflight
 
 Preflight 在任何 DDL/DML 前验证：
 
 - 只有权威表 `file_records`，不存在旧 `files`；
-- `0006` ownership/capability 和 `0007` privacy 结构、索引均为预期形态；
+- `0006` ownership/capability 结构、索引，以及 `0007` 的执照私有 URL、object key 前缀、已通过商品图 URL 数据不变量均为预期形态；
 - `0008` 字段、索引和 guard 表不存在，或按明确的可重入策略已经完整存在；部分漂移一律 SQLSTATE `45000`；
-- `size_bytes` 不为负，owner/uploader 基础约束没有新异常。
+- `size_bytes` 不为负，配额涉及表均为 InnoDB，owner/uploader 基础约束没有新异常。
 
 Up 只增加 nullable 治理字段、两个索引、guard 表和固定 guard 行。它不更新任何现有文件的 biz type、object key、URL、size、uploader、owner、scan status、capability 或创建时间，不回填来源 hash 或清理时间，也不删除记录/文件。
 
@@ -293,7 +293,7 @@ AND (
 6. 物理删除成功或文件不存在后，按同一 claim 条件删除数据库行。
 7. 物理删除失败时清空本次 claim 供后续周期重试；进程崩溃留下的 claim 在 10 分钟后可重新获取。
 
-注册 claim 的条件增加 `cleanup_claim_token IS NULL`。由于 cleanup 只在 capability 过期并经过 30 分钟宽限后开始，正常有效注册不受影响；一旦 cleanup 已 claim，旧 capability 不能与删除竞态绑定。worker 在任何 owner 非空或 claim 不匹配情况下都 fail closed。
+注册 claim 的条件增加 `cleanup_claim_token IS NULL`。cleanup 只在 capability 过期并经过 30 分钟宽限、且滚动一小时限频窗口结束之后开始，正常有效注册不受影响，也不会提前删除限频计数证据；一旦 cleanup 已 claim，旧 capability 不能与删除竞态绑定。worker 在任何 owner 非空或 claim 不匹配情况下都 fail closed。
 
 ### 9.3 调度和日志
 
@@ -424,7 +424,7 @@ F-06 状态使用三个独立字段：
 
 ## 15. 验收标准
 
-只有以下条件全部有可追溯证据，F-06 才能标记为代码侧已修复并通过测试服务器审核：
+代码侧关闭要求以下第 1-4、6-7、9 项具备本地可追溯证据；测试服务器审核通过还必须补齐第 5、8、10 项的隔离 MySQL 8.4/代理证据。两个状态不得合并：
 
 1. 前端、presign、真实文件读取和现状文档统一执行 10 MiB 文件上限。
 2. 应用和 acceptance proxy 对 11 MiB multipart request body 有前置限制；过大上传得到 HTTP 413 / code `10008`，不会进入图片处理或落盘。
@@ -438,3 +438,42 @@ F-06 状态使用三个独立字段：
 10. 验收报告记录准确 commit 和证据哈希，并明确说明未执行生产 SQL、未部署、未读取或修改生产数据及上传文件。
 
 在生产两层 Nginx、`0008` migration 和新应用经过另行批准的维护窗之前，F-06 的生产状态必须继续标记为“未生效”。
+
+## 16. 2026-07-26 实施与审查记录
+
+实现提交：
+
+~~~text
+39aed02 docs(files): design anonymous upload governance
+0721459 docs(files): plan anonymous upload governance
+955b43e feat(files): add upload governance schema
+80e74cd fix(config): require upload governance limits
+11a7be2 feat(files): serialize upload quota reservations
+782de24 fix(files): enforce upload quotas at presign
+5f94d32 fix(files): cap multipart uploads before parsing
+2f017b9 feat(files): clean expired anonymous uploads
+a5d13cb fix(frontend): enforce 10 MiB upload limit
+c03611c test(acceptance): verify upload governance
+d44942a fix(files): preserve upload governance invariants
+e36d23a fix(files): preserve migration-owned quota guard schema
+c598f38 fix(files): require transactional quota tables
+~~~
+
+审查 RED/GREEN 修订：
+
+1. 原 `capability_expires_at + 30 minutes` 会在 45 分钟删除一小时限频证据；RED 观察到 cleanup claim/delete，GREEN 改为两种期限取较晚值，并证明一小时边界前拒绝、边界时可清理。
+2. `0008` 原先未强制 `0007` 数据不变量；新增跳过 `0007` 的 SQLSTATE `45000` 验收和 preflight/postflight 三项约束。
+3. GORM AutoMigrate 会尝试重建既有 migration-owned guard 并删除其默认值；新增真实 schema RED，随后将 guard DDL 从通用 AutoMigrate 中隔离。
+4. 形状正确但使用 MyISAM 的 guard 会使 `FOR UPDATE` 失去事务串行语义；新增 InnoDB 三段门禁和 dirty-engine 验收用例。
+
+本地新鲜门禁（代码提交 `c598f38`）：
+
+~~~text
+make test                                      PASS（全部 Go 包）
+go vet ./...                                   PASS
+frontend npm test                              PASS（12 files / 25 tests）
+frontend npm run build                         PASS
+bash -n anonymous-upload-governance-smoke.sh   PASS
+~~~
+
+前端构建仍输出既有 React Router future flag、Ant Design/Rollup 循环 chunk 和大 chunk warning，但退出码为 0。本机没有 Docker，因此未运行 Compose config、MySQL 8.4 并发/迁移或 Nginx 入口测试；测试服务器状态保持“未审核”。本轮未连接生产数据库、未执行生产 SQL、未读取或修改生产上传目录，也未部署任何应用或代理配置。

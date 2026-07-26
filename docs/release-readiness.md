@@ -13,6 +13,7 @@
 - 文件元数据表名以 `file_records` 为唯一契约（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`FileRecord.TableName()` 已固定；`0005` preflight/up/postflight 已入库（up 重复形态校验）。
 - 分类唯一性以 `(parent_id,name)` 为唯一契约（F-16）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**。GORM 模型和两条 seed 路径已对齐历史 SQL migration。
 - F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
+- F-06 匿名上传资源治理已在代码侧关闭：统一 10 MiB 文件/11 MiB multipart 契约，数据库串行频率与配额、可信来源 HMAC、历史隔离和有界清理均已实现并通过本地门禁。专用 MySQL 8.4 测试服务器尚未审核，生产未执行 `0008`、未部署且未修改生产数据或文件。
 
 ### 1.1 首轮问题与后续 schema 修复状态
 
@@ -27,11 +28,21 @@
 | F-09 文件表 schema | 已修复：`file_records` 契约 + `0005` 三段门禁 | **MySQL 8.4.8 完整八态矩阵通过** | `0005` 未在生产执行 |
 | F-16 分类 schema | 已修复：复合索引 + parent-aware seed | **同一矩阵的 AutoMigrate RED→GREEN 通过** | 新后端尚未部署 |
 | F-02 文件绑定授权 | 已修复：商家归属 + PUBLIC 一次性 capability + 商品/执照事务校验 | **MySQL 8.4.8 回填/失败门禁/API/并发/AutoMigrate 矩阵通过** | `0006` 未执行，frontend/backend 未部署 |
+| F-06 匿名上传资源治理 / D-03 大小契约 | **代码侧已修复**：10/11 MiB 边界、HMAC 来源、20/hour、5 files、50 MiB、2 GiB、20 GiB、claim cleanup 与 `0008` 三段门禁 | **未审核**；F-06 专用 Compose 项目尚未运行 | **未执行 `0008`、未部署、未修改生产数据或文件** |
 
 F-09/F-16 脱敏证据与 SHA-256 见
 `docs/superpowers/reviews/2026-07-26-file-category-schema-isolated-acceptance.md`。
 F-02 隔离范围、脱敏证据路径与 SHA-256 清单见
 `docs/superpowers/reviews/2026-07-26-file-binding-authorization-isolated-acceptance.md`。
+F-06 待授权的专用验收命令为：
+
+```bash
+ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-anonymous-upload-governance-smoke
+```
+
+固定远程路径为 `/home/yu/services/secondhand-upload-governance-acceptance-20260726`，Compose project 为 `secondhand-upload-governance-acceptance`；此前任何其他问题的传输授权均不适用。
 
 ## 2. 本地验证结果
 
@@ -42,6 +53,7 @@ F-02 隔离范围、脱敏证据路径与 SHA-256 清单见
 - 主 smoke 已同步新库存断言：数量与总价、剩余库存不售罄、库存归零才 `SOLD`、关单释放预占且不改变上下架状态。
 - F-09/F-16：专用测试服务器 MySQL 8.4.8 完整矩阵退出 0；修复前同一 AutoMigrate 测试因 `uk_parent_name` 1061 失败，修复后通过。
 - F-02：专用项目 `secondhand-file-binding-acceptance` 完整矩阵退出 0；六类脏引用均以 SQLSTATE 45000 在 DDL 前失败，干净回填、PUBLIC/MERCHANT 未绑定文件、注册认领、商品绑定、并发单赢家及 AutoMigrate 兼容均通过。资源与脱敏证据保留在独立测试目录，生产容器 ID/状态/重启计数前后一致。
+- F-06：在代码提交 `c598f38` 上执行 `make test`，全部 Go 包通过；`go vet ./...` 通过；frontend Vitest 为 12 files / 25 tests 全量通过，`npm run build` 成功；`anonymous-upload-governance-smoke.sh` 通过 `bash -n`。本地没有 Docker，因此这些结果不替代 MySQL 8.4 并发、迁移引擎和 Nginx 入口验收。
 
 生产数据克隆隔离验收已通过：MySQL 8.4.8 迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全以及桌面/移动浏览器验收均已完成。生产迁移、部署、管理员轮换和真实生产写验证仍未执行。三条 smoke 会创建测试业务数据，本轮没有在生产执行。
 
@@ -72,6 +84,10 @@ recoverable backup evidence
 -> 0006 file binding ownership preflight
 -> 0006 file binding ownership up migration exactly once
 -> 0006 file binding ownership postflight
+-> 0007 license file privacy preflight/up/postflight
+-> 0008 anonymous upload governance preflight
+-> 0008 anonymous upload governance up migration exactly once
+-> 0008 anonymous upload governance postflight
 -> deploy API and admin frontend together
 -> health/auth/read checks
 -> controlled dedicated test product create/close/complete
@@ -118,7 +134,7 @@ F-09 设计见 [file-record-schema-alignment-design](./superpowers/specs/2026-07
 
 这些事项阻断多库存版本正式上线。F-12、F-13、license governance、miniapp ordering、MySQL root rotation 均在本次发布范围外，不得借此扩大生产窗口。
 
-frontend Vitest、F-08 logout、F-02、F-09 与 F-16 已在本地代码侧关闭；F-02/F-09/F-16 也已通过隔离 MySQL 8.4 测试服务器审核，**不再**列为本地或隔离验收阻断。生产 frontend/backend bundle 与 `0004`/`0005`/`0006` 仍须随维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04、F-06 与 F-13 仍是独立开放范围，不因 F-02 关闭而改变状态。
+frontend Vitest、F-08 logout、F-02、F-06、F-09 与 F-16 已在本地代码侧关闭；F-02/F-09/F-16 也已通过隔离 MySQL 8.4 测试服务器审核。F-06 的专用隔离审核仍待执行，因此只关闭代码侧状态。生产 frontend/backend bundle 与 `0004`/`0005`/`0006`/`0007`/`0008` 仍须在各自批准的维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04 与 F-13 仍按各自台账处理，不因 F-06 代码侧关闭而改变生产状态。
 
 ## 5. 回滚边界
 

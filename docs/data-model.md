@@ -240,6 +240,11 @@
 | owner_merchant_id | bigint unsigned null | 文件绑定的商家 ID；已绑定商品图和营业执照必须有值 |
 | capability_token_hash | char(64) null | PUBLIC 匿名上传的一次性 capability token SHA-256；绑定成功后清空 |
 | capability_expires_at | datetime(3) null | capability token 失效时间；绑定成功后清空 |
+| source_ip_hash | char(64) null | 可信来源 IP 规范化字节的 HMAC-SHA256 小写 hex；仅迁移后匿名 presign 写入 |
+| cleanup_after | datetime(3) null | 匿名孤儿最早清理时间；NULL 永不参加自动清理 |
+| cleanup_claimed_at | datetime(3) null | 清理 claim 时间 |
+| cleanup_claim_token | char(64) null | 清理批次随机 claim token |
+| cleanup_attempts | int unsigned | 清理 claim 次数，默认 0 |
 | created_at | datetime | 创建时间 |
 
 索引建议：
@@ -248,6 +253,8 @@
 3. `idx_file_owner_biz_scan(owner_merchant_id, biz_type, scan_status)`
 4. `uk_file_capability_token(capability_token_hash)`
 5. `idx_file_capability_expires(capability_expires_at)`
+6. `idx_file_source_created(source_ip_hash, created_at)`
+7. `idx_file_cleanup_candidate(uploader_type, owner_merchant_id, cleanup_after, cleanup_claimed_at)`
 
 表名以完整 SQL migration 链和 `FileRecord.TableName()` 的
 `file_records` 为准；历史 `0001` 中的 `files` 由 `0005` 兼容迁移收敛。
@@ -256,6 +263,27 @@
 且 URL 非空的文件；营业执照对应 `MERCHANT_LICENSE`。PUBLIC 营业执照在
 注册事务内使用原始 `file_token` 原子认领，成功后写入商家归属并清空 token
 hash/失效时间；同一 capability 只能成功认领一次。
+
+`0008_anonymous_upload_governance` 不回填任何历史行的治理字段。迁移后匿名记录的清理时间为：
+
+```text
+cleanup_after = max(
+  capability_expires_at + FILE_UPLOAD_CLEANUP_GRACE_SECONDS,
+  created_at + 1 hour
+)
+```
+
+第二项保证清理不会在滚动一小时限频窗口结束前删除计数证据。活跃匿名配额统计要求 `PUBLIC + owner_merchant_id IS NULL + source_ip_hash 匹配 + cleanup_after IS NOT NULL`，即 capability 过期但尚未清理的记录仍占用配额。绑定成功后保留 `source_ip_hash` 供滚动限频使用，但 owner 非空使记录永不进入清理候选。
+
+### 2.10.1 file_quota_guards（文件配额串行 guard）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | tinyint unsigned PK | 固定为 1 |
+| guard_name | varchar(32) unique | 固定为 `file_records` |
+| created_at | datetime(3) | guard 创建时间，默认 `CURRENT_TIMESTAMP(3)` |
+
+该表与 `file_records` 都必须使用 InnoDB。所有增加配额占用的事务在 READ COMMITTED 下先执行 `SELECT ... FOR UPDATE` 锁定固定行，再读取全局、商家或匿名聚合并创建/绑定记录。表、引擎或固定行漂移时 migration fail closed；应用不得降级绕过配额。
 
 ### 2.11 operation_logs（操作审计日志）
 

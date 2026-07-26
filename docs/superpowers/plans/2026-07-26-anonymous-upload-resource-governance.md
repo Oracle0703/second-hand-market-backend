@@ -8,6 +8,8 @@
 
 **Tech Stack:** Go 1.22, Gin, GORM, SQLite, MySQL 8.4, React 18, TypeScript 5.7, Vitest 2, Nginx, Docker Compose, Bash
 
+**Execution status (2026-07-26):** Tasks 1-9 completed through code review and local gates. Task 10 remains pending path-specific transfer authorization and isolated MySQL 8.4 acceptance. Production migration/deployment is not part of this execution.
+
 ## Global Constraints
 
 - The business file limit is exactly `10 * 1024 * 1024 = 10,485,760` bytes at the frontend, presign, multipart file, actual-read, and processor boundaries.
@@ -167,7 +169,7 @@ func (FileQuotaGuard) TableName() string { return "file_quota_guards" }
 
 Add `idx_file_cleanup_candidate` priority 1 to `UploaderType` and priority 2 to `OwnerMerchantID`; retain `idx_file_owner_biz_scan` on owner.
 
-Include `&model.FileQuotaGuard{}` in `migrate(db)`. After AutoMigrate, insert only the fixed guard with `clause.OnConflict{DoNothing: true}` and fail server startup on any insert/query error.
+Create/verify `FileQuotaGuard` from `migrate(db)`, then insert only the fixed guard with `clause.OnConflict{DoNothing: true}` and fail server startup on any insert/query error. **Task 9 review amendment:** do not pass an existing migration-owned guard table through generic GORM AutoMigrate, because it can remove `CURRENT_TIMESTAMP(3)` or rebuild the table. MySQL uses the exact `0008` InnoDB DDL when the table is absent; existing tables are preserved and validated by the SQL gates.
 
 - [ ] **Step 4: Implement the three-part `0008` migration**
 
@@ -520,7 +522,7 @@ TestRegisterRejectsMerchantQuotaAndRollsBackAllRows
 TestClaimPublicMerchantLicenseRejectsCleanupClaim
 ```
 
-For the HMAC test set `RemoteAddr`, include a spoofed `X-Forwarded-For`, reload `FileRecord`, and assert the raw/spoofed IP appears nowhere in the row. Verify `CleanupAfter == CapabilityExpiresAt + CleanupGrace`.
+For the HMAC test set `RemoteAddr`, include a spoofed `X-Forwarded-For`, reload `FileRecord`, and assert the raw/spoofed IP appears nowhere in the row. Verify `CleanupAfter == max(CapabilityExpiresAt + CleanupGrace, CreatedAt + 1 hour)` so cleanup cannot erase rolling-rate evidence.
 
 For registration quota, set the test merchant quota below the candidate license size, call `/auth/register`, expect code `10013`, then assert merchant, account, audit, owner, capability, and claim fields are unchanged.
 
@@ -541,7 +543,7 @@ Use one `now := time.Now()` and build the existing capability before reservation
 
 ```go
 sourceHash, err := s.anonymousSourceHash(c.ClientIP())
-cleanupAfter := expiresAt.Add(s.cfg.FileUploadCleanupGrace)
+cleanupAfter := anonymousUploadCleanupAfter(now, expiresAt, s.cfg.FileUploadCleanupGrace)
 file.SourceIPHash = &sourceHash
 file.CleanupAfter = &cleanupAfter
 ```
