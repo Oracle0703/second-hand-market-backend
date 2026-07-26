@@ -24,6 +24,7 @@ mysql_password="$(openssl rand -hex 32)"
 mysql_root_password="$(openssl rand -hex 32)"
 jwt_access_secret="$(openssl rand -hex 64)"
 jwt_refresh_secret="$(openssl rand -hex 64)"
+file_upload_ip_hash_secret="$(openssl rand -hex 32)"
 
 printf '%s\n' \
   'MYSQL_DATABASE=second_hand_market_acceptance' \
@@ -33,6 +34,8 @@ printf '%s\n' \
   '' \
   "JWT_ACCESS_SECRET=$jwt_access_secret" \
   "JWT_REFRESH_SECRET=$jwt_refresh_secret" \
+  '' \
+  "FILE_UPLOAD_IP_HASH_SECRET=$file_upload_ip_hash_secret" \
   '' \
   'AUTO_MIGRATE=false' \
   '' \
@@ -44,5 +47,5 @@ openssl rand -base64 24 > secrets/control-admin-password
 openssl rand -base64 24 > secrets/rotate-admin-password
 chmod 600 .env secrets/control-admin-password secrets/rotate-admin-password
 
-unset mysql_password mysql_root_password jwt_access_secret jwt_refresh_secret
+unset mysql_password mysql_root_password jwt_access_secret jwt_refresh_secret file_upload_ip_hash_secret
 echo 'acceptance secrets and directories prepared'

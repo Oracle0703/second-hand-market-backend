@@ -1,4 +1,4 @@
-.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke acceptance-file-binding-smoke acceptance-license-file-privacy-smoke acceptance-miniapp-auth-refresh-smoke
+.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke acceptance-file-binding-smoke acceptance-license-file-privacy-smoke acceptance-miniapp-auth-refresh-smoke acceptance-anonymous-upload-governance-smoke
 
 backend-test:
 	cd backend && mkdir -p .cache/go/mod .cache/go/build && GOMODCACHE=$$(pwd)/.cache/go/mod GOCACHE=$$(pwd)/.cache/go/build GOPROXY=https://goproxy.cn,direct go test ./...
@@ -34,3 +34,8 @@ acceptance-license-file-privacy-smoke:
 acceptance-miniapp-auth-refresh-smoke:
 	@test "$${MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM:-}" = "I_UNDERSTAND_THIS_RUNS_ONLY_ISOLATED_MINIAPP_TESTS" || { echo "set MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM for isolated miniapp auth refresh tests" >&2; exit 1; }
 	./deploy/acceptance/miniapp-auth-refresh-smoke.sh
+
+acceptance-anonymous-upload-governance-smoke:
+	@test "$${ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM:-}" = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA" || { echo "set ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM for isolated upload governance tests" >&2; exit 1; }
+	@test "$${ACCEPTANCE_DB_ENGINE:-}" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
+	./deploy/acceptance/anonymous-upload-governance-smoke.sh

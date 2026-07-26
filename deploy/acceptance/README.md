@@ -50,10 +50,10 @@ Run all commands in this directory.
 
 The preparation script refuses to overwrite existing files. It creates `.env`,
 two administrator password files, and mode-`0700` backup/evidence directories.
-All MySQL and JWT values are independent random acceptance secrets; no
-production secret is read or reused. To prepare values manually instead, start
-from `.env.example` and keep the MySQL application password DSN-safe (letters,
-numbers, `_`, or `-`).
+All MySQL, JWT, and upload source-HMAC values are independent random acceptance
+secrets; no production secret is read or reused. To prepare values manually
+instead, start from `.env.example` and keep the MySQL application password
+DSN-safe (letters, numbers, `_`, or `-`).
 
 The administrator password files must remain mode `0600`; the bootstrap command
 rejects files readable by group or other users. Do not place a password in a
@@ -435,6 +435,49 @@ artifacts, read or change production uploads, or mutate production data. Its
 only production interaction is read-only `docker inspect` of the named API,
 Web, and MySQL containers before and after the isolated run; the snapshots must
 match exactly before the success marker is printed.
+
+## Anonymous upload governance acceptance
+
+The F-06 matrix uses only the fixed Compose project
+`secondhand-upload-governance-acceptance`. It refuses any existing container,
+volume, or network with that project label, accepts no external DSN, keeps
+MySQL internal, and binds API/Web only to `127.0.0.1`. Run it only from the
+dedicated authorized checkout at the exact reviewed commit:
+
+```bash
+ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-anonymous-upload-governance-smoke
+```
+
+The command requires MySQL 8.4.x and applies the full `0001..0008` chain. It
+proves dirty `0008` states fail with SQLSTATE `45000`, historical rows and
+physical files retain their fingerprints, two independent MySQL pools enforce
+one-winner quota semantics, cleanup and registration cannot delete a bound
+file, and cleanup claims remain retryable and fail closed. The same focused
+test runs with `AUTO_MIGRATE=false` and `AUTO_MIGRATE=true`, followed by the
+full backend/frontend gates and exact 10 MiB file / 11 MiB request boundary
+checks through both the API and Nginx.
+
+Sanitized results, source hashes, and an evidence SHA-256 manifest are written
+only under the ignored
+`deploy/acceptance/evidence/anonymous-upload-governance/` directory. The
+script's only production interaction is read-only inspection of container ID,
+state, and restart count for the three named production containers; before and
+after snapshots must match. It never executes production SQL, reads production
+uploads, deploys an artifact, prints a secret, or automatically removes a
+container, network, or volume.
+
+The script stops isolated services at exit but retains all project resources
+and evidence for review. After evidence has been approved, remove only this
+project with a separate, explicit command:
+
+```bash
+docker compose --project-name secondhand-upload-governance-acceptance \
+  --env-file deploy/acceptance/.env \
+  --file deploy/acceptance/docker-compose.yml \
+  down --volumes --remove-orphans
+```
 
 ## Miniapp auth refresh acceptance
 

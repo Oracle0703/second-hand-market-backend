@@ -110,3 +110,86 @@ func TestAnonymousUploadGovernanceMigrationHasNoDownScript(t *testing.T) {
 		t.Fatalf("0008 down migrations must not exist: %v", matches)
 	}
 }
+
+func TestAnonymousUploadGovernanceAcceptanceScriptContracts(t *testing.T) {
+	tests := map[string][]string{
+		"../../deploy/acceptance/anonymous-upload-governance-smoke.sh": {
+			"ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM",
+			"I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA",
+			"secondhand-upload-governance-acceptance",
+			"evidence/anonymous-upload-governance",
+			"docker container ls -a --filter",
+			"docker volume ls --filter",
+			"docker network ls --filter",
+			`[[ "$mysql_version" == 8.4.* ]]`,
+			"0001_init.up.sql",
+			"0002_buyer_domain.up.sql",
+			"0003_buyer_auth_provider.up.sql",
+			"0004_merchant_multi_stock.preflight.sql",
+			"0005_file_records_table.preflight.sql",
+			"0006_file_binding_ownership.preflight.sql",
+			"0007_license_file_privacy.preflight.sql",
+			"0008_anonymous_upload_governance.preflight.sql",
+			"0008_anonymous_upload_governance.up.sql",
+			"0008_anonymous_upload_governance.postflight.sql",
+			`ERROR 1644 \(45000\)`,
+			"historical-before.txt",
+			"historical-after.txt",
+			"TestUploadGovernanceMySQLConcurrencyAndCleanup",
+			"UPLOAD_GOVERNANCE_MYSQL_TEST=1",
+			"AUTO_MIGRATE=false",
+			"AUTO_MIGRATE=true",
+			"production-before.txt",
+			"production-after.txt",
+			"source-sha256.txt",
+			"sha256sum",
+			"isolated anonymous upload governance acceptance passed",
+			"resources retained for inspection under Compose project",
+		},
+		"../../Makefile": {
+			"acceptance-anonymous-upload-governance-smoke:",
+			"ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM",
+			"I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA",
+			"ACCEPTANCE_DB_ENGINE=mysql8.4",
+			"./deploy/acceptance/anonymous-upload-governance-smoke.sh",
+		},
+		"../../deploy/acceptance/docker-compose.yml": {
+			"FILE_UPLOAD_MAX_MB: \"10\"",
+			"FILE_UPLOAD_MULTIPART_MAX_MB: \"11\"",
+			"FILE_UPLOAD_IP_HASH_SECRET:",
+			"FILE_UPLOAD_ANON_PRESIGN_PER_HOUR: \"20\"",
+			"FILE_UPLOAD_ANON_ACTIVE_FILES: \"5\"",
+			"FILE_UPLOAD_ANON_ACTIVE_MB: \"50\"",
+			"FILE_UPLOAD_MERCHANT_QUOTA_MB: \"2048\"",
+			"FILE_UPLOAD_GLOBAL_QUOTA_MB: \"20480\"",
+			"TRUSTED_PROXY_CIDRS: none",
+		},
+		"../../deploy/acceptance/nginx.conf": {
+			"client_max_body_size 11m;",
+			"error_page 413 = @upload_too_large;",
+			"location @upload_too_large",
+			"default_type application/json;",
+			`return 413 '{"code":10008,"message":"upload file too large","request_id":"$request_id"}';`,
+		},
+		"../../deploy/acceptance/prepare.sh": {
+			"file_upload_ip_hash_secret",
+			"openssl rand -hex 32",
+			"FILE_UPLOAD_IP_HASH_SECRET=",
+			"unset mysql_password mysql_root_password jwt_access_secret jwt_refresh_secret file_upload_ip_hash_secret",
+		},
+	}
+
+	for path, snippets := range tests {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("read %s: %v", path, err)
+			continue
+		}
+		text := string(raw)
+		for _, snippet := range snippets {
+			if !strings.Contains(text, snippet) {
+				t.Errorf("%s missing %q", path, snippet)
+			}
+		}
+	}
+}
