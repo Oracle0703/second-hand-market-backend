@@ -712,6 +712,9 @@ Create a test that executes `../../deploy/acceptance/session-revocation-smoke.sh
 ```go
 func TestSessionRevocationAcceptanceRejectsUnsafeEnvironmentBeforeDocker(t *testing.T) {
 	script := "../../deploy/acceptance/session-revocation-smoke.sh"
+	if info, err := os.Stat(script); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("acceptance script must exist as a regular file: %v", err)
+	}
 	stubDir := t.TempDir()
 	dockerCalled := filepath.Join(stubDir, "docker-called")
 	dockerStub := filepath.Join(stubDir, "docker")
