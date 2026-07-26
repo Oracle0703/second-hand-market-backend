@@ -48,10 +48,10 @@ func newTestServerWithStorage(t *testing.T, provider string) (*app.Server, strin
 		AutoMigrate:              true,
 		FileStorageProvider:      provider,
 		FileUploadLocalDir:       uploadDir,
-		FileUploadMaxBytes:       40 * 1024 * 1024,
 		ImageCompressTargetBytes: 20 * 1024 * 1024,
 		ImageProcessorDriver:     "passthrough",
 	}
+	configureTestUploadGovernance(&cfg)
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server error: %v", err)
@@ -68,6 +68,22 @@ func newTestServerWithStorage(t *testing.T, provider string) (*app.Server, strin
 		t.Fatalf("create test admins: %v", err)
 	}
 	return srv, uploadDir
+}
+
+func configureTestUploadGovernance(cfg *app.Config) {
+	cfg.FileUploadMaxBytes = 10 * 1024 * 1024
+	cfg.FileUploadMultipartMaxBytes = 11 * 1024 * 1024
+	cfg.FileUploadIPHashSecret = "test-only-upload-ip-hmac-secret-32-bytes"
+	cfg.FileUploadAnonPresignPerHour = 20
+	cfg.FileUploadAnonActiveFiles = 5
+	cfg.FileUploadAnonActiveBytes = 50 * 1024 * 1024
+	cfg.FileUploadMerchantQuotaBytes = 2 * 1024 * 1024 * 1024
+	cfg.FileUploadGlobalQuotaBytes = 20 * 1024 * 1024 * 1024
+	cfg.FileUploadCleanupInterval = 5 * time.Minute
+	cfg.FileUploadCleanupBatchSize = 50
+	cfg.FileUploadCleanupClaimTTL = 10 * time.Minute
+	cfg.FileUploadCleanupGrace = 30 * time.Minute
+	cfg.TrustedProxyCIDRs = nil
 }
 
 func newTestServerWithProcessor(t *testing.T, processor media.Processor) *app.Server {

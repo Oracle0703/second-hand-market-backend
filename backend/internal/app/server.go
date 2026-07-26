@@ -41,9 +41,6 @@ func NewServer(cfg Config) (*Server, error) {
 	if strings.TrimSpace(cfg.FileUploadLocalDir) == "" {
 		cfg.FileUploadLocalDir = "uploads"
 	}
-	if cfg.FileUploadMaxBytes <= 0 {
-		cfg.FileUploadMaxBytes = media.DefaultMaxOriginalBytes
-	}
 	if cfg.ImageCompressTargetBytes <= 0 {
 		cfg.ImageCompressTargetBytes = media.DefaultTargetBytes
 	}
@@ -67,6 +64,9 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	if err := r.SetTrustedProxies(cfg.TrustedProxyCIDRs); err != nil {
+		return nil, fmt.Errorf("configure trusted proxies: %w", err)
+	}
 	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret), middleware.RequireActiveAdminSession(db))
 	s := &Server{
 		cfg:            cfg,

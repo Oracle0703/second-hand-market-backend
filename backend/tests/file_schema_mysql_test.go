@@ -45,7 +45,6 @@ func TestLicenseFilePrivacyWithMigrationOnlyMySQL(t *testing.T) {
 		AutoMigrate:              strings.EqualFold(os.Getenv("AUTO_MIGRATE"), "true"),
 		FileStorageProvider:      "local",
 		FileUploadLocalDir:       uploadDir,
-		FileUploadMaxBytes:       40 * 1024 * 1024,
 		ImageCompressTargetBytes: 20 * 1024 * 1024,
 		ImageProcessorDriver:     "passthrough",
 		BuyerWechatLoginMode:     "mock",
@@ -53,6 +52,7 @@ func TestLicenseFilePrivacyWithMigrationOnlyMySQL(t *testing.T) {
 		BuyerWechatHTTPTimeout:   5 * time.Second,
 		BuyerDouyinHTTPTimeout:   5 * time.Second,
 	}
+	configureTestUploadGovernance(&cfg)
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("start license privacy migration-only server: %v", err)
@@ -159,7 +159,7 @@ func TestFileFlowWithMigrationOnlyMySQL(t *testing.T) {
 	}
 
 	newConfig := func(autoMigrate bool) app.Config {
-		return app.Config{
+		cfg := app.Config{
 			AppEnv:                   "test",
 			Addr:                     ":0",
 			DBDriver:                 "mysql",
@@ -171,7 +171,6 @@ func TestFileFlowWithMigrationOnlyMySQL(t *testing.T) {
 			AutoMigrate:              autoMigrate,
 			FileStorageProvider:      "local",
 			FileUploadLocalDir:       t.TempDir(),
-			FileUploadMaxBytes:       40 * 1024 * 1024,
 			ImageCompressTargetBytes: 20 * 1024 * 1024,
 			ImageProcessorDriver:     "passthrough",
 			BuyerWechatLoginMode:     "mock",
@@ -179,6 +178,8 @@ func TestFileFlowWithMigrationOnlyMySQL(t *testing.T) {
 			BuyerWechatHTTPTimeout:   5 * time.Second,
 			BuyerDouyinHTTPTimeout:   5 * time.Second,
 		}
+		configureTestUploadGovernance(&cfg)
+		return cfg
 	}
 
 	srv, err := app.NewServer(newConfig(false))

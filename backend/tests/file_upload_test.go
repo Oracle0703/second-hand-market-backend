@@ -296,31 +296,42 @@ func TestMerchantAndAdminPresignOwnership(t *testing.T) {
 	}
 }
 
-func TestFilePresignAllowsImageUpTo40MB(t *testing.T) {
+func TestFilePresignAllowsImageAt10MiB(t *testing.T) {
 	srv := newTestServer(t)
 
 	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
 		"biz_type":  "MERCHANT_LICENSE",
 		"file_name": "license.heic",
-		"file_size": 40 * 1024 * 1024,
+		"file_size": 10 * 1024 * 1024,
 		"mime_type": "image/heic",
 	}, nil)
 	if resp.Code != 0 {
-		t.Fatalf("presign should allow 40MB image: %+v", resp)
+		t.Fatalf("presign should allow a 10 MiB image: %+v", resp)
 	}
 }
 
-func TestFilePresignRejectsImageOver40MB(t *testing.T) {
+func TestFilePresignRejectsImageOver10MiBWithoutRow(t *testing.T) {
 	srv := newTestServer(t)
+	var before int64
+	if err := srv.DB.Model(&model.FileRecord{}).Count(&before).Error; err != nil {
+		t.Fatalf("count files before presign: %v", err)
+	}
 
 	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
 		"biz_type":  "MERCHANT_LICENSE",
 		"file_name": "huge.jpg",
-		"file_size": 40*1024*1024 + 1,
+		"file_size": 10*1024*1024 + 1,
 		"mime_type": "image/jpeg",
 	}, nil)
 	if resp.Code != 10008 {
-		t.Fatalf("presign should reject image > 40MB: %+v", resp)
+		t.Fatalf("presign should reject an image over 10 MiB: %+v", resp)
+	}
+	var after int64
+	if err := srv.DB.Model(&model.FileRecord{}).Count(&after).Error; err != nil {
+		t.Fatalf("count files after presign: %v", err)
+	}
+	if after != before {
+		t.Fatalf("rejected presign created rows: before=%d after=%d", before, after)
 	}
 }
 
