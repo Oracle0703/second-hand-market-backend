@@ -436,6 +436,33 @@ only production interaction is read-only `docker inspect` of the named API,
 Web, and MySQL containers before and after the isolated run; the snapshots must
 match exactly before the success marker is printed.
 
+## Miniapp auth refresh acceptance
+
+The F-05 matrix is a source-only test-server review. It uses no database,
+Docker service, DSN, application server, or application API request. It must
+run from the retained dedicated source directory at the exact reviewed commit
+with Node `v22.22.2` and npm `10.9.7`:
+
+```bash
+MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_RUNS_ONLY_ISOLATED_MINIAPP_TESTS \
+make acceptance-miniapp-auth-refresh-smoke
+```
+
+The guard and exact toolchain checks run before `npm ci`. Dependency downloads
+use the public `https://registry.npmmirror.com` registry with npm lockfile-host
+replacement, so stale private registry URLs cannot receive a connection. The
+script then runs the focused refresh suite, the full miniapp suite, and both
+WeChat and Douyin production builds with
+`TARO_APP_API_BASE_URL=https://example.invalid/api/v1`. It does not start either
+bundle, contact a production API, read an `.env` file, or modify production
+data.
+
+Sanitized command output and its SHA-256 manifest are written only under the
+ignored `deploy/acceptance/evidence/miniapp-auth-refresh/` directory. Keep the
+authorized source directory and evidence in place for review. Passing this
+matrix is test-server approval of the reviewed source; it is not a production
+miniapp release and neither generated bundle may be deployed by this workflow.
+
 ## 7. Inspect and tear down
 
 Capture only sanitized evidence:
