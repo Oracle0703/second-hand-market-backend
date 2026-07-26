@@ -30,10 +30,8 @@
 
 F-09/F-16 脱敏证据与 SHA-256 见
 `docs/superpowers/reviews/2026-07-26-file-category-schema-isolated-acceptance.md`。
-F-02 脱敏证据保留在测试服务器
-`/home/yu/services/secondhand-file-binding-acceptance-20260726/deploy/acceptance/evidence/file-binding-authorization/`，
-SHA-256 清单记录在
-`.superpowers/sdd/2026-07-26-file-binding-authorization/task-8-report.md`。
+F-02 隔离范围、脱敏证据路径与 SHA-256 清单见
+`docs/superpowers/reviews/2026-07-26-file-binding-authorization-isolated-acceptance.md`。
 
 ## 2. 本地验证结果
 
