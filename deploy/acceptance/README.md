@@ -479,6 +479,50 @@ docker compose --project-name secondhand-upload-governance-acceptance \
   down --volumes --remove-orphans
 ```
 
+## Session access revocation acceptance
+
+The F-14 matrix runs only from the separately authorized directory
+`/home/yu/services/secondhand-session-revocation-acceptance-20260727` and uses
+the fixed Compose project `secondhand-session-revocation-acceptance`. It
+refuses an existing project container, volume, network, or evidence directory;
+accepts only the internal Compose DSN
+`mysql:3306/second_hand_market_acceptance`; and requires MySQL 8.4.x.
+
+After `deploy/acceptance/prepare.sh` has generated remote-only secrets, run:
+
+```bash
+COMPOSE_PROJECT_NAME=secondhand-session-revocation-acceptance \
+SESSION_REVOCATION_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-session-revocation-smoke
+```
+
+The script applies the full `0001..0008` migration chain and runs the focused
+ADMIN, MERCHANT, and BUYER revocation matrix with both `AUTO_MIGRATE=false` and
+`AUTO_MIGRATE=true`. It proves one-winner concurrent logout, unrelated-session
+survival, explicit account disablement, merchant review downgrade, invalid
+session rejection, fail-closed database errors, and primary-key MySQL query
+plans. It then runs the complete backend suite and `go vet ./...`.
+
+The transfer whitelist is limited to backend Go source/tests/migrations and
+Dockerfile, non-sensitive `deploy/acceptance/` source/manifests, `Makefile`,
+`backend/go.mod`, and `backend/go.sum`. Never transfer `.env`, secrets,
+databases, uploads, evidence, `.git`, caches, `node_modules`, `backend/app.db`,
+miniapp private configuration, `.tmp/`, or any protected review document. The
+script creates a temporary Docker build context from this same whitelist, so
+the remote-only `.env`, secrets, and evidence never enter the Docker build
+context.
+
+Sanitized evidence is retained under
+`deploy/acceptance/evidence/session-access-revocation/`. It contains committed
+source hashes, MySQL/tool results, PASS summaries, query-plan assertions,
+production-container snapshots, and an evidence SHA-256 manifest. The only
+production interaction is read-only `docker inspect` of three named container
+identities, states, and restart counts; before and after snapshots must match.
+The script never executes production SQL, reads production uploads, deploys or
+restarts production services, or changes production data or sessions. It stops
+the dedicated project services at exit and retains its resources for review.
+
 ## Miniapp auth refresh acceptance
 
 The F-05 matrix is a source-only test-server review. It uses no database,
