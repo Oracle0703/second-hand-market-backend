@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"second-hand-market-backend/backend/internal/common"
 )
 
 func buyerLogin(t *testing.T, srv interface{ Router() http.Handler }, code, deviceID string) apiResp {
@@ -62,9 +64,15 @@ func TestBuyerAuthRefreshLogout(t *testing.T) {
 	if logout.Code != 0 {
 		t.Fatalf("buyer logout failed: %+v", logout)
 	}
+	accessAfterLogout := requestJSON(t, srv.Router, http.MethodGet,
+		"/api/v1/buyer/intents", nil,
+		map[string]string{"Authorization": "Bearer " + access})
+	if accessAfterLogout.Code != common.CodeUnauthorized {
+		t.Fatalf("access after logout code = %d", accessAfterLogout.Code)
+	}
 
 	refreshAfterLogout := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/refresh", map[string]interface{}{"refresh_token": refresh}, headers)
-	if refreshAfterLogout.Code != 10002 {
+	if refreshAfterLogout.Code != common.CodeUnauthorized {
 		t.Fatalf("refresh after logout should be unauthorized: %+v", refreshAfterLogout)
 	}
 }

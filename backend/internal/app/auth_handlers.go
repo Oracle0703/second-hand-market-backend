@@ -267,10 +267,23 @@ func (s *Server) handleLogout(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	now := time.Now()
-	if err := s.DB.Model(&model.AuthSession{}).Where("id = ?", actor.SessionID).Update("revoked_at", &now).Error; err != nil {
-		common.Fail(c, common.ErrInternal)
+	if err := revokeCurrentSession(s.DB, actor, time.Now()); err != nil {
+		common.Fail(c, err)
 		return
 	}
 	common.Success(c, gin.H{"success": true})
+}
+
+func revokeCurrentSession(db *gorm.DB, actor common.Actor, now time.Time) error {
+	result := db.Model(&model.AuthSession{}).
+		Where("id = ? AND user_type = ? AND user_id = ? AND revoked_at IS NULL",
+			actor.SessionID, actor.UserType, actor.UserID).
+		Update("revoked_at", &now)
+	if result.Error != nil {
+		return common.ErrInternal
+	}
+	if result.RowsAffected != 1 {
+		return common.ErrUnauthorized
+	}
+	return nil
 }
