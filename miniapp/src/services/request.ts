@@ -62,6 +62,28 @@ function isUnauthorized(statusCode: number, payload: unknown): boolean {
   return statusCode === 401 || (isAPIResponse(payload) && payload.code === 10002)
 }
 
+function hasRefreshTokens(value: unknown): value is { access_token: string; refresh_token: string } {
+  return isRecord(value) &&
+    typeof value.access_token === 'string' && value.access_token.trim() !== '' &&
+    typeof value.refresh_token === 'string' && value.refresh_token.trim() !== ''
+}
+
+function clearSessionIfMatches(accessToken: string, refreshToken: string): void {
+  const current = useSessionStore.getState()
+  if (current.accessToken === accessToken && current.refreshToken === refreshToken) {
+    current.clearSession()
+  }
+}
+
+function failCapturedRefresh(capturedRefreshToken: string): RefreshOutcome {
+  const current = useSessionStore.getState()
+  if (current.refreshToken !== capturedRefreshToken) {
+    return 'stale'
+  }
+  current.clearSession()
+  return 'failed'
+}
+
 function formatPayloadSummary(payload: unknown): string {
   if (typeof payload === 'string') {
     return `string:${payload.slice(0, 200)}`
@@ -92,16 +114,15 @@ async function refreshAccessToken(capturedRefreshToken: string): Promise<Refresh
       }
     })
     const payload = res.data
-    if (!isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
+    if (res.statusCode < 200 || res.statusCode >= 300 ||
+      !isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
       if (__DEV_MODE__) {
         console.error('[miniapp-api] refresh malformed response', res.statusCode, res.header, res.data)
       }
-      useSessionStore.getState().clearSession()
-      return 'failed'
+      return failCapturedRefresh(capturedRefreshToken)
     }
-    if (payload.code !== 0) {
-      useSessionStore.getState().clearSession()
-      return 'failed'
+    if (payload.code !== 0 || !hasRefreshTokens(payload.data)) {
+      return failCapturedRefresh(capturedRefreshToken)
     }
     const current = useSessionStore.getState()
     if (current.refreshToken !== capturedRefreshToken) {
@@ -110,8 +131,7 @@ async function refreshAccessToken(capturedRefreshToken: string): Promise<Refresh
     current.setSession(payload.data.access_token, payload.data.refresh_token, current.profile)
     return 'refreshed'
   } catch {
-    useSessionStore.getState().clearSession()
-    return 'failed'
+    return failCapturedRefresh(capturedRefreshToken)
   }
 }
 
@@ -151,7 +171,12 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
     console.log('[miniapp-api] response', options.method, url, res.statusCode, res.header, payload)
   }
 
-  if (isUnauthorized(res.statusCode, payload) && !options.skipAuth && !options.retrying && state.refreshToken) {
+  if (isUnauthorized(res.statusCode, payload) && !options.skipAuth) {
+    if (options.retrying || !state.refreshToken) {
+      clearSessionIfMatches(state.accessToken, state.refreshToken)
+      throw new AuthExpiredError()
+    }
+
     const capturedRefreshToken = state.refreshToken
     if (!refreshingPromise) {
       refreshingPromise = refreshAccessToken(capturedRefreshToken).finally(() => {
@@ -162,6 +187,7 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
     if (outcome === 'refreshed') {
       return apiRequest<T>({ ...options, retrying: true })
     }
+    throw new AuthExpiredError()
   }
 
   if (res.statusCode < 200 || res.statusCode >= 300) {
