@@ -373,6 +373,40 @@ file upload flow, and one `AUTO_MIGRATE=true` compatibility startup. It leaves
 the isolated project and evidence in place for inspection. It does not deploy
 or migrate production.
 
+## File binding authorization acceptance
+
+The F-02 matrix uses a third fixed Compose project,
+`secondhand-file-binding-acceptance`. It refuses any existing container,
+volume, or network carrying that project label, accepts no external DSN, and
+writes evidence only under `evidence/file-binding-authorization/`.
+
+Prepare acceptance-only secrets with `./prepare.sh`, then run from the
+repository root:
+
+```bash
+FILE_BINDING_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_BINDING_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+make acceptance-file-binding-smoke
+```
+
+The command recreates the `0001..0005` schema for each dirty-data fixture and
+proves that orphan references, wrong file types, non-PASS files, empty URLs,
+cross-merchant reuse, and uploader-account mismatches fail before `0006` DDL.
+It then verifies clean ownership backfill, unbound PUBLIC/MERCHANT behavior,
+the complete `0001..0006` chain, API registration/product binding, concurrent
+one-time claim, and `AUTO_MIGRATE=true` compatibility. The command must never
+run from a production checkout or against production volumes.
+
+Successful runs retain the isolated project for review. After evidence is
+approved, remove only that project explicitly:
+
+```bash
+docker compose --project-name secondhand-file-binding-acceptance \
+  --env-file deploy/acceptance/.env \
+  --file deploy/acceptance/docker-compose.yml \
+  down --volumes --remove-orphans
+```
+
 ## 7. Inspect and tear down
 
 Capture only sanitized evidence:

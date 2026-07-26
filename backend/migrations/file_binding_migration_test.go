@@ -57,3 +57,28 @@ func TestFileBindingMigrationHasNoDestructiveDownScript(t *testing.T) {
 		t.Fatalf("0006 down migration must not exist; stat error = %v", err)
 	}
 }
+
+func TestFileBindingAcceptanceScriptContracts(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/file-binding-authorization-smoke.sh")
+	if err != nil {
+		t.Fatalf("read file binding acceptance script: %v", err)
+	}
+	text := string(raw)
+	for _, snippet := range []string{
+		"FILE_BINDING_ACCEPTANCE_CONFIRM",
+		"I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_BINDING_DATA",
+		"file_binding_ownership_preflight_passed",
+		"file_binding_ownership_postflight_passed",
+		"TestFileFlowWithMigrationOnlyMySQL",
+		"docker container ls -a --filter",
+		"file binding preflight: invalid product image references",
+		"file binding preflight: file is referenced by multiple merchants",
+		"file binding preflight: merchant uploader ownership mismatch",
+		`ERROR 1644 \(45000\)`,
+		`[[ "$mysql_version" == 8.4.* ]]`,
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Errorf("acceptance script missing %q", snippet)
+		}
+	}
+}

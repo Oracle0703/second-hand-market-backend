@@ -1,4 +1,4 @@
-.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke
+.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke acceptance-file-binding-smoke
 
 backend-test:
 	cd backend && mkdir -p .cache/go/mod .cache/go/build && GOMODCACHE=$$(pwd)/.cache/go/mod GOCACHE=$$(pwd)/.cache/go/build GOPROXY=https://goproxy.cn,direct go test ./...
@@ -20,3 +20,8 @@ acceptance-file-schema-smoke:
 	@test "$${FILE_SCHEMA_ACCEPTANCE_CONFIRM:-}" = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_SCHEMA_DATA" || { echo "set FILE_SCHEMA_ACCEPTANCE_CONFIRM for the isolated file schema smoke" >&2; exit 1; }
 	@test "$${ACCEPTANCE_DB_ENGINE:-}" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
 	./deploy/acceptance/file-record-schema-smoke.sh
+
+acceptance-file-binding-smoke:
+	@test "$${FILE_BINDING_ACCEPTANCE_CONFIRM:-}" = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_FILE_BINDING_DATA" || { echo "set FILE_BINDING_ACCEPTANCE_CONFIRM for the isolated file binding smoke" >&2; exit 1; }
+	@test "$${ACCEPTANCE_DB_ENGINE:-}" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
+	./deploy/acceptance/file-binding-authorization-smoke.sh

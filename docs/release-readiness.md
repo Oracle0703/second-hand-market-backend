@@ -12,6 +12,7 @@
 - 商家/管理端退出登录已调用服务端 `POST /auth/logout`（F-08，2026-07-26）；本分支已提交，随下次 frontend 发布生效。商家 access token 即时吊销仍属 F-14，不在本发布范围。
 - 文件元数据表名以 `file_records` 为唯一契约（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`FileRecord.TableName()` 已固定；`0005` preflight/up/postflight 已入库（up 重复形态校验）。
 - 分类唯一性以 `(parent_id,name)` 为唯一契约（F-16）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**。GORM 模型和两条 seed 路径已对齐历史 SQL migration。
+- F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
 
 ### 1.1 首轮问题与后续 schema 修复状态
 
@@ -25,18 +26,24 @@
 | F-08 frontend logout | 已修复：调用服务端 logout，失败时仍清理本地会话 | 未单独做服务器 logout 验收；本地 8/8 测试通过 | 新 frontend 尚未部署 |
 | F-09 文件表 schema | 已修复：`file_records` 契约 + `0005` 三段门禁 | **MySQL 8.4.8 完整八态矩阵通过** | `0005` 未在生产执行 |
 | F-16 分类 schema | 已修复：复合索引 + parent-aware seed | **同一矩阵的 AutoMigrate RED→GREEN 通过** | 新后端尚未部署 |
+| F-02 文件绑定授权 | 已修复：商家归属 + PUBLIC 一次性 capability + 商品/执照事务校验 | **MySQL 8.4.8 回填/失败门禁/API/并发/AutoMigrate 矩阵通过** | `0006` 未执行，frontend/backend 未部署 |
 
-脱敏证据与 SHA-256 见
+F-09/F-16 脱敏证据与 SHA-256 见
 `docs/superpowers/reviews/2026-07-26-file-category-schema-isolated-acceptance.md`。
+F-02 脱敏证据保留在测试服务器
+`/home/yu/services/secondhand-file-binding-acceptance-20260726/deploy/acceptance/evidence/file-binding-authorization/`，
+SHA-256 清单记录在
+`.superpowers/sdd/2026-07-26-file-binding-authorization/task-8-report.md`。
 
 ## 2. 本地验证结果
 
-- 后端：`go test ./...` 通过（含 `FileRecord` 表名契约、`0005` 迁移制品检查；opt-in `FILE_SCHEMA_MYSQL_TEST` 在无 DSN 时 skip）。
-- 前端：Node `22.22.2` 下 `npm run build` 通过，`npm test`（Vitest）为 6 files / 8 tests 全量通过（含 Layout logout、登录/安全页等；Pro Components 在测试中通过 stub 隔离）。历史记录：2026-07-24 前后曾因 Ant Design 模块初始化挂起未取得绿证，已在后续用 test-only stub 修复，不再作为当前阻断或开放项。
+- 后端：`go test ./...` 通过（含 `FileRecord` 表名契约、`0005`/`0006` 迁移制品检查；opt-in `FILE_SCHEMA_MYSQL_TEST` 在无 DSN 时 skip）。
+- 前端：Node `22.22.2` 下 `npm run build` 通过，`npm test`（Vitest）为 7 files / 10 tests 全量通过（含注册页不持久化并提交一次性 license capability token；Pro Components 在测试中通过 stub 隔离）。历史记录：2026-07-24 前后曾因 Ant Design 模块初始化挂起未取得绿证，已在后续用 test-only stub 修复，不再作为当前阻断或开放项。
 - 小程序：Node `22.22.2` 下 Vitest 为 11 files / 17 tests 全量通过。
 - 三条 smoke 脚本通过 `node --check`，已移除固定管理员/测试商家口令；管理员凭据改为环境注入，临时商家密码每次随机生成。
 - 主 smoke 已同步新库存断言：数量与总价、剩余库存不售罄、库存归零才 `SOLD`、关单释放预占且不改变上下架状态。
 - F-09/F-16：专用测试服务器 MySQL 8.4.8 完整矩阵退出 0；修复前同一 AutoMigrate 测试因 `uk_parent_name` 1061 失败，修复后通过。
+- F-02：专用项目 `secondhand-file-binding-acceptance` 完整矩阵退出 0；六类脏引用均以 SQLSTATE 45000 在 DDL 前失败，干净回填、PUBLIC/MERCHANT 未绑定文件、注册认领、商品绑定、并发单赢家及 AutoMigrate 兼容均通过。资源与脱敏证据保留在独立测试目录，生产容器 ID/状态/重启计数前后一致。
 
 生产数据克隆隔离验收已通过：MySQL 8.4.8 迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全以及桌面/移动浏览器验收均已完成。生产迁移、部署、管理员轮换和真实生产写验证仍未执行。三条 smoke 会创建测试业务数据，本轮没有在生产执行。
 
@@ -64,6 +71,9 @@ recoverable backup evidence
 -> 0005 file_records preflight
 -> 0005 file_records up migration exactly once
 -> 0005 file_records postflight
+-> 0006 file binding ownership preflight
+-> 0006 file binding ownership up migration exactly once
+-> 0006 file binding ownership postflight
 -> deploy API and admin frontend together
 -> health/auth/read checks
 -> controlled dedicated test product create/close/complete
@@ -89,7 +99,13 @@ recoverable backup evidence
 - `backend/migrations/0005_file_records_table.up.sql`
 - `backend/migrations/0005_file_records_table.postflight.sql`
 
-迁移前的停止条件：active 订单非零；`LOCKED` 商品非零；旧索引形态不是预期的唯一 `(product_id,is_active)`；缺少可恢复备份证据；或 `yaner` 缺失、重复、或无法采集发布前指纹。`LOCKED > 0` 时，先报告受影响行 ID 及其 active-order 计数，取得明确业务批准后才可逐行处置；不得批量改写所有受影响商品状态。文件表若同时存在 `files` 与 `file_records`，或两者皆无，`0005` preflight 必须失败并人工调查，不得合并或静默丢表。
+三份唯一的 `0006` 门禁文件为：
+
+- `backend/migrations/0006_file_binding_ownership.preflight.sql`
+- `backend/migrations/0006_file_binding_ownership.up.sql`
+- `backend/migrations/0006_file_binding_ownership.postflight.sql`
+
+迁移前的停止条件：active 订单非零；`LOCKED` 商品非零；旧索引形态不是预期的唯一 `(product_id,is_active)`；缺少可恢复备份证据；或 `yaner` 缺失、重复、或无法采集发布前指纹。`LOCKED > 0` 时，先报告受影响行 ID 及其 active-order 计数，取得明确业务批准后才可逐行处置；不得批量改写所有受影响商品状态。文件表若同时存在 `files` 与 `file_records`，或两者皆无，`0005` preflight 必须失败并人工调查，不得合并或静默丢表。`0006` preflight 若发现孤儿引用、错误业务类型、非 `PASS`、空 URL、跨商家复用或上传账号归属不一致，也必须在 DDL 前停止。
 
 生产不得运行 `smoke-mysql-concurrency.mjs`。生产写验证只使用小数量的专用测试商家/商品，依次执行创建 -> 关闭及创建 -> 完成；不得使用 `yaner` 数据，也不得仅为测试轮换现有管理员密码。
 
@@ -104,7 +120,7 @@ F-09 设计见 [file-record-schema-alignment-design](./superpowers/specs/2026-07
 
 这些事项阻断多库存版本正式上线。F-12、F-13、license governance、miniapp ordering、MySQL root rotation 均在本次发布范围外，不得借此扩大生产窗口。
 
-frontend Vitest、F-08 logout、F-09 与 F-16 已在本地代码侧关闭；F-09/F-16 也已通过隔离 MySQL 8.4 测试服务器审核，**不再**列为本地或隔离验收阻断。生产 frontend/backend bundle 与 `0004`/`0005` 仍须随维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。
+frontend Vitest、F-08 logout、F-02、F-09 与 F-16 已在本地代码侧关闭；F-02/F-09/F-16 也已通过隔离 MySQL 8.4 测试服务器审核，**不再**列为本地或隔离验收阻断。生产 frontend/backend bundle 与 `0004`/`0005`/`0006` 仍须随维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04、F-06 与 F-13 仍是独立开放范围，不因 F-02 关闭而改变状态。
 
 ## 5. 回滚边界
 
@@ -113,3 +129,4 @@ frontend Vitest、F-08 logout、F-09 与 F-16 已在本地代码侧关闭；F-09
 - 管理员口令轮换后不得恢复仓库历史公开口令。
 - 任何回滚都不得删除、禁用、改名或重置 `yaner`，也不得把其多库存商品机械改为 1。
 - `0005` 无 destructive down：应用回滚保留 `file_records`，不得把表改回 `files`（否则会重新打开 F-09）。
+- `0006` 无 destructive down：应用回滚保留归属/capability 列和索引；不得清空已回填归属或恢复 capability token。

@@ -29,6 +29,7 @@
 | 10009 | 频率限制 |
 | 10010 | 并发冲突（如商品已被占用） |
 | 10011 | 重复提交（幂等键冲突） |
+| 10012 | 文件绑定不合法（归属、类型、扫描状态、URL 或 capability 不匹配） |
 | 20001 | 系统内部错误 |
 
 ### 1.3 权限标识
@@ -54,7 +55,7 @@
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/auth/register` | POST | 商家注册 | `merchant_name(R), contact_name(R), phone(R), username(R), password(R), license_file_id(R)` | `merchant_id, merchant_no, review_status` | PUBLIC |
+| `/auth/register` | POST | 商家注册 | `merchant_name(R), contact_name(R), phone(R), username(R), password(R), license_file_id(R), license_file_token(R)` | `merchant_id, merchant_no, review_status` | PUBLIC |
 | `/auth/login` | POST | 登录 | `login_type(R: ADMIN/MERCHANT), username(R), password(R)` | `access_token, refresh_token, expires_in, token_scope(full/onboarding), review_status, user{id,role,merchant_id?}` | PUBLIC |
 | `/auth/refresh` | POST | 刷新令牌 | `refresh_token(R)` | `access_token, refresh_token, expires_in` | PUBLIC |
 | `/auth/logout` | POST | 退出登录 | 无 | `success` | ADMIN/MERCHANT |
@@ -153,6 +154,7 @@ onboarding scope 黑名单：
 2. 非法状态流转返回 `10005`。
 3. 分类不存在或非二级分类返回 `10001`。
 4. 创建商品时 `stock <= 0` 返回 `10001`；调整到低于预占库存返回 `10010`。
+5. `image_file_ids` 中任一文件不存在、重复、非本商家所有、不是 `PRODUCT_IMAGE`、未达到 `PASS` 或 URL 为空时，整个事务返回 `10012`。
 
 幂等说明：
 1. `on-shelf/off-shelf/close` 重复请求且目标状态已达成时返回成功（`code=0`，`idempotent=true`）。
@@ -185,9 +187,9 @@ onboarding scope 黑名单：
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/files/presign` | POST | 获取上传凭证 | `biz_type(R), file_name(R), file_size(R), mime_type(R)` | `upload_url, object_key, file_id, expire_at` | ADMIN/MERCHANT/PUBLIC(注册场景) |
-| `/files/upload` | POST | 上传图片二进制内容 | `file_id(R), object_key(R), file(binary,R)` | `file_id, url, object_key, status` | ADMIN/MERCHANT/PUBLIC(注册场景) |
-| `/files/confirm` | POST | 上传完成确认 | `file_id(R), object_key(R)` | `file_id, url, status` | ADMIN/MERCHANT/PUBLIC(注册场景) |
+| `/files/presign` | POST | 获取上传凭证 | `biz_type(R), file_name(R), file_size(R), mime_type(R)` | `upload_url, object_key, file_id, expire_at, file_token(PUBLIC only)` | ADMIN/MERCHANT/PUBLIC(注册场景) |
+| `/files/upload` | POST | 上传图片二进制内容 | `file_id(R), object_key(R), file(binary,R), file_token(PUBLIC required)` | `file_id, url, object_key, status` | ADMIN/MERCHANT/PUBLIC(注册场景) |
+| `/files/confirm` | POST | 上传完成确认 | `file_id(R), object_key(R), file_token(PUBLIC required)` | `file_id, url, status` | ADMIN/MERCHANT/PUBLIC(注册场景) |
 
 失败场景：
 1. 仅允许 `jpeg/png/webp/heic/heif` 静态图片；`mov` 等视频返回 `10008`。
@@ -195,6 +197,8 @@ onboarding scope 黑名单：
 3. 服务端会统一压缩图片，压缩目标为 `20MB`，但不是最终拒绝门槛。
 4. `onboarding` token 上传 `PRODUCT_IMAGE` 返回 `10006`。
 5. `PUBLIC` 身份上传非资质类文件返回 `10003`。
+6. PUBLIC 匿名上传只允许 `MERCHANT_LICENSE`；`presign` 返回的原始 `file_token` 不持久化到前端存储，必须原样传给 `upload`、`confirm` 和最终 `auth/register.license_file_token`。
+7. capability 缺失、不匹配、过期、已使用，或文件类型/状态/URL 不符合绑定条件时返回 `10012`；并发注册同一 token 只允许一个事务成功。
 
 ## 10. 审计日志模块（operation-logs）
 
@@ -220,7 +224,8 @@ onboarding scope 黑名单：
   "phone": "13800138000",
   "username": "merchant_zhangsan",
   "password": "Passw0rd!2026",
-  "license_file_id": 10001
+  "license_file_id": 10001,
+  "license_file_token": "<one-time token returned by /files/presign>"
 }
 ```
 

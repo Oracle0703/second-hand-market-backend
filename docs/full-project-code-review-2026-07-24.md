@@ -119,6 +119,12 @@
 
 建立统一的文件绑定校验函数，在数据库事务内检查文件存在性、上传主体、商家归属、业务类型和扫描状态，再允许写入业务记录。
 
+#### 2026-07-26 F-02 后续核验
+
+以上原始发现与当时证据保持不变。当前分支已增加 `file_records.owner_merchant_id`、匿名一次性 capability token hash/失效时间、`0006` 三段 fail-closed 门禁，以及注册、重新提交资质、商品创建/编辑/上架的事务内绑定校验。PUBLIC 注册资质使用 `license_file_token` 原子认领；商品图片必须属于当前商家且为 `PRODUCT_IMAGE/PASS/非空 URL`。
+
+独立 Compose 项目 `secondhand-file-binding-acceptance` 在 MySQL 8.4.8 上完成干净回填、六类脏数据 DDL 前拒绝、完整 `0001..0006`、migration-only API、同一 token 并发单赢家和 AutoMigrate 兼容矩阵，结果为通过。生产 API/frontend 未部署，生产 `0006` 未执行，生产容器 ID/状态/重启计数在验收前后未变化。因此 F-02 为代码侧关闭、待发布与生产迁移，不改写为线上已修复；F-04、F-06、F-13 仍按原范围继续处理。
+
 ### F-03 [P1] 订单唯一索引与多库存、多订单需求冲突
 
 证据：

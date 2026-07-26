@@ -237,14 +237,25 @@
 | uploader_type | varchar(16) | `ADMIN/MERCHANT/PUBLIC` |
 | uploader_id | bigint null | 上传者 ID |
 | scan_status | varchar(16) | `PENDING/PASS/BLOCKED` |
+| owner_merchant_id | bigint unsigned null | 文件绑定的商家 ID；已绑定商品图和营业执照必须有值 |
+| capability_token_hash | char(64) null | PUBLIC 匿名上传的一次性 capability token SHA-256；绑定成功后清空 |
+| capability_expires_at | datetime(3) null | capability token 失效时间；绑定成功后清空 |
 | created_at | datetime | 创建时间 |
 
 索引建议：
 1. `uk_object_key(object_key)`
 2. `idx_biz_type_created(biz_type, created_at)`
+3. `idx_file_owner_biz_scan(owner_merchant_id, biz_type, scan_status)`
+4. `uk_file_capability_token(capability_token_hash)`
+5. `idx_file_capability_expires(capability_expires_at)`
 
 表名以完整 SQL migration 链和 `FileRecord.TableName()` 的
 `file_records` 为准；历史 `0001` 中的 `files` 由 `0005` 兼容迁移收敛。
+`0006` 为文件绑定增加商家归属和匿名一次性 capability。商品图片只能绑定
+到 `owner_merchant_id` 相同、`biz_type=PRODUCT_IMAGE`、`scan_status=PASS`
+且 URL 非空的文件；营业执照对应 `MERCHANT_LICENSE`。PUBLIC 营业执照在
+注册事务内使用原始 `file_token` 原子认领，成功后写入商家归属并清空 token
+hash/失效时间；同一 capability 只能成功认领一次。
 
 ### 2.11 operation_logs（操作审计日志）
 
