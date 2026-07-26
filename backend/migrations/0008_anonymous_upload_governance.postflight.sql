@@ -15,6 +15,16 @@ BEGIN
 
   SELECT COUNT(*) INTO v_count
   FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'file_records'
+    AND engine = 'InnoDB';
+  IF v_count <> 1 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance postflight: file_records must use InnoDB';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM information_schema.tables
   WHERE table_schema = DATABASE() AND table_name = 'files';
   IF v_count <> 0 THEN
     SIGNAL SQLSTATE '45000'
@@ -115,6 +125,16 @@ BEGIN
   IF v_count <> 3 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'upload governance postflight: quota guard columns are missing or drifted';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'file_quota_guards'
+    AND engine = 'InnoDB';
+  IF v_count <> 1 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance postflight: quota guard table must use InnoDB';
   END IF;
 
   SELECT COUNT(*) INTO v_count

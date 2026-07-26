@@ -261,6 +261,11 @@ setup_missing_guard_0008() {
   mysql_sql 'DELETE FROM file_quota_guards WHERE id=1;'
 }
 
+setup_drifted_guard_engine() {
+  run_0008 >/dev/null
+  mysql_sql 'ALTER TABLE file_quota_guards ENGINE=MyISAM;'
+}
+
 expect_0008_preflight_failure() {
   local name="$1"
   local setup_function="$2"
@@ -312,6 +317,8 @@ expect_0008_preflight_failure drifted-column setup_drifted_0008 \
   'upload governance preflight: 0008 columns are drifted'
 expect_0008_preflight_failure missing-guard-row setup_missing_guard_0008 \
   'upload governance preflight: fixed quota guard row is missing or drifted'
+expect_0008_preflight_failure drifted-guard-engine setup_drifted_guard_engine \
+  'upload governance preflight: quota guard table must use InnoDB'
 
 apply_chain_0001_0007
 seed_historical_rows

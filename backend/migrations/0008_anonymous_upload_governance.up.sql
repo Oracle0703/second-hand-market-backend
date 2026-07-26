@@ -16,6 +16,16 @@ BEGIN
       SET MESSAGE_TEXT = 'upload governance migration: canonical file_records table is required';
   END IF;
 
+  SELECT COUNT(*) INTO v_count
+  FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'file_records'
+    AND engine = 'InnoDB';
+  IF v_count <> 1 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance migration: file_records must use InnoDB';
+  END IF;
+
   SELECT COUNT(*) INTO v_columns
   FROM information_schema.columns
   WHERE table_schema = DATABASE()
@@ -59,6 +69,16 @@ BEGIN
     IF v_columns <> 5 OR v_indexes <> 2 OR v_guard_tables <> 1 THEN
       SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'upload governance migration: partial 0008 schema exists';
+    END IF;
+
+    SELECT COUNT(*) INTO v_count
+    FROM information_schema.tables
+    WHERE table_schema = DATABASE()
+      AND table_name = 'file_quota_guards'
+      AND engine = 'InnoDB';
+    IF v_count <> 1 THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'upload governance migration: quota guard table must use InnoDB';
     END IF;
 
     SELECT COUNT(*) INTO v_count

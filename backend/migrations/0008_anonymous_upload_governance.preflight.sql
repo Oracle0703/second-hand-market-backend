@@ -18,6 +18,16 @@ main: BEGIN
 
   SELECT COUNT(*) INTO v_count
   FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'file_records'
+    AND engine = 'InnoDB';
+  IF v_count <> 1 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance preflight: file_records must use InnoDB';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM information_schema.tables
   WHERE table_schema = DATABASE() AND table_name = 'files';
   IF v_count <> 0 THEN
     SIGNAL SQLSTATE '45000'
@@ -137,6 +147,16 @@ main: BEGIN
   IF v_columns <> 5 OR v_indexes <> 2 OR v_guard_tables <> 1 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'upload governance preflight: partial 0008 schema exists';
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'file_quota_guards'
+    AND engine = 'InnoDB';
+  IF v_count <> 1 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'upload governance preflight: quota guard table must use InnoDB';
   END IF;
 
   SELECT COUNT(*) INTO v_count
