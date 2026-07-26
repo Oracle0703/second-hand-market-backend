@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -353,6 +354,63 @@ func (s *Server) localUploadPath(objectKey string) (string, error) {
 		return "", common.ErrInvalidUpload
 	}
 	return target, nil
+}
+
+func normalizeObjectKey(raw string) (string, error) {
+	if raw == "" || strings.Contains(raw, "\\") {
+		return "", common.ErrNotFound
+	}
+	key := strings.TrimPrefix(raw, "/")
+	if key == "" || strings.HasPrefix(key, "/") {
+		return "", common.ErrNotFound
+	}
+	for _, segment := range strings.Split(key, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", common.ErrNotFound
+		}
+	}
+	if path.Clean(key) != key {
+		return "", common.ErrNotFound
+	}
+	return key, nil
+}
+
+func (s *Server) openLocalRegularFile(objectKey string) (*os.File, os.FileInfo, error) {
+	key, err := normalizeObjectKey(objectKey)
+	if err != nil {
+		return nil, nil, common.ErrNotFound
+	}
+	root, err := filepath.Abs(s.cfg.FileUploadLocalDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	target, err := s.localUploadPath(key)
+	if err != nil {
+		return nil, nil, common.ErrNotFound
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return nil, nil, common.ErrNotFound
+	}
+	rel, err := filepath.Rel(realRoot, realTarget)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, nil, common.ErrNotFound
+	}
+
+	file, err := os.Open(realTarget)
+	if err != nil {
+		return nil, nil, common.ErrNotFound
+	}
+	stat, err := file.Stat()
+	if err != nil || !stat.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, nil, common.ErrNotFound
+	}
+	return file, stat, nil
 }
 
 func (s *Server) publicFileURL(objectKey string) string {

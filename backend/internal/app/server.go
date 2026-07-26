@@ -67,15 +67,15 @@ func NewServer(cfg Config) (*Server, error) {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret), middleware.RequireActiveAdminSession(db))
-	if strings.EqualFold(cfg.FileStorageProvider, "local") {
-		r.Static("/uploads", cfg.FileUploadLocalDir)
-	}
 	s := &Server{
 		cfg:            cfg,
 		DB:             db,
 		Router:         r,
 		limiter:        newMemoryRateLimiter(),
 		imageProcessor: buildImageProcessor(cfg),
+	}
+	if strings.EqualFold(cfg.FileStorageProvider, "local") {
+		r.GET("/uploads/*path", s.handlePublicProductImage)
 	}
 	s.registerRoutes()
 	return s, nil

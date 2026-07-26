@@ -25,6 +25,13 @@ type apiResp struct {
 
 func newTestServer(t *testing.T) *app.Server {
 	t.Helper()
+	srv, _ := newTestServerWithUploadDir(t)
+	return srv
+}
+
+func newTestServerWithUploadDir(t *testing.T) (*app.Server, string) {
+	t.Helper()
+	uploadDir := t.TempDir()
 	cfg := app.Config{
 		Addr:                     ":0",
 		DBDriver:                 "sqlite",
@@ -35,7 +42,7 @@ func newTestServer(t *testing.T) *app.Server {
 		RefreshTTL:               app.LoadConfig().RefreshTTL,
 		AutoMigrate:              true,
 		FileStorageProvider:      "local",
-		FileUploadLocalDir:       t.TempDir(),
+		FileUploadLocalDir:       uploadDir,
 		FileUploadMaxBytes:       40 * 1024 * 1024,
 		ImageCompressTargetBytes: 20 * 1024 * 1024,
 		ImageProcessorDriver:     "passthrough",
@@ -55,7 +62,7 @@ func newTestServer(t *testing.T) *app.Server {
 	if err := srv.DB.Create(&admins).Error; err != nil {
 		t.Fatalf("create test admins: %v", err)
 	}
-	return srv
+	return srv, uploadDir
 }
 
 func newTestServerWithProcessor(t *testing.T, processor media.Processor) *app.Server {
