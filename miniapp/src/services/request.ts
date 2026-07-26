@@ -22,7 +22,18 @@ type RequestOptions<T> = {
 type UnknownRecord = Record<string, unknown>
 
 const BASE_URL = (typeof __API_BASE_URL__ === 'string' && __API_BASE_URL__.trim()) || 'https://market.meaningful.ink/api/v1'
-let refreshingPromise: Promise<boolean> | null = null
+type RefreshOutcome = 'refreshed' | 'failed' | 'stale'
+
+export class AuthExpiredError extends Error {
+  readonly code = 10002
+
+  constructor() {
+    super('登录已过期，请重新登录')
+    this.name = 'AuthExpiredError'
+  }
+}
+
+let refreshingPromise: Promise<RefreshOutcome> | null = null
 
 function buildURL(path: string): string {
   if (path.startsWith('http')) return path
@@ -47,6 +58,10 @@ function isAPIResponse<T>(payload: unknown): payload is APIResponse<T> {
   return isRecord(payload) && typeof payload.code === 'number'
 }
 
+function isUnauthorized(statusCode: number, payload: unknown): boolean {
+  return statusCode === 401 || (isAPIResponse(payload) && payload.code === 10002)
+}
+
 function formatPayloadSummary(payload: unknown): string {
   if (typeof payload === 'string') {
     return `string:${payload.slice(0, 200)}`
@@ -65,14 +80,12 @@ function buildMalformedResponseError(res: Taro.request.SuccessCallbackResult<unk
   return new Error(detail)
 }
 
-async function refreshAccessToken(): Promise<boolean> {
-  const { refreshToken, clearSession, setSession, profile } = useSessionStore.getState()
-  if (!refreshToken) return false
+async function refreshAccessToken(capturedRefreshToken: string): Promise<RefreshOutcome> {
   try {
     const res = await Taro.request<APIResponse<{ access_token: string; refresh_token: string }>>({
       url: buildURL('/buyer/auth/refresh'),
       method: 'POST',
-      data: { refresh_token: refreshToken },
+      data: { refresh_token: capturedRefreshToken },
       header: {
         'Content-Type': 'application/json',
         'X-Device-Id': ensureDeviceID()
@@ -83,18 +96,22 @@ async function refreshAccessToken(): Promise<boolean> {
       if (__DEV_MODE__) {
         console.error('[miniapp-api] refresh malformed response', res.statusCode, res.header, res.data)
       }
-      clearSession()
-      return false
+      useSessionStore.getState().clearSession()
+      return 'failed'
     }
     if (payload.code !== 0) {
-      clearSession()
-      return false
+      useSessionStore.getState().clearSession()
+      return 'failed'
     }
-    setSession(payload.data.access_token, payload.data.refresh_token, profile)
-    return true
+    const current = useSessionStore.getState()
+    if (current.refreshToken !== capturedRefreshToken) {
+      return 'stale'
+    }
+    current.setSession(payload.data.access_token, payload.data.refresh_token, current.profile)
+    return 'refreshed'
   } catch {
-    clearSession()
-    return false
+    useSessionStore.getState().clearSession()
+    return 'failed'
   }
 }
 
@@ -134,6 +151,19 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
     console.log('[miniapp-api] response', options.method, url, res.statusCode, res.header, payload)
   }
 
+  if (isUnauthorized(res.statusCode, payload) && !options.skipAuth && !options.retrying && state.refreshToken) {
+    const capturedRefreshToken = state.refreshToken
+    if (!refreshingPromise) {
+      refreshingPromise = refreshAccessToken(capturedRefreshToken).finally(() => {
+        refreshingPromise = null
+      })
+    }
+    const outcome = await refreshingPromise
+    if (outcome === 'refreshed') {
+      return apiRequest<T>({ ...options, retrying: true })
+    }
+  }
+
   if (res.statusCode < 200 || res.statusCode >= 300) {
     throw new Error(`request failed: status=${res.statusCode}, url=${url}, payload=${formatPayloadSummary(payload)}`)
   }
@@ -144,18 +174,6 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
 
   if (payload.code === 0) {
     return payload.data
-  }
-
-  if (payload.code === 10002 && !options.skipAuth && !options.retrying && state.refreshToken) {
-    if (!refreshingPromise) {
-      refreshingPromise = refreshAccessToken().finally(() => {
-        refreshingPromise = null
-      })
-    }
-    const ok = await refreshingPromise
-    if (ok) {
-      return apiRequest<T>({ ...options, retrying: true })
-    }
   }
 
   throw new Error(payload.message || `request failed: ${payload.code}`)
