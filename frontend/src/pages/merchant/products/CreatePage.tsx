@@ -15,6 +15,7 @@ import { useNavigate } from 'react-router-dom'
 import { PRODUCT_CONDITION_META, type ProductCondition } from '@/constants/status'
 import { api } from '@/services/api'
 import { yuanToCent } from '@/utils/price'
+import { validateUploadFile } from '@/utils/upload'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
 
@@ -161,6 +162,11 @@ export function CreatePage() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
+    const validationError = validateUploadFile(file)
+    if (validationError) {
+      message.error(validationError)
+      return
+    }
     if (uploadMutation.isPending) {
       message.info('图片上传中，请稍候')
       return
@@ -244,7 +250,7 @@ export function CreatePage() {
             选择并上传图片
           </Button>
           <div style={{ marginTop: 8 }}>
-            <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 40MB，服务端自动压缩。</Typography.Text>
+            <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 10 MiB，服务端自动压缩。</Typography.Text>
           </div>
         </div>
       </ProCard>

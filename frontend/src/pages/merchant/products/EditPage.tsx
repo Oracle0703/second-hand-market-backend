@@ -15,6 +15,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { getStatusText, PRODUCT_CONDITION_META, PRODUCT_STATUS_META, type ProductCondition, type ProductStatus } from '@/constants/status'
 import { api } from '@/services/api'
 import { centToYuanNumber, yuanToCent } from '@/utils/price'
+import { validateUploadFile } from '@/utils/upload'
 import { resolveAssetURL } from '@/utils/url'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
@@ -240,6 +241,11 @@ export function EditPage() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
+    const validationError = validateUploadFile(file)
+    if (validationError) {
+      message.error(validationError)
+      return
+    }
     if (!canEditDescImages) {
       message.error('当前状态不可编辑图片')
       return
@@ -359,7 +365,7 @@ export function EditPage() {
             选择并上传图片
           </Button>
           <div style={{ marginTop: 8 }}>
-            <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 40MB，服务端自动压缩。</Typography.Text>
+            <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 10 MiB，服务端自动压缩。</Typography.Text>
           </div>
         </div>
       </ProCard>

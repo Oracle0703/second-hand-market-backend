@@ -111,4 +111,19 @@ describe('RegisterPage license capability', () => {
       )
     })
   })
+
+  it('rejects an oversize license before presign', async () => {
+    const { container } = renderPage()
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+
+    fireEvent.change(input, {
+      target: {
+        files: [new File([new Uint8Array(10 * 1024 * 1024 + 1)], 'oversize.jpg', { type: 'image/jpeg' })]
+      }
+    })
+
+    expect(await screen.findByText('图片不能超过 10 MiB')).toBeTruthy()
+    expect(mockPresign).not.toHaveBeenCalled()
+    expect(mockUploadFile).not.toHaveBeenCalled()
+  })
 })

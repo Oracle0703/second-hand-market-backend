@@ -3,6 +3,7 @@ import { Alert, Button, Space, Typography, message } from 'antd'
 import { useRef, useState, type ChangeEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
+import { validateUploadFile } from '@/utils/upload'
 
 function normalizeImageMIME(file: File) {
   const raw = file.type?.toLowerCase()
@@ -34,6 +35,11 @@ export function RegisterPage() {
     e.target.value = ''
     if (!file) return
     setError('')
+    const validationError = validateUploadFile(file)
+    if (validationError) {
+      setError(validationError)
+      return
+    }
     setUploading(true)
     try {
       const mimeType = normalizeImageMIME(file)
@@ -167,7 +173,7 @@ export function RegisterPage() {
           <Button type="default" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
             {uploading ? '上传中...' : '选择并上传图片'}
           </Button>
-          <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 40MB，服务端自动压缩。</Typography.Text>
+          <Typography.Text type="secondary">支持 JPG、PNG、WebP、HEIC、HEIF，原图最大 10 MiB，服务端自动压缩。</Typography.Text>
           <Typography.Text type={uploadedLicense ? 'success' : 'secondary'}>
             {uploadedLicense ? `已上传：${uploadedLicense.fileName}（file_id: ${uploadedLicense.fileID}）` : '未上传'}
           </Typography.Text>
