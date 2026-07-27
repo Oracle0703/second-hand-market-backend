@@ -155,6 +155,53 @@ func TestBuyerIntentMySQLAcceptance(t *testing.T) {
 	assertBuyerIntentMySQLDriftFailsClosed(t, srv, fixture, buyerHeaders, merchantHeaders)
 }
 
+func TestBuyerIntentDriftBuyerCreateFailsClosed(t *testing.T) {
+	states := []struct {
+		name   string
+		status string
+		open   bool
+	}{
+		{name: "closed open", status: model.IntentClosed, open: true},
+		{name: "bogus closed", status: "BOGUS", open: false},
+	}
+	for index, state := range states {
+		t.Run(state.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			fixture := createBuyerIntentMySQLFixture(t, srv)
+			t.Cleanup(func() { cleanupBuyerIntentMySQLFixture(srv, fixture) })
+			intent := model.BuyerIntent{
+				IntentNo:   fmt.Sprintf("F11L%d%d", index, time.Now().UnixNano()),
+				BuyerID:    fixture.buyerID,
+				ProductID:  fixture.secondProductID,
+				MerchantID: fixture.merchantID,
+				Status:     state.status,
+				IsOpen:     state.open,
+			}
+			if err := srv.DB.Create(&intent).Error; err != nil {
+				t.Fatal("insert local buyer intent drift state")
+			}
+
+			beforeDigest := buyerIntentMySQLDigest(t, srv, intent.ID)
+			var beforeLogs int64
+			if err := srv.DB.Model(&model.OperationLog{}).Count(&beforeLogs).Error; err != nil {
+				t.Fatal("count operation logs before local drift create")
+			}
+			response := createBuyerIntentMySQL(t, srv, map[string]string{
+				"Authorization": "Bearer " + fixture.buyerToken,
+				"X-Device-Id":   fixture.buyerDevice,
+			}, fixture.secondProductID, fmt.Sprintf("f11-local-drift-%d", index))
+			requireBuyerIntentMySQLStatus(t, "local drift buyer create", response, http.StatusInternalServerError, 20001)
+			if afterDigest := buyerIntentMySQLDigest(t, srv, intent.ID); afterDigest != beforeDigest {
+				t.Fatal("local drift buyer create mutated the isolated buyer intent row")
+			}
+			var afterLogs int64
+			if err := srv.DB.Model(&model.OperationLog{}).Count(&afterLogs).Error; err != nil || afterLogs != beforeLogs {
+				t.Fatal("local drift buyer create changed isolated operation logs")
+			}
+		})
+	}
+}
+
 type buyerIntentMySQLResponse struct {
 	HTTPStatus int
 	Code       int
@@ -166,6 +213,7 @@ type buyerIntentMySQLFixture struct {
 	merchantID        uint64
 	merchantAccountID uint64
 	merchantToken     string
+	categoryID        uint64
 	productID         uint64
 	secondProductID   uint64
 	buyerID           uint64
@@ -220,10 +268,16 @@ func createBuyerIntentMySQLFixture(t *testing.T, srv *app.Server) buyerIntentMyS
 	if err := srv.DB.Create(&account).Error; err != nil {
 		t.Fatal("create isolated buyer intent merchant account")
 	}
+	category := model.Category{
+		Name: "F11 Category " + suffix, Level: 2, Status: model.CategoryEnabled, Sort: 1,
+	}
+	if err := srv.DB.Create(&category).Error; err != nil {
+		t.Fatal("create isolated buyer intent category")
+	}
 	price, originalPrice := 10000, 12000
 	product := model.Product{
 		ProductNo: "F11P" + suffix, MerchantID: merchant.ID, Title: "F11 Product", Description: "isolated product",
-		CategoryID: 1, PriceCent: price, OriginalPriceCent: &originalPrice, ConditionLevel: "GOOD", Stock: 2,
+		CategoryID: category.ID, PriceCent: price, OriginalPriceCent: &originalPrice, ConditionLevel: "GOOD", Stock: 2,
 		Status: model.ProductOnShelf, CreatedBy: account.ID, UpdatedBy: account.ID, Version: 1,
 	}
 	if err := srv.DB.Create(&product).Error; err != nil {
@@ -252,7 +306,7 @@ func createBuyerIntentMySQLFixture(t *testing.T, srv *app.Server) buyerIntentMyS
 	secondBuyer := createBuyerIntentMySQLBuyer(t, srv, "f11-second-buyer-"+suffix, "f11-device-b-"+suffix)
 	return buyerIntentMySQLFixture{
 		merchantID: merchant.ID, merchantAccountID: account.ID, merchantToken: merchantToken,
-		productID: product.ID, secondProductID: secondProduct.ID,
+		categoryID: category.ID, productID: product.ID, secondProductID: secondProduct.ID,
 		buyerID: firstBuyer.id, buyerToken: firstBuyer.token, buyerDevice: firstBuyer.device,
 		secondBuyerID: secondBuyer.id, secondBuyerToken: secondBuyer.token, secondBuyerDevice: secondBuyer.device,
 	}
@@ -295,6 +349,7 @@ func cleanupBuyerIntentMySQLFixture(srv *app.Server, fixture buyerIntentMySQLFix
 	_ = srv.DB.Unscoped().Where("id IN ?", buyerIDs).Delete(&model.BuyerUser{}).Error
 	_ = srv.DB.Where("product_id IN ?", productIDs).Delete(&model.ProductImage{}).Error
 	_ = srv.DB.Unscoped().Where("id IN ?", productIDs).Delete(&model.Product{}).Error
+	_ = srv.DB.Unscoped().Where("id = ?", fixture.categoryID).Delete(&model.Category{}).Error
 	_ = srv.DB.Where("merchant_id = ?", fixture.merchantID).Delete(&model.MerchantAuditLog{}).Error
 	_ = srv.DB.Unscoped().Where("id = ?", fixture.merchantAccountID).Delete(&model.MerchantAccount{}).Error
 	_ = srv.DB.Unscoped().Where("id = ?", fixture.merchantID).Delete(&model.Merchant{}).Error
@@ -431,6 +486,9 @@ func assertBuyerIntentMySQLDriftFailsClosed(t *testing.T, srv *app.Server, fixtu
 			t.Fatal("load isolated MySQL buyer intent drift state")
 		}
 		calls := []func() buyerIntentMySQLResponse{
+			func() buyerIntentMySQLResponse {
+				return createBuyerIntentMySQL(t, srv, buyerHeaders, fixture.secondProductID, fmt.Sprintf("f11-drift-create-%d", index))
+			},
 			func() buyerIntentMySQLResponse {
 				return buyerIntentMySQLRequest(t, srv, http.MethodGet, "/api/v1/buyer/intents", nil, buyerHeaders)
 			},
