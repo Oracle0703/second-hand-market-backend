@@ -4,6 +4,41 @@ This stack runs a production-mode API and admin frontend against an isolated
 MySQL 8.4 database on the same Docker host. It is intended for migration,
 concurrency, and UI acceptance before a production deployment.
 
+## Buyer intent open-uniqueness matrix
+
+Task 9 must transfer the approved source whitelist to the exact remote path
+`/home/yu/services/secondhand-buyer-intent-acceptance-20260727`. The transfer includes
+only the repository `Makefile`, the backend Dockerfile and Go module files,
+backend Go source excluding caches and uploads, migrations `0001..0009`, and
+non-sensitive acceptance shell, YAML, configuration, Markdown, Dockerfile, and
+SQL files. It excludes `.env`, `.env.*`, secrets, databases, `backend/app.db`,
+uploads, evidence, backups, `.git`, caches, `node_modules`, `.tmp`, compiled
+artifacts, configuration examples, and the protected review documents.
+
+Generate `.env` and the acceptance-only secret on that host with
+`deploy/acceptance/prepare.sh`. From the exact remote path, run:
+
+```bash
+BUYER_INTENT_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_BUYER_INTENT_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+COMPOSE_PROJECT_NAME=secondhand-buyer-intent-acceptance \
+make acceptance-buyer-intent-smoke
+```
+
+The harness refuses an existing Compose project or evidence directory. It
+stores sanitized results under
+`deploy/acceptance/evidence/buyer-intent-open-uniqueness`, including
+`production-before.txt` and `production-after.txt`. Those production snapshots
+contain only the fixed container name, container ID, state, and restart count
+for `secondhand-market-api`, `secondhand-market-web`, and
+`secondhand-market-mysql`; the harness does not inspect production environment
+variables, mounts, logs, networks, database content, uploads, or services.
+
+After the run, isolated containers are stopped while the
+`secondhand-buyer-intent-acceptance` containers, volumes, networks, and evidence
+are retained for authorized inspection. A passing matrix validates isolated
+MySQL 8.4 migration and application behavior; it does not execute production 0009.
+
 It deliberately does not reuse production container names, networks, volumes,
 credentials, upload storage, or published ports. MySQL is attached only to an
 internal database network and has no host port. API and Web share a separate

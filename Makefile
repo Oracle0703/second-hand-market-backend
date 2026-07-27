@@ -1,4 +1,4 @@
-.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke acceptance-file-binding-smoke acceptance-license-file-privacy-smoke acceptance-miniapp-auth-refresh-smoke acceptance-anonymous-upload-governance-smoke acceptance-session-revocation-smoke
+.PHONY: test backend-test backend-run frontend-dev acceptance-mysql-smoke acceptance-file-schema-smoke acceptance-file-binding-smoke acceptance-license-file-privacy-smoke acceptance-miniapp-auth-refresh-smoke acceptance-anonymous-upload-governance-smoke acceptance-session-revocation-smoke acceptance-buyer-intent-smoke
 
 backend-test:
 	cd backend && mkdir -p .cache/go/mod .cache/go/build && GOMODCACHE=$$(pwd)/.cache/go/mod GOCACHE=$$(pwd)/.cache/go/build GOPROXY=https://goproxy.cn,direct go test ./...
@@ -44,3 +44,8 @@ acceptance-session-revocation-smoke:
 	@test "$${SESSION_REVOCATION_ACCEPTANCE_CONFIRM:-}" = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA" || { echo "set SESSION_REVOCATION_ACCEPTANCE_CONFIRM for isolated session revocation tests" >&2; exit 1; }
 	@test "$${ACCEPTANCE_DB_ENGINE:-}" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
 	./deploy/acceptance/session-revocation-smoke.sh
+
+acceptance-buyer-intent-smoke:
+	@test "$$BUYER_INTENT_ACCEPTANCE_CONFIRM" = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_BUYER_INTENT_DATA" || { echo "set BUYER_INTENT_ACCEPTANCE_CONFIRM for isolated buyer intent tests" >&2; exit 1; }
+	@test "$$ACCEPTANCE_DB_ENGINE" = "mysql8.4" || { echo "set ACCEPTANCE_DB_ENGINE=mysql8.4" >&2; exit 1; }
+	./deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh

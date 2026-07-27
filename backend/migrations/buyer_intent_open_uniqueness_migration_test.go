@@ -1,13 +1,230 @@
 package migrations
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
+
+const buyerIntentAcceptanceConfirmation = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_BUYER_INTENT_DATA"
+
+func TestBuyerIntentOpenUniquenessAcceptanceHarnessContract(t *testing.T) {
+	scriptPath := "../../deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh"
+	scriptInfo, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat acceptance harness: %v", err)
+	}
+	if !scriptInfo.Mode().IsRegular() || scriptInfo.Mode()&0o111 == 0 {
+		t.Fatal("acceptance harness must be a regular executable file")
+	}
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read acceptance harness: %v", err)
+	}
+	for _, required := range []string{
+		"BUYER_INTENT_ACCEPTANCE_CONFIRM",
+		buyerIntentAcceptanceConfirmation,
+		"BUYER_INTENT_SOURCE_LIST_ONLY",
+		"secondhand-buyer-intent-acceptance",
+		"evidence/buyer-intent-open-uniqueness",
+		"ACCEPTANCE_DB_ENGINE=mysql8.4",
+		"MySQL 8.4 version check",
+		"0009_buyer_intent_open_uniqueness.preflight.sql",
+		"0009_buyer_intent_open_uniqueness.up.sql",
+		"0009_buyer_intent_open_uniqueness.postflight.sql",
+		"legacy",
+		"marker-only",
+		"both-key",
+		"final-rerun",
+		"invalid-state",
+		"duplicate-open",
+		"drifted-marker",
+		"drifted-key",
+		"ERROR 1644 (45000)",
+		"before/after row-summary comparisons",
+		"BUYER_INTENT_MYSQL_TEST=1",
+		"AUTO_MIGRATE=false",
+		"AUTO_MIGRATE=true",
+		"go test ./...",
+		"go test -race ./...",
+		"go vet ./...",
+		"source-sha256.txt",
+		"evidence-sha256.txt",
+		"production-before.txt",
+		"production-after.txt",
+		"resource retention marker",
+	} {
+		if !strings.Contains(string(script), required) {
+			t.Errorf("acceptance harness missing %q", required)
+		}
+	}
+
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for _, required := range []string{
+		"acceptance-buyer-intent-smoke:",
+		"BUYER_INTENT_ACCEPTANCE_CONFIRM",
+		buyerIntentAcceptanceConfirmation,
+		"ACCEPTANCE_DB_ENGINE",
+		"mysql8.4",
+		"./deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh",
+	} {
+		if !strings.Contains(string(makefile), required) {
+			t.Errorf("Makefile acceptance target missing %q", required)
+		}
+	}
+
+	readme, err := os.ReadFile("../../deploy/acceptance/README.md")
+	if err != nil {
+		t.Fatalf("read acceptance README: %v", err)
+	}
+	for _, required := range []string{
+		"/home/yu/services/secondhand-buyer-intent-acceptance-20260727",
+		"secondhand-buyer-intent-acceptance",
+		"acceptance-buyer-intent-smoke",
+		"evidence/buyer-intent-open-uniqueness",
+		"production-before.txt",
+		"production-after.txt",
+		"does not execute production 0009",
+	} {
+		if !strings.Contains(string(readme), required) {
+			t.Errorf("acceptance README missing %q", required)
+		}
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceRejectsUnsafeEnvironmentBeforeDocker(t *testing.T) {
+	script := "../../deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh"
+	stubDir := t.TempDir()
+	dockerCalled := filepath.Join(stubDir, "docker-called")
+	dockerStub := filepath.Join(stubDir, "docker")
+	stub := "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"
+	if err := os.WriteFile(dockerStub, []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, confirm, engine, project string
+	}{
+		{name: "missing confirmation", engine: "mysql8.4"},
+		{name: "wrong confirmation", confirm: "unsafe", engine: "mysql8.4"},
+		{name: "wrong engine", confirm: buyerIntentAcceptanceConfirmation, engine: "mysql8.0"},
+		{name: "wrong project", confirm: buyerIntentAcceptanceConfirmation, engine: "mysql8.4", project: "secondhand-market"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(dockerCalled); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/bash", script)
+			cmd.Env = []string{
+				"PATH=" + stubDir + ":/usr/bin:/bin",
+				"DOCKER_CALLED=" + dockerCalled,
+				"BUYER_INTENT_ACCEPTANCE_CONFIRM=" + tc.confirm,
+				"ACCEPTANCE_DB_ENGINE=" + tc.engine,
+				"COMPOSE_PROJECT_NAME=" + tc.project,
+			}
+			if err := cmd.Run(); err == nil {
+				t.Fatal("unsafe acceptance environment succeeded")
+			}
+			if _, err := os.Stat(dockerCalled); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("unsafe environment reached Docker")
+			}
+		})
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceManifestModeIsReadOnly(t *testing.T) {
+	script := "../../deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh"
+	stubDir := t.TempDir()
+	dockerCalled := filepath.Join(stubDir, "docker-called")
+	dockerStub := filepath.Join(stubDir, "docker")
+	if err := os.WriteFile(dockerStub, []byte(
+		"#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sha256sum, err := exec.LookPath("sha256sum")
+	if err != nil {
+		t.Fatal("sha256sum is required for the manifest contract")
+	}
+	utilityPath := stubDir + ":" + filepath.Dir(sha256sum) +
+		":/usr/bin:/bin:/usr/sbin:/sbin"
+	cmd := exec.Command("/bin/bash", script)
+	cmd.Env = []string{
+		"PATH=" + utilityPath,
+		"DOCKER_CALLED=" + dockerCalled,
+		"BUYER_INTENT_SOURCE_MANIFEST_ONLY=1",
+	}
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("manifest-only mode: %v", err)
+	}
+	if _, err := os.Stat(dockerCalled); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("manifest-only mode reached Docker")
+	}
+	text := string(raw)
+	for _, required := range []string{
+		"  Makefile\n",
+		"  backend/internal/app/server.go\n",
+		"  backend/migrations/0009_buyer_intent_open_uniqueness.up.sql\n",
+		"  deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh\n",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("manifest missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		".env", "secrets/", "evidence/", "uploads/", "app.db", ".tmp/",
+		"architecture-evolution-plan-2026-07-24.md",
+		"first-round-fix-review-2026-07-24.md",
+		"second-round-fix-review-2026-07-24.md",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("manifest exposed forbidden path %q", forbidden)
+		}
+	}
+	var paths []string
+	linePattern := regexp.MustCompile(`^[0-9a-f]{64}  (.+)$`)
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		match := linePattern.FindStringSubmatch(line)
+		if match == nil {
+			t.Fatalf("invalid manifest line %q", line)
+		}
+		paths = append(paths, match[1])
+	}
+	want := append([]string(nil), paths...)
+	sort.Strings(want)
+	if !slices.Equal(paths, want) {
+		t.Fatal("source manifest paths are not sorted")
+	}
+	listCmd := exec.Command("/bin/bash", script)
+	listCmd.Env = []string{
+		"PATH=" + utilityPath,
+		"DOCKER_CALLED=" + dockerCalled,
+		"BUYER_INTENT_SOURCE_LIST_ONLY=1",
+	}
+	listRaw, err := listCmd.Output()
+	if err != nil {
+		t.Fatalf("source-list mode: %v", err)
+	}
+	listText := strings.TrimSuffix(string(listRaw), "\x00")
+	listPaths := strings.Split(listText, "\x00")
+	if !slices.Equal(listPaths, paths) {
+		t.Fatal("transfer list and hash manifest select different paths")
+	}
+	if _, err := os.Stat(dockerCalled); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("source-list mode reached Docker")
+	}
+}
 
 func TestBuyerIntentOpenUniquenessMigrationArtifacts(t *testing.T) {
 	for _, name := range []string{
