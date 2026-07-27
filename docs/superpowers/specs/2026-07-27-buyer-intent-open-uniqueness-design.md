@@ -4,7 +4,7 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** Design approved; written specification review pending
+**Status:** Design and written specification approved; implementation not started
 
 **Finding:** F-11 - the buyer-intent unique index permits only one closed
 history for a buyer and product
@@ -590,7 +590,7 @@ under F-11.
 - The user approved the F-11 runtime error-semantics design on 2026-07-27.
 - The user approved the F-11 migration and rollback design on 2026-07-27.
 - The user approved the F-11 test and acceptance design on 2026-07-27.
-- Explicit written-specification approval is still required before an
-  implementation plan or code change begins.
-- These approvals do not authorize source transfer, remote execution,
-  production inspection, production migration, deployment, or data changes.
+- The user explicitly approved the F-11 written specification on 2026-07-27.
+- This approval authorizes preparation of the implementation plan. It does not
+  authorize source transfer, remote execution, production inspection,
+  production migration, deployment, or data changes.
