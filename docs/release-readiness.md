@@ -13,8 +13,8 @@
 - 文件元数据表名以 `file_records` 为唯一契约（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`FileRecord.TableName()` 已固定；`0005` preflight/up/postflight 已入库（up 重复形态校验）。
 - 分类唯一性以 `(parent_id,name)` 为唯一契约（F-16）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**。GORM 模型和两条 seed 路径已对齐历史 SQL migration。
 - F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
-- F-06 匿名上传资源治理已在代码侧关闭：统一 10 MiB 文件/11 MiB multipart 契约，数据库串行频率与配额、可信来源 HMAC、历史隔离和有界清理均已实现并通过本地门禁。专用 MySQL 8.4 测试服务器尚未审核，生产未执行 `0008`、未部署且未修改生产数据或文件。
-- F-11 code-side fixed; isolated MySQL 8.4 test-server review pending; production 0009 not executed.
+- F-06：0008 HAVING 兼容性跟进已通过本地门禁和独立审阅；隔离 MySQL 8.4 测试服务器仍未审核；生产未执行 0008、未部署、未修改生产数据或文件。
+- F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates; a new isolated MySQL 8.4 rerun is pending; production 0009 not executed.
 
 ### 1.1 首轮问题与后续 schema 修复状态
 
@@ -29,8 +29,8 @@
 | F-09 文件表 schema | 已修复：`file_records` 契约 + `0005` 三段门禁 | **MySQL 8.4.8 完整八态矩阵通过** | `0005` 未在生产执行 |
 | F-16 分类 schema | 已修复：复合索引 + parent-aware seed | **同一矩阵的 AutoMigrate RED→GREEN 通过** | 新后端尚未部署 |
 | F-02 文件绑定授权 | 已修复：商家归属 + PUBLIC 一次性 capability + 商品/执照事务校验 | **MySQL 8.4.8 回填/失败门禁/API/并发/AutoMigrate 矩阵通过** | `0006` 未执行，frontend/backend 未部署 |
-| F-06 匿名上传资源治理 / D-03 大小契约 | **代码侧已修复**：10/11 MiB 边界、HMAC 来源、20/hour、5 files、50 MiB、2 GiB、20 GiB、claim cleanup 与 `0008` 三段门禁 | **未审核**；F-06 专用 Compose 项目尚未运行 | **未执行 `0008`、未部署、未修改生产数据或文件** |
-| F-11 买家意向 open 唯一性 | 修复状态: 代码侧已修复；生成列/部分索引、状态校验、重复键复查和三轮关闭已通过本地门禁 | 测试服务器审核: 未审核；专用 Compose 项目尚未获本问题的精确授权运行 | 生产状态: 未执行 `0009`、未部署、未修改生产数据 |
+| F-06 匿名上传资源治理 / D-03 大小契约 | 0008 HAVING 兼容性跟进已通过本地门禁和独立审阅 | 隔离 MySQL 8.4 测试服务器仍未审核 | 生产未执行 0008、未部署、未修改生产数据或文件 |
+| F-11 买家意向 open 唯一性 | F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates | a new isolated MySQL 8.4 rerun is pending | production 0009 not executed |
 | F-14 session access 吊销 | 代码侧已修复 | 未审核；专用 Compose 项目尚未获授权运行 | 未部署，未修改生产数据或 session |
 
 F-09/F-16 脱敏证据与 SHA-256 见

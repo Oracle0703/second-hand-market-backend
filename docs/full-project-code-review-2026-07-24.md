@@ -784,3 +784,11 @@ Grok 二次反馈没有推翻上述源码、schema 或线上核验事实；本�
 收口 D-01、轮换示例数据库及管理员口令、限制并制定 F-12 身份迁移、隔离 F-13 现有执照，并修正或冻结 F-07 的 3 个异常商品后，当前小站可以在低流量和明确补偿控制下继续运行。这里的“继续运行”不等同于宣称已经通过完整生产验收。
 
 F-03 和 F-07 按已确认的商家多库存模型合并治理，必须在后台开放多数量、多订单前完成；F-02 和 F-04 必须在下一次商家入驻/资质审核前补齐；F-11 必须在恢复意向入口前迁移。其余 P2/P3 条目按相关版本和运维窗口处理，不是当前停站条件。D-04 应先取得云快照/root 任务证据，不能在权限不足时把“未找到”写成“确定没有备份”。
+
+## 2026-07-28 0008 HAVING 兼容性后续核验
+
+本节只追加当前代码侧事实，不改写以上历史发现或线上证据。
+
+- 0008 HAVING 兼容性跟进已通过本地门禁和独立审阅；隔离 MySQL 8.4 测试服务器仍未审核；生产未执行 0008、未部署、未修改生产数据或文件。
+- F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates; a new isolated MySQL 8.4 rerun is pending; production 0009 not executed.
+- 独立全范围审阅 `50a991d321788ffe77eab9646f4888929b8f5e82..33121f157dc671ad4d453d4052fc9a653f1eb804` 为 PASS，Critical、Important、Minor 均为 0。F-12 继续阻断，直至新的隔离 MySQL 8.4 验收获授权、完成并记录接受的提交范围。

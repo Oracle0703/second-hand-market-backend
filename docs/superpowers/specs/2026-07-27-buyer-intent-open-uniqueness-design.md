@@ -4,7 +4,7 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** Design and written specification approved; code-side fixed; isolated test-server review pending; production 0009 not executed
+**Status:** F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates; a new isolated MySQL 8.4 rerun is pending; production 0009 not executed.
 
 **Finding:** F-11 - the buyer-intent unique index permits only one closed
 history for a buyer and product
