@@ -330,12 +330,13 @@ type BuyerHistory struct {
 type BuyerIntent struct {
 	ID             uint64  `gorm:"primaryKey"`
 	IntentNo       string  `gorm:"size:32;uniqueIndex"`
-	BuyerID        uint64  `gorm:"uniqueIndex:uk_buyer_product_open,priority:1;index:idx_buyer_intent_buyer_created,priority:1"`
+	BuyerID        uint64  `gorm:"index:idx_buyer_intent_buyer_created,priority:1"`
 	SourceDeviceID *string `gorm:"size:64;index:idx_buyer_intent_source_device_created,priority:1"`
-	ProductID      uint64  `gorm:"uniqueIndex:uk_buyer_product_open,priority:2;index:idx_buyer_intent_product_open,priority:1"`
+	ProductID      uint64  `gorm:"index:idx_buyer_intent_product_open,priority:1"`
 	MerchantID     uint64  `gorm:"index:idx_buyer_intent_merchant_status_created,priority:1"`
 	Status         string  `gorm:"size:16;index:idx_buyer_intent_merchant_status_created,priority:2"`
-	IsOpen         bool    `gorm:"uniqueIndex:uk_buyer_product_open,priority:3;index:idx_buyer_intent_product_open,priority:2"`
+	IsOpen         bool    `gorm:"index:idx_buyer_intent_product_open,priority:2"`
+	OpenMarker     *uint8  `gorm:"->;-:migration"`
 	ContactName    *string `gorm:"size:64"`
 	ContactPhone   *string `gorm:"size:20"`
 	ContactWechat  *string `gorm:"size:64"`

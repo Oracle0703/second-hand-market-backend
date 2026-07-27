@@ -125,7 +125,10 @@ func openDB(cfg Config) (*gorm.DB, error) {
 	default:
 		return nil, fmt.Errorf("unsupported db driver: %s", cfg.DBDriver)
 	}
-	return gorm.Open(dial, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	return gorm.Open(dial, &gorm.Config{
+		Logger:         logger.Default.LogMode(logger.Silent),
+		TranslateError: true,
+	})
 }
 
 func migrate(db *gorm.DB) error {
