@@ -168,6 +168,7 @@ func TestFileSchemaSmokeUsesCurrentMigrationChain(t *testing.T) {
 	// clean full-chain phase.
 	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
 		"# Clean full migration chain, migration-only API flow, then AutoMigrate compatibility.",
+		`grep -q -- '--- PASS: TestFileFlowWithMigrationOnlyMySQL' "$evidence_dir/file-flow.txt"`,
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
 		"-e AUTO_MIGRATE=false",
 		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
@@ -179,19 +180,76 @@ func TestCurrentMigrationChainRejectsEarlyFalseModeFocusedAPI(t *testing.T) {
 	// false-mode focused API run before 0009 postflight.
 	script := strings.Join([]string{
 		"# Clean phase",
-		"-e AUTO_MIGRATE=false",
-		`bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v`,
+		`"${compose[@]}" --profile tools run --rm \`,
+		"  -e AUTO_MIGRATE=false \\",
+		`  bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v \`,
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
 	}, "\n")
 
 	err := currentChainBeforeFirstFalseModeFocusedAPI(script,
 		"# Clean phase",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
 		"-e AUTO_MIGRATE=false",
 		`bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v`,
 	)
 	if err == nil || !strings.Contains(err.Error(), "precedes 0009 postflight") {
 		t.Fatalf("early false-mode focused API invocation error = %v, want 0009 ordering rejection", err)
+	}
+}
+
+func TestCurrentMigrationChainRejectsCrossPhaseFalseModeTargetMatch(t *testing.T) {
+	// This fixture models a realistic script mutation where the clean phase
+	// keeps the false-mode marker, but the target focused test moves into a
+	// later phase after the clean phase has already ended.
+	script := strings.Join([]string{
+		"# Clean phase",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`"${compose[@]}" --profile tools run --rm \`,
+		"  -e AUTO_MIGRATE=false \\",
+		`  bootstrap-admin go test ./tests -run '^TestOther$' -count=1 -v \`,
+		`grep -q -- '--- PASS: TestOther' "$evidence_dir/other.txt"`,
+		"# Later phase",
+		`"${compose[@]}" --profile tools run --rm \`,
+		`  bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v \`,
+	}, "\n")
+
+	err := currentChainBeforeFirstFalseModeFocusedAPI(script,
+		"# Clean phase",
+		`grep -q -- '--- PASS: TestOther' "$evidence_dir/other.txt"`,
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v`,
+	)
+	if err == nil || !strings.Contains(err.Error(), "clean phase missing focused test") {
+		t.Fatalf("cross-phase false-mode/target match error = %v, want clean-phase target rejection", err)
+	}
+}
+
+func TestCurrentMigrationChainRejectsFalseModeMarkerPairedWithDifferentInvocation(t *testing.T) {
+	// This fixture models a realistic script mutation where AUTO_MIGRATE=false
+	// remains on an earlier focused go test block, while the real target
+	// invocation moves to a later block without that marker.
+	script := strings.Join([]string{
+		"# Clean phase",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`"${compose[@]}" --profile tools run --rm \`,
+		"  -e AUTO_MIGRATE=false \\",
+		`  bootstrap-admin go test ./tests -run '^TestOther$' -count=1 -v \`,
+		`"${compose[@]}" --profile tools run --rm \`,
+		`  bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v \`,
+		`grep -q -- '--- PASS: TestFocused' "$evidence_dir/focused.txt"`,
+	}, "\n")
+
+	err := currentChainBeforeFirstFalseModeFocusedAPI(script,
+		"# Clean phase",
+		`grep -q -- '--- PASS: TestFocused' "$evidence_dir/focused.txt"`,
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v`,
+	)
+	if err == nil || !strings.Contains(err.Error(), "focused test invocation block missing false-mode marker") {
+		t.Fatalf("mismatched false-mode marker error = %v, want invocation-block pairing rejection", err)
 	}
 }
 
@@ -212,13 +270,14 @@ func requireCurrentChainBeforeFirstFalseModeFocusedAPI(
 	t *testing.T,
 	script string,
 	cleanPhaseStart string,
+	cleanPhaseEnd string,
 	postflight string,
 	falseMode string,
 	focusedTest string,
 ) {
 	t.Helper()
 
-	if err := currentChainBeforeFirstFalseModeFocusedAPI(script, cleanPhaseStart, postflight, falseMode, focusedTest); err != nil {
+	if err := currentChainBeforeFirstFalseModeFocusedAPI(script, cleanPhaseStart, cleanPhaseEnd, postflight, falseMode, focusedTest); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -226,6 +285,7 @@ func requireCurrentChainBeforeFirstFalseModeFocusedAPI(
 func currentChainBeforeFirstFalseModeFocusedAPI(
 	script string,
 	cleanPhaseStart string,
+	cleanPhaseEnd string,
 	postflight string,
 	falseMode string,
 	focusedTest string,
@@ -234,21 +294,32 @@ func currentChainBeforeFirstFalseModeFocusedAPI(
 	if phaseAt < 0 {
 		return fmt.Errorf("script missing clean phase %q", cleanPhaseStart)
 	}
-	phase := script[phaseAt:]
+	phaseEndAt := strings.Index(script[phaseAt:], cleanPhaseEnd)
+	if phaseEndAt < 0 {
+		return fmt.Errorf("script missing clean phase end %q", cleanPhaseEnd)
+	}
+	phaseEndAt += phaseAt + len(cleanPhaseEnd)
+	phase := script[phaseAt:phaseEndAt]
 
 	postflightAt := strings.Index(phase, postflight)
 	if postflightAt < 0 {
 		return fmt.Errorf("clean phase missing 0009 postflight %q", postflight)
 	}
-	falseModeAt := strings.Index(phase, falseMode)
-	if falseModeAt < 0 {
-		return fmt.Errorf("clean phase missing false-mode focused API marker %q", falseMode)
-	}
-	focusedTestAt := strings.Index(phase[falseModeAt:], focusedTest)
+
+	focusedTestAt := strings.Index(phase, focusedTest)
 	if focusedTestAt < 0 {
-		return fmt.Errorf("first false-mode API marker is not followed by focused test %q", focusedTest)
+		return fmt.Errorf("clean phase missing focused test %q", focusedTest)
 	}
-	if falseModeAt < postflightAt {
+	invocationStartAt := strings.LastIndex(phase[:focusedTestAt], `"${compose[@]}" --profile tools run --rm \`)
+	if invocationStartAt < 0 {
+		return fmt.Errorf("focused test %q is missing its compose invocation block", focusedTest)
+	}
+	invocationBlock := phase[invocationStartAt : focusedTestAt+len(focusedTest)]
+	falseModeAt := strings.Index(invocationBlock, falseMode)
+	if falseModeAt < 0 {
+		return fmt.Errorf("focused test invocation block missing false-mode marker %q", falseMode)
+	}
+	if invocationStartAt+falseModeAt < postflightAt {
 		return fmt.Errorf("first false-mode focused API marker %q precedes 0009 postflight %q", falseMode, postflight)
 	}
 

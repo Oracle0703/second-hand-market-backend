@@ -107,6 +107,7 @@ func TestFileBindingAcceptanceUsesCurrentMigrationChain(t *testing.T) {
 	// full-chain phase.
 	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
 		"# Full chain plus real API registration, product binding, concurrent claim, and AutoMigrate compatibility.",
+		`grep -q -- '--- PASS: TestFileFlowWithMigrationOnlyMySQL' "$evidence_dir/file-flow.txt"`,
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
 		"-e AUTO_MIGRATE=false",
 		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,

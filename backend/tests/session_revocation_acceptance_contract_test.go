@@ -95,6 +95,28 @@ func TestSessionCurrentMigrationChainRejectsEarlyFalseModeFocusedAPI(t *testing.
 	}
 }
 
+func TestSessionCurrentMigrationChainRejectsCrossPhaseFalseModeInvocation(t *testing.T) {
+	// This fixture models a realistic script mutation where the clean phase
+	// keeps its apply_migration_chain call, but the false-mode focused test is
+	// moved into a later phase after a second clean-chain restart.
+	script := strings.Join([]string{
+		"apply_migration_chain() {",
+		"  for migration in 0009_buyer_intent_open_uniqueness; do",
+		"  mysql_file \"/acceptance/migrations/$migration.postflight.sql\"",
+		"  done",
+		"}",
+		"apply_migration_chain",
+		"run_focused_test true mysql-auto-migrate-true",
+		"apply_migration_chain",
+		"run_focused_test false mysql-auto-migrate-false",
+	}, "\n")
+
+	err := sessionCurrentChainBeforeFirstFalseModeFocusedAPI(script)
+	if err == nil || !strings.Contains(err.Error(), "missing false-mode focused API invocation in first clean phase") {
+		t.Fatalf("cross-phase false-mode invocation error = %v, want first-clean-phase rejection", err)
+	}
+}
+
 func requireOrderedSessionSnippets(t *testing.T, text string, snippets []string) {
 	t.Helper()
 
@@ -117,6 +139,8 @@ func requireSessionCurrentChainBeforeFirstFalseModeFocusedAPI(t *testing.T, scri
 }
 
 func sessionCurrentChainBeforeFirstFalseModeFocusedAPI(script string) error {
+	const falseModeInvocation = "run_focused_test false mysql-auto-migrate-false"
+
 	chainStart := strings.Index(script, "apply_migration_chain() {")
 	if chainStart < 0 {
 		return errors.New("script missing apply_migration_chain helper")
@@ -133,16 +157,21 @@ func sessionCurrentChainBeforeFirstFalseModeFocusedAPI(script string) error {
 	}
 
 	runtime := script[chainEnd:]
-	firstFalseModeAt := strings.Index(runtime, "run_focused_test false mysql-auto-migrate-false")
-	if firstFalseModeAt < 0 {
-		return errors.New("script missing false-mode focused API invocation")
-	}
 	cleanChainAt := strings.Index(runtime, "apply_migration_chain")
 	if cleanChainAt < 0 {
 		return errors.New("script missing clean apply_migration_chain invocation")
 	}
-	if firstFalseModeAt < cleanChainAt {
+	firstFalseModeAt := strings.Index(runtime, falseModeInvocation)
+	if firstFalseModeAt >= 0 && firstFalseModeAt < cleanChainAt {
 		return errors.New("first false-mode focused API invocation precedes clean 0009 migration chain")
+	}
+	phase := runtime[cleanChainAt:]
+	nextCleanChainAt := strings.Index(phase[len("apply_migration_chain"):], "\napply_migration_chain\n")
+	if nextCleanChainAt >= 0 {
+		phase = phase[:len("apply_migration_chain")+nextCleanChainAt]
+	}
+	if !strings.Contains(phase, falseModeInvocation) {
+		return errors.New("missing false-mode focused API invocation in first clean phase")
 	}
 
 	return nil
