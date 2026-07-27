@@ -19,8 +19,9 @@ import (
 const testAdminPassword = "AdminTest@2026"
 
 type apiResp struct {
-	Code int                    `json:"code"`
-	Data map[string]interface{} `json:"data"`
+	HTTPStatus int                    `json:"-"`
+	Code       int                    `json:"code"`
+	Data       map[string]interface{} `json:"data"`
 }
 
 func newTestServer(t *testing.T) *app.Server {
@@ -105,6 +106,14 @@ func newTestServerWithProcessor(t *testing.T, processor media.Processor) *app.Se
 
 func requestJSON(t *testing.T, h http.Handler, method, path string, body interface{}, headers map[string]string) apiResp {
 	t.Helper()
+	resp, err := executeJSONRequest(h, method, path, body, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func executeJSONRequest(h http.Handler, method, path string, body interface{}, headers map[string]string) (apiResp, error) {
 	var b []byte
 	if body != nil {
 		b, _ = json.Marshal(body)
@@ -118,9 +127,10 @@ func requestJSON(t *testing.T, h http.Handler, method, path string, body interfa
 	h.ServeHTTP(w, req)
 	var resp apiResp
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response failed: %v, raw=%s", err, w.Body.String())
+		return apiResp{}, fmt.Errorf("decode response failed: %v, raw=%s", err, w.Body.String())
 	}
-	return resp
+	resp.HTTPStatus = w.Code
+	return resp, nil
 }
 
 func str(v interface{}) string {

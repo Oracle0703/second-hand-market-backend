@@ -988,11 +988,11 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
 	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
-		var cnt int64
-		if err := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND product_id = ? AND is_open = ?", actor.UserID, req.ProductID, true).Count(&cnt).Error; err != nil {
-			return nil, common.ErrInternal
+		found, err := findOpenBuyerIntent(s.DB, actor.UserID, req.ProductID)
+		if err != nil {
+			return nil, err
 		}
-		if cnt > 0 {
+		if found {
 			return nil, common.ErrConflict
 		}
 		intent := model.BuyerIntent{
@@ -1009,10 +1009,9 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 			Message:        req.Message,
 		}
 		if err := s.DB.Create(&intent).Error; err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
-				return nil, common.ErrConflict
-			}
-			return nil, common.ErrInternal
+			return nil, classifyBuyerIntentCreateError(
+				s.DB, err, actor.UserID, req.ProductID,
+			)
 		}
 		return map[string]interface{}{
 			"intent_id":  intent.ID,
@@ -1052,6 +1051,12 @@ func (s *Server) handleBuyerIntentList(c *gin.Context) {
 	if err := query.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&intents).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
+	}
+	for _, intent := range intents {
+		if err := validateBuyerIntentState(intent); err != nil {
+			common.Fail(c, err)
+			return
+		}
 	}
 	productIDs := make([]uint64, 0, len(intents))
 	for _, it := range intents {
@@ -1123,6 +1128,10 @@ func (s *Server) handleBuyerIntentDetail(c *gin.Context) {
 	}
 	if intent.BuyerID != actor.UserID {
 		common.Fail(c, common.ErrForbidden)
+		return
+	}
+	if err := validateBuyerIntentState(intent); err != nil {
+		common.Fail(c, err)
 		return
 	}
 	var product model.Product

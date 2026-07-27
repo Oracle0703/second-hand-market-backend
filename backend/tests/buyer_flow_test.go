@@ -3,10 +3,12 @@ package tests
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
 	"second-hand-market-backend/backend/internal/common"
+	"second-hand-market-backend/backend/internal/model"
 )
 
 func buyerLogin(t *testing.T, srv interface{ Router() http.Handler }, code, deviceID string) apiResp {
@@ -361,7 +363,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 		"product_id":    productID,
 		"contact_phone": "13800138000",
 	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
-	if createConflict.Code != 10010 {
+	if createConflict.HTTPStatus != http.StatusConflict || createConflict.Code != common.CodeConflict {
 		t.Fatalf("same buyer same product open intent should conflict: %+v", createConflict)
 	}
 
@@ -401,12 +403,252 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 		t.Fatalf("buyer detail status mapping mismatch: %+v", buyerDetail)
 	}
 
-	createAfterClose := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+	create2 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
 		"product_id":     productID,
-		"contact_wechat": "wx_after_close",
+		"contact_wechat": "wx_after_close_2",
 	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
-	if createAfterClose.Code != 0 {
-		t.Fatalf("should allow create after previous intent closed: %+v", createAfterClose)
+	if create2.Code != common.CodeOK {
+		t.Fatalf("create intent 2 failed: %+v", create2)
+	}
+	close2 := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/intents/%d/close", numToUint64(create2.Data["intent_id"])), map[string]interface{}{"reason": "NO_RESPONSE"}, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if close2.Code != common.CodeOK {
+		t.Fatalf("close intent 2 failed: %+v", close2)
+	}
+
+	create3 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+		"product_id":     productID,
+		"contact_wechat": "wx_after_close_3",
+	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
+	if create3.Code != common.CodeOK {
+		t.Fatalf("create intent 3 failed: %+v", create3)
+	}
+	close3 := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/intents/%d/close", numToUint64(create3.Data["intent_id"])), map[string]interface{}{"reason": "NO_RESPONSE"}, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if close3.Code != common.CodeOK {
+		t.Fatalf("close intent 3 failed: %+v", close3)
+	}
+
+	var closedRows []model.BuyerIntent
+	if err := srv.DB.Where("buyer_id = ? AND product_id = ?", numToUint64(buyerLoginResp.Data["user"].(map[string]interface{})["id"]), productID).Order("id").Find(&closedRows).Error; err != nil {
+		t.Fatalf("query first three intents: %v", err)
+	}
+	if len(closedRows) != 3 {
+		t.Fatalf("intent rows = %d, want 3", len(closedRows))
+	}
+	for _, intent := range closedRows {
+		if intent.Status != model.IntentClosed || intent.IsOpen {
+			t.Fatalf("closed history row = %+v, want CLOSED/false", intent)
+		}
+	}
+
+	create4 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+		"product_id":     productID,
+		"contact_wechat": "wx_after_close_4",
+	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
+	if create4.Code != common.CodeOK {
+		t.Fatalf("create intent 4 failed: %+v", create4)
+	}
+
+	var finalRows []model.BuyerIntent
+	if err := srv.DB.Where("buyer_id = ? AND product_id = ?", numToUint64(buyerLoginResp.Data["user"].(map[string]interface{})["id"]), productID).Order("id").Find(&finalRows).Error; err != nil {
+		t.Fatalf("query final intents: %v", err)
+	}
+	if len(finalRows) != 4 {
+		t.Fatalf("final intent rows = %d, want 4", len(finalRows))
+	}
+	closedCount, openCount := 0, 0
+	for _, intent := range finalRows {
+		switch {
+		case intent.Status == model.IntentClosed && !intent.IsOpen:
+			closedCount++
+		case intent.Status == model.IntentNew && intent.IsOpen:
+			openCount++
+		default:
+			t.Fatalf("unexpected final intent state: %+v", intent)
+		}
+	}
+	if closedCount != 3 || openCount != 1 {
+		t.Fatalf("final states closed/open = %d/%d, want 3/1", closedCount, openCount)
+	}
+}
+
+func TestBuyerIntentConcurrentCreateHasOneWinner(t *testing.T) {
+	cfg := newTestAppConfig(t, "local")
+	cfg.DBDSN = fmt.Sprintf("file:buyer_intent_concurrent_%d?mode=memory&cache=shared&_pragma=busy_timeout(5000)", time.Now().UnixNano())
+	srv := newTestServerFromConfig(t, cfg)
+	sqlDB, err := srv.DB.DB()
+	if err != nil {
+		t.Fatalf("get SQL pool: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(2)
+
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "intentconcurrent")
+	approveMerchant(t, srv, adminToken, merchantID)
+	merchant := merchantLogin(t, srv, username, password)
+	productID := createAndOnShelfProduct(t, srv, str(merchant.Data["access_token"]))
+	buyerLoginResp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/wechat-login", map[string]interface{}{
+		"code": "wx-intent-concurrent", "device_id": "dev-intent-concurrent", "nickname": "buyer-concurrent",
+	}, nil)
+	if buyerLoginResp.Code != common.CodeOK {
+		t.Fatalf("buyer login failed: %+v", buyerLoginResp)
+	}
+	buyerToken := str(buyerLoginResp.Data["access_token"])
+	buyerID := numToUint64(buyerLoginResp.Data["user"].(map[string]interface{})["id"])
+
+	start := make(chan struct{})
+	type concurrentResult struct {
+		resp apiResp
+		err  error
+	}
+	responses := make(chan concurrentResult, 2)
+	for i := 0; i < 2; i++ {
+		go func(requestNumber int) {
+			<-start
+			resp, err := executeJSONRequest(srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+				"product_id":    productID,
+				"contact_phone": fmt.Sprintf("13800138%03d", requestNumber),
+			}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-concurrent"})
+			responses <- concurrentResult{resp: resp, err: err}
+		}(i)
+	}
+	close(start)
+
+	successes, conflicts := 0, 0
+	for i := 0; i < 2; i++ {
+		result := <-responses
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		resp := result.resp
+		switch {
+		case resp.HTTPStatus == http.StatusOK && resp.Code == common.CodeOK:
+			successes++
+		case resp.HTTPStatus == http.StatusConflict && resp.Code == common.CodeConflict:
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent create response: %+v", resp)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent create successes/conflicts = %d/%d, want 1/1", successes, conflicts)
+	}
+
+	var openRows []model.BuyerIntent
+	if err := srv.DB.Where("buyer_id = ? AND product_id = ? AND is_open = ?", buyerID, productID, true).Find(&openRows).Error; err != nil {
+		t.Fatalf("query open intents: %v", err)
+	}
+	if len(openRows) != 1 || openRows[0].Status != model.IntentNew || !openRows[0].IsOpen {
+		t.Fatalf("open intents = %+v, want exactly one NEW/open row", openRows)
+	}
+}
+
+func TestBuyerIntentStateDriftFailsClosed(t *testing.T) {
+	states := []struct {
+		name   string
+		status string
+		open   bool
+	}{
+		{name: "new false", status: model.IntentNew, open: false},
+		{name: "contacted false", status: model.IntentContacted, open: false},
+		{name: "closed true", status: model.IntentClosed, open: true},
+		{name: "bogus", status: "BOGUS", open: false},
+	}
+
+	for fixtureIndex, state := range states {
+		t.Run(state.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			adminToken := adminAccessToken(t, srv)
+			merchantID, username, password := registerMerchant(t, srv, fmt.Sprintf("intentdrift%d", fixtureIndex))
+			approveMerchant(t, srv, adminToken, merchantID)
+			merchant := merchantLogin(t, srv, username, password)
+			merchantToken := str(merchant.Data["access_token"])
+			productID := createAndOnShelfProduct(t, srv, merchantToken)
+			buyerLoginResp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/wechat-login", map[string]interface{}{
+				"code": fmt.Sprintf("wx-intent-drift-%d", fixtureIndex), "device_id": fmt.Sprintf("dev-intent-drift-%d", fixtureIndex), "nickname": "buyer-drift",
+			}, nil)
+			if buyerLoginResp.Code != common.CodeOK {
+				t.Fatalf("buyer login failed: %+v", buyerLoginResp)
+			}
+			buyerToken := str(buyerLoginResp.Data["access_token"])
+			buyerID := numToUint64(buyerLoginResp.Data["user"].(map[string]interface{})["id"])
+
+			intent := model.BuyerIntent{
+				IntentNo:   fmt.Sprintf("BI-DRIFT-%d-%d", fixtureIndex, time.Now().UnixNano()),
+				BuyerID:    buyerID,
+				ProductID:  productID,
+				MerchantID: merchantID,
+				Status:     state.status,
+				IsOpen:     state.open,
+			}
+			if err := srv.DB.Create(&intent).Error; err != nil {
+				t.Fatalf("inject malformed intent after startup: %v", err)
+			}
+
+			buyerHeaders := map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": fmt.Sprintf("dev-intent-drift-%d", fixtureIndex)}
+			merchantHeaders := map[string]string{"Authorization": "Bearer " + merchantToken}
+			calls := []struct {
+				name string
+				call func() apiResp
+			}{
+				{name: "buyer list", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/intents", nil, buyerHeaders)
+				}},
+				{name: "buyer detail", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/intents/%d", intent.ID), nil, buyerHeaders)
+				}},
+				{name: "merchant list", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/intents", nil, merchantHeaders)
+				}},
+				{name: "merchant detail", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/merchant/intents/%d", intent.ID), nil, merchantHeaders)
+				}},
+				{name: "merchant contacted", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/intents/%d/contacted", intent.ID), map[string]interface{}{}, merchantHeaders)
+				}},
+				{name: "merchant close", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/intents/%d/close", intent.ID), map[string]interface{}{"reason": "NO_RESPONSE"}, merchantHeaders)
+				}},
+				{name: "buyer duplicate pre-check", call: func() apiResp {
+					return requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+						"product_id": productID, "contact_phone": "13800138000",
+					}, buyerHeaders)
+				}},
+			}
+
+			for _, apiCall := range calls {
+				t.Run(apiCall.name, func(t *testing.T) {
+					var beforeRows []model.BuyerIntent
+					if err := srv.DB.Where("buyer_id = ? AND product_id = ?", buyerID, productID).Order("id").Find(&beforeRows).Error; err != nil {
+						t.Fatalf("query rows before call: %v", err)
+					}
+					var beforeLogs int64
+					if err := srv.DB.Model(&model.OperationLog{}).Count(&beforeLogs).Error; err != nil {
+						t.Fatalf("count logs before call: %v", err)
+					}
+
+					resp := apiCall.call()
+					if resp.HTTPStatus != http.StatusInternalServerError || resp.Code != common.CodeInternal {
+						t.Errorf("response = %+v, want HTTP 500/code 20001", resp)
+					}
+
+					var afterRows []model.BuyerIntent
+					if err := srv.DB.Where("buyer_id = ? AND product_id = ?", buyerID, productID).Order("id").Find(&afterRows).Error; err != nil {
+						t.Fatalf("query rows after call: %v", err)
+					}
+					if !reflect.DeepEqual(afterRows, beforeRows) {
+						t.Errorf("intent rows changed: before=%+v after=%+v", beforeRows, afterRows)
+					}
+					var afterLogs int64
+					if err := srv.DB.Model(&model.OperationLog{}).Count(&afterLogs).Error; err != nil {
+						t.Fatalf("count logs after call: %v", err)
+					}
+					if afterLogs != beforeLogs {
+						t.Errorf("operation log count changed from %d to %d", beforeLogs, afterLogs)
+					}
+				})
+			}
+		})
 	}
 }
 

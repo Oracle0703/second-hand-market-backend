@@ -24,6 +24,9 @@ func (s *Server) loadOwnedIntent(tx *gorm.DB, intentID, merchantID uint64) (mode
 	if intent.MerchantID != merchantID {
 		return model.BuyerIntent{}, common.ErrForbidden
 	}
+	if err := validateBuyerIntentState(intent); err != nil {
+		return model.BuyerIntent{}, err
+	}
 	return intent, nil
 }
 
@@ -68,6 +71,7 @@ func (s *Server) handleMerchantIntentList(c *gin.Context) {
 		ProductID          uint64    `json:"product_id"`
 		ProductTitle       string    `json:"product_title"`
 		Status             string    `json:"status"`
+		IsOpen             bool      `json:"-"`
 		ContactName        *string   `json:"contact_name"`
 		ContactPhone       *string   `json:"contact_phone"`
 		ContactWechat      *string   `json:"contact_wechat"`
@@ -80,10 +84,16 @@ func (s *Server) handleMerchantIntentList(c *gin.Context) {
 	}
 	items := make([]item, 0, size)
 	if err := query.Select(
-		"i.id, i.intent_no, i.product_id, i.status, i.contact_name, i.contact_phone, i.contact_wechat, i.created_at, i.updated_at, p.title AS product_title, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
+		"i.id, i.intent_no, i.product_id, i.status, i.is_open, i.contact_name, i.contact_phone, i.contact_wechat, i.created_at, i.updated_at, p.title AS product_title, c1.id AS category_level1_id, c1.name AS category_level1_name, c2.id AS category_level2_id, c2.name AS category_level2_name",
 	).Order("i.id DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
+	}
+	for _, intent := range items {
+		if err := validateBuyerIntentStatus(intent.Status, intent.IsOpen); err != nil {
+			common.Fail(c, err)
+			return
+		}
 	}
 	common.Success(c, common.PageResult[item]{Items: items, Total: total, Page: page, PageSize: size})
 }
