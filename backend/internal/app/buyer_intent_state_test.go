@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"gorm.io/gorm"
@@ -10,6 +11,92 @@ import (
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/model"
 )
+
+func TestBuyerIntentTransitionCompareAndSetRejectsStaleConcurrentWrite(t *testing.T) {
+	db := openBuyerIntentSchemaTestDB(t)
+	if err := db.AutoMigrate(&model.BuyerIntent{}); err != nil {
+		t.Fatalf("migrate buyer intent transition fixture: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get buyer intent transition pool: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+
+	intent := model.BuyerIntent{
+		IntentNo:   "BI-STALE-TRANSITION",
+		BuyerID:    10,
+		ProductID:  20,
+		MerchantID: 30,
+		Status:     model.IntentNew,
+		IsOpen:     true,
+	}
+	if err := db.Create(&intent).Error; err != nil {
+		t.Fatalf("create buyer intent transition fixture: %v", err)
+	}
+
+	staleContacted := intent
+	staleClosed := intent
+	start := make(chan struct{})
+	type transitionResult struct {
+		current model.BuyerIntent
+		won     bool
+		err     error
+	}
+	results := make(chan transitionResult, 2)
+	closeCommitted := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(2)
+	run := func(expected model.BuyerIntent, updates map[string]interface{}, wait <-chan struct{}, committed chan<- struct{}) {
+		ready.Done()
+		<-start
+		if wait != nil {
+			<-wait
+		}
+		current, won, err := compareAndSetBuyerIntentTransition(db, expected, updates)
+		if committed != nil {
+			close(committed)
+		}
+		results <- transitionResult{current: current, won: won, err: err}
+	}
+	go run(staleContacted, map[string]interface{}{
+		"status": model.IntentContacted,
+	}, closeCommitted, nil)
+	go run(staleClosed, map[string]interface{}{
+		"status":  model.IntentClosed,
+		"is_open": false,
+	}, nil, closeCommitted)
+	ready.Wait()
+	close(start)
+
+	winners := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("compare-and-set transition: %v", result.err)
+		}
+		if result.won {
+			winners++
+		}
+		if err := validateBuyerIntentState(result.current); err != nil {
+			t.Fatalf("transition returned invalid state %+v: %v", result.current, err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("transition winners = %d, want exactly 1", winners)
+	}
+
+	var persisted model.BuyerIntent
+	if err := db.First(&persisted, intent.ID).Error; err != nil {
+		t.Fatalf("reload buyer intent transition fixture: %v", err)
+	}
+	if err := validateBuyerIntentState(persisted); err != nil {
+		t.Fatalf("persisted transition state %+v is invalid: %v", persisted, err)
+	}
+	if persisted.Status != model.IntentClosed || persisted.IsOpen {
+		t.Fatalf("persisted transition state = %s/%v, want CLOSED/false", persisted.Status, persisted.IsOpen)
+	}
+}
 
 func TestValidateBuyerIntentStatus(t *testing.T) {
 	tests := []struct {

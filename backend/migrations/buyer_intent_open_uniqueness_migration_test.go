@@ -184,16 +184,6 @@ func TestBuyerIntentOpenUniquenessAcceptanceManifestModeIsReadOnly(t *testing.T)
 			t.Fatalf("manifest missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{
-		".env", "secrets/", "evidence/", "uploads/", "app.db", ".tmp/",
-		"architecture-evolution-plan-2026-07-24.md",
-		"first-round-fix-review-2026-07-24.md",
-		"second-round-fix-review-2026-07-24.md",
-	} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("manifest exposed forbidden path %q", forbidden)
-		}
-	}
 	var paths []string
 	linePattern := regexp.MustCompile(`^[0-9a-f]{64}  (.+)$`)
 	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
@@ -228,9 +218,309 @@ func TestBuyerIntentOpenUniquenessAcceptanceManifestModeIsReadOnly(t *testing.T)
 	}
 }
 
-func TestBuyerIntentOpenUniquenessAcceptanceSnapshotsWithFormattedInspectOnly(t *testing.T) {
+func TestBuyerIntentOpenUniquenessAcceptanceSourceModesPruneForbiddenSyntheticPaths(t *testing.T) {
+	repoDir := t.TempDir()
+	allowed := map[string]string{
+		"Makefile":                                                     "synthetic\n",
+		"backend/Dockerfile":                                           "synthetic\n",
+		"backend/go.mod":                                               "module synthetic\n\ngo 1.22\n",
+		"backend/go.sum":                                               "",
+		"backend/main.go":                                              "package main\n",
+		"backend/internal/allowed_test.go":                             "package internal\n",
+		"backend/migrations/0009_allowed.sql":                          "SELECT 1;\n",
+		"deploy/acceptance/allowed.sh":                                 "#!/bin/sh\n",
+		"deploy/acceptance/allowed.yml":                                "services: {}\n",
+		"deploy/acceptance/config/allowed.yaml":                        "enabled: true\n",
+		"deploy/acceptance/config/allowed.conf":                        "enabled=true\n",
+		"deploy/acceptance/README.md":                                  "synthetic\n",
+		"deploy/acceptance/tool.Dockerfile":                            "FROM scratch\n",
+		"deploy/acceptance/sql/allowed.sql":                            "SELECT 1;\n",
+		"backend/migrations/nested/not-top-level.sql":                  "SELECT 2;\n",
+		"deploy/acceptance/config/nested/not-within-approved-depth.sh": "#!/bin/sh\n",
+	}
+	for path, content := range allowed {
+		writeBuyerIntentAcceptanceFixtureFile(t, repoDir, path, content)
+	}
+	script := copyBuyerIntentAcceptanceScript(t, repoDir)
+
+	forbiddenDirectories := []string{
+		".tmp", ".git", "node_modules", ".cache", "cache", "caches",
+		"uploads", "evidence", "secrets", "backups", "databases",
+	}
+	for _, directory := range forbiddenDirectories {
+		writeBuyerIntentAcceptanceFixtureFile(t, repoDir,
+			filepath.Join("backend", "internal", directory, "forbidden.go"), "package forbidden\n")
+		writeBuyerIntentAcceptanceFixtureFile(t, repoDir,
+			filepath.Join("deploy", "acceptance", directory, "forbidden.sh"), "#!/bin/sh\n")
+	}
+	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "backend/internal/nested/.tmp/forbidden_test.go", "package forbidden\n")
+	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "deploy/acceptance/config/.env.yml", "secret: forbidden\n")
+	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "deploy/acceptance/.env.conf", "secret=forbidden\n")
+	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "deploy/acceptance/data.sqlite.Dockerfile", "FROM forbidden\n")
+
+	before := buyerIntentAcceptanceFixturePaths(t, repoDir)
+	want := []string{
+		"Makefile",
+		"backend/Dockerfile",
+		"backend/go.mod",
+		"backend/go.sum",
+		"backend/internal/allowed_test.go",
+		"backend/main.go",
+		"backend/migrations/0009_allowed.sql",
+		"deploy/acceptance/README.md",
+		"deploy/acceptance/allowed.sh",
+		"deploy/acceptance/allowed.yml",
+		"deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh",
+		"deploy/acceptance/config/allowed.conf",
+		"deploy/acceptance/config/allowed.yaml",
+		"deploy/acceptance/sql/allowed.sql",
+		"deploy/acceptance/tool.Dockerfile",
+	}
+	sort.Strings(want)
+
+	listCmd := exec.Command("/bin/bash", script)
+	listCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "BUYER_INTENT_SOURCE_LIST_ONLY=1"}
+	listRaw, err := listCmd.Output()
+	if err != nil {
+		t.Fatalf("synthetic source-list mode: %v", err)
+	}
+	listPaths := strings.Split(strings.TrimSuffix(string(listRaw), "\x00"), "\x00")
+	if !slices.Equal(listPaths, want) {
+		t.Fatalf("synthetic source list = %q, want %q", listPaths, want)
+	}
+
+	manifestCmd := exec.Command("/bin/bash", script)
+	manifestCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "BUYER_INTENT_SOURCE_MANIFEST_ONLY=1"}
+	manifestRaw, err := manifestCmd.Output()
+	if err != nil {
+		t.Fatalf("synthetic manifest mode: %v", err)
+	}
+	var manifestPaths []string
+	linePattern := regexp.MustCompile(`^[0-9a-f]{64}  (.+)$`)
+	for _, line := range strings.Split(strings.TrimSpace(string(manifestRaw)), "\n") {
+		match := linePattern.FindStringSubmatch(line)
+		if match == nil {
+			t.Fatalf("invalid synthetic manifest line %q", line)
+		}
+		manifestPaths = append(manifestPaths, match[1])
+	}
+	if !slices.Equal(manifestPaths, want) {
+		t.Fatalf("synthetic manifest paths = %q, want %q", manifestPaths, want)
+	}
+	if after := buyerIntentAcceptanceFixturePaths(t, repoDir); !slices.Equal(after, before) {
+		t.Fatalf("read-only source modes changed fixture paths: before=%q after=%q", before, after)
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceDoesNotRetainLeakedStagedEvidence(t *testing.T) {
 	script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
   "container ls"|"volume ls"|"network ls")
+    exit 0
+    ;;
+esac
+exit 1
+`)
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "sha256sum"), []byte(
+		"#!/bin/sh\nprintf 'Authorization: injected-forbidden-value\\n'\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stubDir, "tar"), []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	environment = prependBuyerIntentAcceptancePath(environment, stubDir)
+
+	cmd := exec.Command("/bin/bash", script)
+	cmd.Env = environment
+	if err := cmd.Run(); err == nil {
+		t.Fatal("synthetic evidence leak unexpectedly succeeded")
+	}
+	evidenceDir := filepath.Join(filepath.Dir(script), "evidence", "buyer-intent-open-uniqueness")
+	paths := buyerIntentAcceptanceFixturePaths(t, evidenceDir)
+	want := []string{"evidence-leak-failure.txt"}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("retained leaked-evidence paths = %q, want %q", paths, want)
+	}
+	raw, err := os.ReadFile(filepath.Join(evidenceDir, want[0]))
+	if err != nil {
+		t.Fatalf("read categorical leak marker: %v", err)
+	}
+	if strings.Contains(string(raw), "injected-forbidden-value") || strings.Contains(string(raw), "Authorization") {
+		t.Fatalf("categorical leak marker retained forbidden content: %q", raw)
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceFailsClosedWhenEvidenceScanErrors(t *testing.T) {
+	script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
+  "container ls"|"volume ls"|"network ls")
+    exit 0
+    ;;
+esac
+exit 1
+`)
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "sha256sum"), []byte(
+		"#!/bin/sh\nprintf 'Authorization: injected-forbidden-value\\n'\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	grepPath, err := exec.LookPath("grep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grepStub := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  -ERn) exit 72 ;;
+esac
+exec %q "$@"
+`, grepPath)
+	if err := os.WriteFile(filepath.Join(stubDir, "grep"), []byte(grepStub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	environment = prependBuyerIntentAcceptancePath(environment, stubDir)
+
+	cmd := exec.Command("/bin/bash", script)
+	cmd.Env = environment
+	if err := cmd.Run(); err == nil {
+		t.Fatal("synthetic evidence scan error unexpectedly succeeded")
+	}
+	evidenceDir := filepath.Join(filepath.Dir(script), "evidence", "buyer-intent-open-uniqueness")
+	paths := buyerIntentAcceptanceFixturePaths(t, evidenceDir)
+	want := []string{"evidence-scan-failure.txt"}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("retained scan-error paths = %q, want %q", paths, want)
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceDistinguishesContainerAbsenceFromInspectFailure(t *testing.T) {
+	t.Run("proven absent", func(t *testing.T) {
+		script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
+  "container ls"|"volume ls"|"network ls")
+    exit 0
+    ;;
+  "inspect --type")
+    exit 1
+    ;;
+esac
+exit 1
+`)
+		cmd := exec.Command("/bin/bash", script)
+		cmd.Env = environment
+		if err := cmd.Run(); err == nil {
+			t.Fatal("synthetic absent-container harness unexpectedly completed")
+		}
+		evidence := filepath.Join(filepath.Dir(script), "evidence", "buyer-intent-open-uniqueness", "production-before.txt")
+		raw, err := os.ReadFile(evidence)
+		if err != nil {
+			t.Fatalf("read proven-absence snapshot: %v", err)
+		}
+		if !strings.Contains(string(raw), "/secondhand-market-api|absent|absent|absent\n") {
+			t.Fatalf("proven absence snapshot = %q", raw)
+		}
+	})
+
+	t.Run("inspect failure", func(t *testing.T) {
+		script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
+  "container ls")
+    case "$*" in
+      *"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n' ;;
+      *"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n' ;;
+      *"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n' ;;
+    esac
+    exit 0
+    ;;
+  "volume ls"|"network ls")
+    exit 0
+    ;;
+  "inspect --type")
+    echo 'synthetic daemon inspection failure' >&2
+    exit 71
+    ;;
+esac
+exit 1
+`)
+		cmd := exec.Command("/bin/bash", script)
+		cmd.Env = environment
+		raw, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatal("synthetic inspect failure unexpectedly completed")
+		}
+		if !strings.Contains(string(raw), "failed to inspect production container secondhand-market-api") {
+			t.Fatalf("inspect failure did not fail closed: %s", raw)
+		}
+	})
+}
+
+func writeBuyerIntentAcceptanceFixtureFile(t *testing.T, root, path, content string) {
+	t.Helper()
+	target := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func copyBuyerIntentAcceptanceScript(t *testing.T, repoDir string) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(repoDir, "deploy", "acceptance", "buyer-intent-open-uniqueness-smoke.sh")
+	writeBuyerIntentAcceptanceFixtureFile(t, repoDir,
+		"deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh", string(raw))
+	return path
+}
+
+func buyerIntentAcceptanceFixturePaths(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, filepath.ToSlash(relative))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func prependBuyerIntentAcceptancePath(environment []string, directory string) []string {
+	result := append([]string(nil), environment...)
+	for index, variable := range result {
+		if strings.HasPrefix(variable, "PATH=") {
+			result[index] = "PATH=" + directory + ":" + strings.TrimPrefix(variable, "PATH=")
+			return result
+		}
+	}
+	return append(result, "PATH="+directory)
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceSnapshotsWithFormattedInspectOnly(t *testing.T) {
+	script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
+  "container ls")
+    case "$*" in
+      *"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n' ;;
+      *"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n' ;;
+      *"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n' ;;
+    esac
+    exit 0
+    ;;
+  "volume ls"|"network ls")
     exit 0
     ;;
   "inspect --type")
@@ -282,7 +572,15 @@ func TestBuyerIntentOpenUniquenessAcceptanceSignalsExitNonzero(t *testing.T) {
 			release := filepath.Join(t.TempDir(), "release")
 			ready := filepath.Join(t.TempDir(), "ready")
 			script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
-  "container ls"|"volume ls"|"network ls")
+  "container ls")
+    case "$*" in
+      *"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n' ;;
+      *"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n' ;;
+      *"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n' ;;
+    esac
+    exit 0
+    ;;
+  "volume ls"|"network ls")
     exit 0
     ;;
   "inspect --type")

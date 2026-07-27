@@ -5,7 +5,8 @@ set -euo pipefail
 base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$base_dir/../.." && pwd)"
 project_name="secondhand-buyer-intent-acceptance"
-evidence_dir="$base_dir/evidence/buyer-intent-open-uniqueness"
+retained_evidence_dir="$base_dir/evidence/buyer-intent-open-uniqueness"
+evidence_dir=""
 compose=(docker compose --project-name "$project_name" --env-file "$base_dir/.env" --file "$base_dir/docker-compose.yml")
 production_containers=(
   secondhand-market-api
@@ -20,15 +21,29 @@ write_source_file_list() {
     cd "$repo_dir"
     {
       printf '%s\0' Makefile backend/Dockerfile backend/go.mod backend/go.sum
-      find backend -type f -name '*.go' \
-        ! -path '*/.cache/*' ! -path '*/uploads/*' ! -name 'app.db' -print0
+      find backend \
+        \( -type d \( -name '.tmp' -o -name '.git' -o -name 'node_modules' \
+          -o -name '.cache' -o -name 'cache' -o -name 'caches' \
+          -o -name 'uploads' -o -name 'evidence' -o -name 'secrets' \
+          -o -name 'backups' -o -name 'database' -o -name 'databases' \) \
+          -prune \) -o \
+        \( -type f -name '*.go' ! -name '.env' ! -name '.env.*' \
+          ! -name '*.env' ! -name '*.env.*' -print0 \)
       find backend/migrations -maxdepth 1 -type f -name '*.sql' -print0
-      find deploy/acceptance -maxdepth 2 -type f \
-        \( -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \
-          -o -name '*.conf' -o -name '*.md' -o -name '*.Dockerfile' \
-          -o -path 'deploy/acceptance/sql/*.sql' \) \
-        ! -name '.env' ! -name '.env.*' ! -path '*/secrets/*' \
-        ! -path '*/backups/*' ! -path '*/evidence/*' -print0
+      find deploy/acceptance -maxdepth 2 \
+        \( -type d \( -name '.tmp' -o -name '.git' -o -name 'node_modules' \
+          -o -name '.cache' -o -name 'cache' -o -name 'caches' \
+          -o -name 'uploads' -o -name 'evidence' -o -name 'secrets' \
+          -o -name 'backups' -o -name 'database' -o -name 'databases' \) \
+          -prune \) -o \
+        \( -type f \
+          \( -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \
+            -o -name '*.conf' -o -name '*.md' -o -name '*.Dockerfile' \
+            -o -path 'deploy/acceptance/sql/*.sql' \) \
+          ! -name '.env' ! -name '.env.*' ! -name '*.env' ! -name '*.env.*' \
+          ! -name '*.db' ! -name '*.db.*' ! -name '*.sqlite' \
+          ! -name '*.sqlite.*' ! -name '*.sqlite3' ! -name '*.sqlite3.*' \
+          -print0 \)
     } | LC_ALL=C sort -zu
   )
 }
@@ -107,20 +122,59 @@ existing_networks="$(docker network ls --filter "label=com.docker.compose.projec
   echo "refusing to reuse existing $project_name resources" >&2
   exit 1
 }
-[[ ! -e "$evidence_dir" ]] || {
+[[ ! -e "$retained_evidence_dir" ]] || {
   echo "refusing to overwrite existing buyer intent evidence" >&2
   exit 1
 }
 
-mkdir -p "$evidence_dir"
-chmod 700 "$evidence_dir"
 runtime_dir="$(mktemp -d)"
+evidence_dir="$runtime_dir/evidence"
+mkdir -p "$evidence_dir"
+chmod 700 "$runtime_dir" "$evidence_dir"
+
+evidence_contains_forbidden_values() {
+  local directory="$1"
+  grep -ERn --binary-files=without-match 'Authorization|access_token|refresh_token|DB_DSN=|MYSQL_PASSWORD=|MYSQL_ROOT_PASSWORD=|JWT_ACCESS_SECRET=|JWT_REFRESH_SECRET=|openid["=:]|buyer_id["=:][[:space:]]*[0-9]|merchant_id["=:][[:space:]]*[0-9]|actor_id["=:][[:space:]]*[0-9]|session_id["=:][[:space:]]*[0-9]|intent_no["=:]|contact_(phone|wechat|name)["=:]|eyJ[A-Za-z0-9_-]+\.' \
+    "$directory" >"$runtime_dir/evidence-leaks.txt"
+}
+
+publish_staged_evidence() {
+  local scan_status
+  mkdir -p "$retained_evidence_dir"
+  chmod 700 "$retained_evidence_dir"
+  evidence_contains_forbidden_values "$evidence_dir"
+  scan_status=$?
+  case "$scan_status" in
+    0)
+      printf 'evidence publication blocked: forbidden content detected\n' \
+        >"$retained_evidence_dir/evidence-leak-failure.txt"
+      return 2
+      ;;
+    1)
+      ;;
+    *)
+      printf 'evidence publication blocked: evidence scan failed\n' \
+        >"$retained_evidence_dir/evidence-scan-failure.txt"
+      return 3
+      ;;
+  esac
+  (
+    cd "$evidence_dir"
+    tar -cf - .
+  ) | tar -C "$retained_evidence_dir" -xf -
+}
 
 on_exit() {
   local status="${1:-$?}"
   trap - EXIT INT TERM
+  set +e
   if docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q | grep -q .; then
     "${compose[@]}" stop >/dev/null 2>&1 || true
+  fi
+  publish_staged_evidence
+  local publish_status=$?
+  if [[ "$publish_status" -ne 0 && "$status" -eq 0 ]]; then
+    status=1
   fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
     rm -r -- "$runtime_dir"
@@ -138,14 +192,26 @@ trap 'on_exit 143' TERM
 
 snapshot_production() {
   local output="$1"
+  local matches
   : >"$output"
   for container in "${production_containers[@]}"; do
-    if docker inspect --type container \
-      --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
-      "$container" >>"$output" 2>/dev/null; then
-      :
-    else
+    if ! matches="$(docker container ls -a --filter "name=^/$container$" --format '{{.Names}}')"; then
+      echo "failed to prove production container presence: $container" >&2
+      return 1
+    fi
+    if [[ -z "$matches" ]]; then
       printf '/%s|absent|absent|absent\n' "$container" >>"$output"
+      continue
+    fi
+    if [[ "$matches" != "$container" ]]; then
+      echo "production container name lookup was ambiguous: $container" >&2
+      return 1
+    fi
+    if ! docker inspect --type container \
+      --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
+      "$container" >>"$output"; then
+      echo "failed to inspect production container $container" >&2
+      return 1
     fi
   done
 }
@@ -554,9 +620,14 @@ cmp -s "$evidence_dir/production-before.txt" "$evidence_dir/production-after.txt
 printf 'resource retention marker: project=%s; resources=retained\n' \
   "$project_name" >"$evidence_dir/resource-retention.txt"
 
-if grep -ERn --binary-files=without-match 'Authorization|access_token|refresh_token|DB_DSN=|MYSQL_PASSWORD=|MYSQL_ROOT_PASSWORD=|JWT_ACCESS_SECRET=|JWT_REFRESH_SECRET=|openid["=:]|buyer_id["=:][[:space:]]*[0-9]|merchant_id["=:][[:space:]]*[0-9]|actor_id["=:][[:space:]]*[0-9]|session_id["=:][[:space:]]*[0-9]|intent_no["=:]|contact_(phone|wechat|name)["=:]|eyJ[A-Za-z0-9_-]+\.' \
-  "$evidence_dir" >"$runtime_dir/evidence-leaks.txt"; then
+evidence_scan_status=0
+evidence_contains_forbidden_values "$evidence_dir" || evidence_scan_status=$?
+if [[ "$evidence_scan_status" -eq 0 ]]; then
   echo "sanitized evidence check found a forbidden secret or identifier" >&2
+  exit 1
+fi
+if [[ "$evidence_scan_status" -ne 1 ]]; then
+  echo "sanitized evidence check could not complete" >&2
   exit 1
 fi
 printf 'forbidden_matches=0\n' >"$evidence_dir/evidence-leak-scan.txt"
