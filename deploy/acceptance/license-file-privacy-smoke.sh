@@ -224,6 +224,12 @@ license_count_before="$(mysql_sql "SELECT COUNT(*) FROM file_records WHERE biz_t
   mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql
   mysql_file /acceptance/migrations/0007_license_file_privacy.up.sql
   mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql
+  mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql
+  mysql_file /acceptance/migrations/0008_anonymous_upload_governance.up.sql
+  mysql_file /acceptance/migrations/0008_anonymous_upload_governance.postflight.sql
+  mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql
+  mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql
+  mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql
 } | tee "$evidence_dir/clean-migration.txt"
 
 [[ "$(mysql_sql "SELECT url FROM file_records WHERE id=302")" == "$product_url_before" ]]

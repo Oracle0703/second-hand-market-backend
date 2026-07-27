@@ -115,3 +115,22 @@ func TestLicenseFilePrivacyAcceptanceScriptContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestLicenseFilePrivacyAcceptanceUsesCurrentMigrationChain(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/license-file-privacy-smoke.sh")
+	if err != nil {
+		t.Fatalf("read license file privacy acceptance script: %v", err)
+	}
+
+	requireOrderedScriptSnippets(t, string(raw), []string{
+		`mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql`,
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.up.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.postflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`-e AUTO_MIGRATE=false \`,
+		`bootstrap-admin go test ./tests -run '^TestLicenseFilePrivacyWithMigrationOnlyMySQL$' -count=1 -v`,
+	})
+}

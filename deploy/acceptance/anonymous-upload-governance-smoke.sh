@@ -326,6 +326,9 @@ write_historical_files
 capture_historical_rows >"$evidence_dir/historical-before.txt"
 capture_historical_files >"$evidence_dir/historical-files-before.txt"
 run_0008 | tee "$evidence_dir/clean-migration.txt"
+mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql
+mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql
+mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql
 capture_historical_rows >"$evidence_dir/historical-after.txt"
 capture_historical_files >"$evidence_dir/historical-files-after.txt"
 cmp -s "$evidence_dir/historical-before.txt" "$evidence_dir/historical-after.txt" || {

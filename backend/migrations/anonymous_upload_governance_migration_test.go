@@ -211,3 +211,19 @@ func TestAnonymousUploadGovernanceAcceptanceScriptContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestAnonymousUploadGovernanceAcceptanceUsesCurrentMigrationChain(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/anonymous-upload-governance-smoke.sh")
+	if err != nil {
+		t.Fatalf("read anonymous upload governance script: %v", err)
+	}
+
+	requireOrderedScriptSnippets(t, string(raw), []string{
+		`run_0008 | tee "$evidence_dir/clean-migration.txt"`,
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`-e AUTO_MIGRATE=false \`,
+		`bootstrap-admin go test ./internal/app -run '^TestUploadGovernanceMySQLConcurrencyAndCleanup$' -count=1 -v`,
+	})
+}

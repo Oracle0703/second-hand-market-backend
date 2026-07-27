@@ -170,6 +170,18 @@ mysql_file /acceptance/migrations/0004_merchant_multi_stock.preflight.sql
 mysql_file /acceptance/migrations/0004_merchant_multi_stock.up.sql
 mysql_file /acceptance/migrations/0004_merchant_multi_stock.postflight.sql
 run_0005 | tee "$evidence_dir/full-chain.txt"
+mysql_file /acceptance/migrations/0006_file_binding_ownership.preflight.sql
+mysql_file /acceptance/migrations/0006_file_binding_ownership.up.sql
+mysql_file /acceptance/migrations/0006_file_binding_ownership.postflight.sql
+mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql
+mysql_file /acceptance/migrations/0007_license_file_privacy.up.sql
+mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql
+mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql
+mysql_file /acceptance/migrations/0008_anonymous_upload_governance.up.sql
+mysql_file /acceptance/migrations/0008_anonymous_upload_governance.postflight.sql
+mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql
+mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql
+mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql
 "${compose[@]}" --profile tools build bootstrap-admin
 "${compose[@]}" --profile tools run --rm \
   -e FILE_SCHEMA_MYSQL_TEST=1 \

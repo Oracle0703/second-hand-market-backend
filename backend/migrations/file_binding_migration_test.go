@@ -82,3 +82,24 @@ func TestFileBindingAcceptanceScriptContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestFileBindingAcceptanceUsesCurrentMigrationChain(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/file-binding-authorization-smoke.sh")
+	if err != nil {
+		t.Fatalf("read file binding acceptance script: %v", err)
+	}
+
+	requireOrderedScriptSnippets(t, string(raw), []string{
+		`run_0006 | tee "$evidence_dir/full-chain.txt"`,
+		"mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql",
+		"mysql_file /acceptance/migrations/0007_license_file_privacy.up.sql",
+		"mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.up.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.postflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
+	})
+}

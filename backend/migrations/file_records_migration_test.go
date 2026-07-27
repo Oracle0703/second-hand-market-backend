@@ -139,3 +139,40 @@ func TestFileSchemaSmokeResetsBeforeCleanChain(t *testing.T) {
 		t.Fatal("clean chain must assert neither files nor file_records exists after reset")
 	}
 }
+
+func TestFileSchemaSmokeUsesCurrentMigrationChain(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/file-record-schema-smoke.sh")
+	if err != nil {
+		t.Fatalf("read acceptance smoke script: %v", err)
+	}
+
+	requireOrderedScriptSnippets(t, string(raw), []string{
+		`run_0005 | tee "$evidence_dir/full-chain.txt"`,
+		"mysql_file /acceptance/migrations/0006_file_binding_ownership.preflight.sql",
+		"mysql_file /acceptance/migrations/0006_file_binding_ownership.up.sql",
+		"mysql_file /acceptance/migrations/0006_file_binding_ownership.postflight.sql",
+		"mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql",
+		"mysql_file /acceptance/migrations/0007_license_file_privacy.up.sql",
+		"mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.up.sql",
+		"mysql_file /acceptance/migrations/0008_anonymous_upload_governance.postflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
+	})
+}
+
+func requireOrderedScriptSnippets(t *testing.T, text string, snippets []string) {
+	t.Helper()
+
+	offset := 0
+	for _, snippet := range snippets {
+		index := strings.Index(text[offset:], snippet)
+		if index < 0 {
+			t.Fatalf("script missing ordered snippet %q", snippet)
+		}
+		offset += index + len(snippet)
+	}
+}

@@ -368,10 +368,10 @@ make acceptance-file-schema-smoke
 ```
 
 The command covers files-only rename, file_records-only no-op, both-table and
-neither-table failures, the full SQL migration chain, an `AUTO_MIGRATE=false`
-file upload flow, and one `AUTO_MIGRATE=true` compatibility startup. It leaves
-the isolated project and evidence in place for inspection. It does not deploy
-or migrate production.
+neither-table failures, the full SQL migration chain through `0009`, an
+`AUTO_MIGRATE=false` file upload flow, and one `AUTO_MIGRATE=true`
+compatibility startup. It leaves the isolated project and evidence in place
+for inspection. It does not deploy or migrate production.
 
 ## File binding authorization acceptance
 
@@ -393,7 +393,7 @@ The command recreates the `0001..0005` schema for each dirty-data fixture and
 proves that orphan references, wrong file types, non-PASS files, empty URLs,
 cross-merchant reuse, and uploader-account mismatches fail before `0006` DDL.
 It then verifies clean ownership backfill, unbound PUBLIC/MERCHANT behavior,
-the complete `0001..0006` chain, API registration/product binding, concurrent
+the complete `0001..0009` chain, API registration/product binding, concurrent
 one-time claim, and `AUTO_MIGRATE=true` compatibility. The command must never
 run from a production checkout or against production volumes.
 
@@ -425,10 +425,11 @@ make acceptance-license-file-privacy-smoke
 
 The command rebuilds the `0001..0006` schema for every dirty fixture, proves
 that `0007` preflight failures do not change file rows or license URLs, applies
-the clean `0006 -> 0007 -> new API/frontend` sequence, and runs the private-file
-API matrix with both `AUTO_MIGRATE=false` and `AUTO_MIGRATE=true`. It requires
-MySQL 8.4.x, retains the isolated Compose resources for review, and records
-source-independent runtime evidence under the directory above.
+the clean `0006 -> 0007 -> 0008 -> 0009 -> new API/frontend` sequence, and
+runs the private-file API matrix with both `AUTO_MIGRATE=false` and
+`AUTO_MIGRATE=true`. It requires MySQL 8.4.x, retains the isolated Compose
+resources for review, and records source-independent runtime evidence under
+the directory above.
 
 This procedure must not execute production SQL, deploy backend or frontend
 artifacts, read or change production uploads, or mutate production data. Its
@@ -450,7 +451,7 @@ ACCEPTANCE_DB_ENGINE=mysql8.4 \
 make acceptance-anonymous-upload-governance-smoke
 ```
 
-The command requires MySQL 8.4.x and applies the full `0001..0008` chain. It
+The command requires MySQL 8.4.x and applies the full `0001..0009` chain. It
 proves dirty `0008` states fail with SQLSTATE `45000`, historical rows and
 physical files retain their fingerprints, two independent MySQL pools enforce
 one-winner quota semantics, cleanup and registration cannot delete a bound
@@ -497,7 +498,7 @@ ACCEPTANCE_DB_ENGINE=mysql8.4 \
 make acceptance-session-revocation-smoke
 ```
 
-The script applies the full `0001..0008` migration chain and runs the focused
+The script applies the full `0001..0009` migration chain and runs the focused
 ADMIN, MERCHANT, and BUYER revocation matrix with both `AUTO_MIGRATE=false` and
 `AUTO_MIGRATE=true`. It proves one-winner concurrent logout, unrelated-session
 survival, explicit account disablement, merchant review downgrade, invalid

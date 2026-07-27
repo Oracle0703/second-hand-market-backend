@@ -155,7 +155,7 @@ apply_migration_chain() {
   mysql_file /acceptance/migrations/0003_buyer_auth_provider.up.sql
   for migration in 0004_merchant_multi_stock 0005_file_records_table \
     0006_file_binding_ownership 0007_license_file_privacy \
-    0008_anonymous_upload_governance; do
+    0008_anonymous_upload_governance 0009_buyer_intent_open_uniqueness; do
     mysql_file "/acceptance/migrations/$migration.preflight.sql"
     mysql_file "/acceptance/migrations/$migration.up.sql"
     mysql_file "/acceptance/migrations/$migration.postflight.sql"
