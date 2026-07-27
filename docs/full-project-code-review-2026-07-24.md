@@ -323,15 +323,18 @@ UNIQUE constraint failed: buyer_intents.buyer_id, buyer_intents.product_id, buye
 
 与订单迁移采用同一小范围方案：在 MySQL 8 增加生成的可空 `open_marker`，open 行取固定非空值，closed 行取 `NULL`，唯一约束改为 `(buyer_id, product_id, open_marker)`。先建立并验证新索引，再删除旧三列唯一索引，并把测试延伸到“创建第一笔、关闭、创建第二笔、再次关闭”的完整周期。线上 `buyer_intents=0`，无需数据清理；该迁移只需在恢复意向入口前完成。
 
-#### 2026-07-28 代码侧跟进
+#### 2026-07-27 代码侧跟进
 
 历史发现与上述线上证据保持不变。F-11 code-side fixed; isolated MySQL 8.4 test-server review pending; production 0009 not executed.
 
 - 设计：`docs/superpowers/specs/2026-07-27-buyer-intent-open-uniqueness-design.md`。
 - 计划：`docs/superpowers/plans/2026-07-27-buyer-intent-open-uniqueness.md`。
 - 实现范围：`77771d379ce260b548b54c45882c8173747467fe..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`，仅涵盖 F-11 实现提交。
-- 独立全分支复核范围：`4e8ea92d9fd0206abae3e000b92123ae23a20254..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`，涵盖从 F-11 分支基线到当前 HEAD 的全部提交。
-- 本地验证均为 PASS：`go test ./internal/app -run 'Test.*BuyerIntent' -count=1`；`go test ./tests -run 'TestBuyerIntent' -count=1`；`go test ./migrations -run 'TestBuyerIntentOpenUniqueness' -count=1`；`bash -n deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh`；使用仓库本地 Go 缓存的 `go test ./... -count=1`、`go test -race ./... -count=1` 和 `go vet ./...`；`git diff --check`。
+- 独立全分支代码复核范围：`4e8ea92d9fd0206abae3e000b92123ae23a20254..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`，涵盖 F-11 书面设计基线到文档提交前的实现 HEAD；后续文档提交另按 Task 8 任务级审查。
+- 干净索引检查：`git status --short --branch --untracked-files=no` 仅输出 `## codex/f11-buyer-intent-open-uniqueness`；`mkdir -p backend/.cache/go/mod backend/.cache/go/build` 退出 0。
+- focused 门禁：`cd backend && go test ./internal/app -run 'Test.*BuyerIntent' -count=1` 输出 `ok .../internal/app`；`go test ./tests -run 'TestBuyerIntent' -count=1` 输出 `ok .../tests`；`go test ./migrations -run 'TestBuyerIntentOpenUniqueness' -count=1` 输出 `ok .../migrations`；三条命令均退出 0。
+- 脚本与 diff 门禁：`bash -n deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh` 与 `git diff --check` 均退出 0 且无错误输出。
+- 使用 `backend/.cache/go/mod` 与 `backend/.cache/go/build` 的完整门禁：`go test ./... -count=1` 所有包 PASS、退出 0；`go test -race ./... -count=1` 所有包 PASS、退出 0（`backend/tests` 为 `ok`，147.287s）；`go vet ./...` 退出 0 且无错误输出。
 - 生成列/部分索引、状态校验、重复键复查和三轮关闭已通过本地门禁。仍须取得本问题的精确授权后，在专用 Compose 项目执行隔离 MySQL 8.4 验收并记录接受的提交范围；生产 `0009`、部署和生产数据修改均未执行。F-12 继续阻断，直至该授权验收记录接受的 F-11 提交范围。
 
 ### F-12 [P1] 买家小程序登录默认使用 mock 身份

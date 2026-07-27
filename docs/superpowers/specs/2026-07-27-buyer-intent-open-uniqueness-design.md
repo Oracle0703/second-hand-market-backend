@@ -595,7 +595,7 @@ under F-11.
   authorize source transfer, remote execution, production inspection,
   production migration, deployment, or data changes.
 
-## 19. 2026-07-28 Code-Side Follow-Up
+## 19. 2026-07-27 Code-Side Follow-Up
 
 F-11 code-side fixed; isolated MySQL 8.4 test-server review pending; production 0009 not executed.
 
@@ -607,19 +607,30 @@ the implementation plan is
 - `77771d379ce260b548b54c45882c8173747467fe..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`
   is the implementation-only F-11 commit range.
 - `4e8ea92d9fd0206abae3e000b92123ae23a20254..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`
-  is the independent whole-branch review range from the F-11 branch baseline
-  through current HEAD.
+  is the independent whole-branch code-review range from the F-11 written-design
+  baseline through the pre-documentation implementation HEAD. Task 8 reviews
+  the subsequent documentation commits separately.
 
-All local gates recorded PASS:
+All local gates recorded PASS with these results:
 
+- `git status --short --branch --untracked-files=no` printed only
+  `## codex/f11-buyer-intent-open-uniqueness`; the tracked worktree was clean.
+- `mkdir -p backend/.cache/go/mod backend/.cache/go/build` exited 0.
 - `cd backend && go test ./internal/app -run 'Test.*BuyerIntent' -count=1`
-- `cd backend && go test ./tests -run 'TestBuyerIntent' -count=1`
+  exited 0 with `ok .../internal/app`.
+- `cd backend && go test ./tests -run 'TestBuyerIntent' -count=1` exited 0
+  with `ok .../tests`.
 - `cd backend && go test ./migrations -run 'TestBuyerIntentOpenUniqueness' -count=1`
-- `bash -n deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh`
+  exited 0 with `ok .../migrations`.
+- `bash -n deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh` and
+  `git diff --check` both exited 0 with no error output.
 - `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go test ./... -count=1`
+  exited 0 with every package passing.
 - `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go test -race ./... -count=1`
+  exited 0 with every package passing; `backend/tests` reported `ok` in
+  147.287s.
 - `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go vet ./...`
-- `git diff --check`
+  exited 0 with no error output.
 
 The remaining gates are an exactly authorized isolated MySQL 8.4 acceptance
 run that records an accepted F-11 range, followed only by separately authorized
