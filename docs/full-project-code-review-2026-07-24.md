@@ -51,7 +51,7 @@
 | F-08 | P2 | frontend 退出登录未注销服务端 session | **本分支已修复（2026-07-26）**；随下次 frontend 发布生效 |
 | F-09 | P2 | migration 表名与 GORM 表名不一致 | **本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005** |
 | F-10 | P2 | Git 跟踪本地业务数据库 | 下一次共享仓库历史或轮换会话前完成处置 |
-| F-11 | P2 | 买家意向唯一索引只允许一笔已关闭历史记录 | 恢复买家意向入口前 |
+| F-11 | P2 | 买家意向唯一索引只允许一笔已关闭历史记录 | F-11 code-side fixed; isolated MySQL 8.4 test-server review pending; production 0009 not executed. |
 | F-12 | P1 | 生产买家登录使用 mock 身份 | 立即限制新 mock 身份，完成迁移方案后再切 real |
 | F-13 | P1 | 营业执照通过公开静态目录匿名可读 | 立即隔离现有 1 份执照，不影响商品图片 |
 | F-14 | P2 | 注销 session 后 access token 仍可继续访问 | 下一次认证发布；先确认可接受的吊销时延 |
@@ -322,6 +322,17 @@ UNIQUE constraint failed: buyer_intents.buyer_id, buyer_intents.product_id, buye
 建议：
 
 与订单迁移采用同一小范围方案：在 MySQL 8 增加生成的可空 `open_marker`，open 行取固定非空值，closed 行取 `NULL`，唯一约束改为 `(buyer_id, product_id, open_marker)`。先建立并验证新索引，再删除旧三列唯一索引，并把测试延伸到“创建第一笔、关闭、创建第二笔、再次关闭”的完整周期。线上 `buyer_intents=0`，无需数据清理；该迁移只需在恢复意向入口前完成。
+
+#### 2026-07-28 代码侧跟进
+
+历史发现与上述线上证据保持不变。F-11 code-side fixed; isolated MySQL 8.4 test-server review pending; production 0009 not executed.
+
+- 设计：`docs/superpowers/specs/2026-07-27-buyer-intent-open-uniqueness-design.md`。
+- 计划：`docs/superpowers/plans/2026-07-27-buyer-intent-open-uniqueness.md`。
+- 实现范围：`77771d379ce260b548b54c45882c8173747467fe..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`，仅涵盖 F-11 实现提交。
+- 独立全分支复核范围：`4e8ea92d9fd0206abae3e000b92123ae23a20254..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`，涵盖从 F-11 分支基线到当前 HEAD 的全部提交。
+- 本地验证均为 PASS：`go test ./internal/app -run 'Test.*BuyerIntent' -count=1`；`go test ./tests -run 'TestBuyerIntent' -count=1`；`go test ./migrations -run 'TestBuyerIntentOpenUniqueness' -count=1`；`bash -n deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh`；使用仓库本地 Go 缓存的 `go test ./... -count=1`、`go test -race ./... -count=1` 和 `go vet ./...`；`git diff --check`。
+- 生成列/部分索引、状态校验、重复键复查和三轮关闭已通过本地门禁。仍须取得本问题的精确授权后，在专用 Compose 项目执行隔离 MySQL 8.4 验收并记录接受的提交范围；生产 `0009`、部署和生产数据修改均未执行。F-12 继续阻断，直至该授权验收记录接受的 F-11 提交范围。
 
 ### F-12 [P1] 买家小程序登录默认使用 mock 身份
 

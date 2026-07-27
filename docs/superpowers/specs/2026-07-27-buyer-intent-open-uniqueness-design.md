@@ -4,7 +4,7 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** Design and written specification approved; implementation not started
+**Status:** Design and written specification approved; code-side fixed; isolated test-server review pending; production 0009 not executed
 
 **Finding:** F-11 - the buyer-intent unique index permits only one closed
 history for a buyer and product
@@ -594,3 +594,34 @@ under F-11.
 - This approval authorizes preparation of the implementation plan. It does not
   authorize source transfer, remote execution, production inspection,
   production migration, deployment, or data changes.
+
+## 19. 2026-07-28 Code-Side Follow-Up
+
+F-11 code-side fixed; isolated MySQL 8.4 test-server review pending; production 0009 not executed.
+
+The approved design is
+`docs/superpowers/specs/2026-07-27-buyer-intent-open-uniqueness-design.md`;
+the implementation plan is
+`docs/superpowers/plans/2026-07-27-buyer-intent-open-uniqueness.md`.
+
+- `77771d379ce260b548b54c45882c8173747467fe..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`
+  is the implementation-only F-11 commit range.
+- `4e8ea92d9fd0206abae3e000b92123ae23a20254..0f2cf7b5db9bbe7f00c18490dc523b09709d8467`
+  is the independent whole-branch review range from the F-11 branch baseline
+  through current HEAD.
+
+All local gates recorded PASS:
+
+- `cd backend && go test ./internal/app -run 'Test.*BuyerIntent' -count=1`
+- `cd backend && go test ./tests -run 'TestBuyerIntent' -count=1`
+- `cd backend && go test ./migrations -run 'TestBuyerIntentOpenUniqueness' -count=1`
+- `bash -n deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh`
+- `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go test ./... -count=1`
+- `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go test -race ./... -count=1`
+- `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go vet ./...`
+- `git diff --check`
+
+The remaining gates are an exactly authorized isolated MySQL 8.4 acceptance
+run that records an accepted F-11 range, followed only by separately authorized
+production `0009` execution and deployment. F-12 remains blocked until that
+isolated acceptance records the accepted F-11 range.

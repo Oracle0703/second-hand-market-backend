@@ -160,8 +160,14 @@
 | created_at | datetime | 创建时间 |
 | updated_at | datetime | 更新时间 |
 
-唯一约束：
-1. `uk_buyer_product_open(buyer_id, product_id, is_open)`
+唯一约束（按数据库方言）：
+1. MySQL 8.4 使用 stored nullable generated `open_marker`：
+   `open_marker = CASE WHEN is_open = 1 THEN 1 ELSE NULL END`，并使用
+   `uk_buyer_intent_open(buyer_id, product_id, open_marker)`。
+2. SQLite 开发/测试环境使用 partial unique index：
+   `unique (buyer_id,product_id) WHERE is_open = 1`。
+3. 应用代码绝不写入 `open_marker`。`CLOSED` 历史可无限保留；同一
+   `(buyer_id, product_id)` 最多只能有一条 `NEW/CONTACTED` 的 open 记录。
 
 索引建议：
 1. `idx_merchant_status_created(merchant_id, status, created_at)`
