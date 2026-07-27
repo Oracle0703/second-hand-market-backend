@@ -413,26 +413,20 @@ func inspectMySQLBuyerIntentSchema(db *gorm.DB) (buyerIntentSchemaState, error) 
 }
 
 func verifyMySQLBuyerIntentColumns(columns []mysqlBuyerIntentColumn, state *buyerIntentSchemaState) error {
-	required := map[string]int{
-		"buyer_id":   -1,
-		"product_id": -1,
-		"status":     -1,
-		"is_open":    -1,
+	required := map[string]mysqlBuyerIntentColumn{
+		"buyer_id":   {},
+		"product_id": {},
+		"status":     {},
+		"is_open":    {},
 	}
 	for _, column := range columns {
 		if _, ok := required[column.Name]; ok {
-			nullable := -1
-			switch {
-			case strings.EqualFold(column.IsNullable, "YES"):
-				nullable = 1
-			case strings.EqualFold(column.IsNullable, "NO"):
-				nullable = 0
-			}
-			if nullable == -1 || strings.TrimSpace(column.GenerationExpression) != "" ||
-				strings.Contains(strings.ToUpper(column.Extra), "GENERATED") {
+			if strings.TrimSpace(column.GenerationExpression) != "" ||
+				strings.Contains(strings.ToUpper(column.Extra), "GENERATED") ||
+				!strings.EqualFold(column.IsGenerated, "NEVER") {
 				return fmt.Errorf("buyer intent columns are missing or drifted")
 			}
-			required[column.Name] = nullable
+			required[column.Name] = column
 		}
 		if column.Name != "open_marker" {
 			continue
@@ -445,21 +439,35 @@ func verifyMySQLBuyerIntentColumns(columns []mysqlBuyerIntentColumn, state *buye
 			strings.Contains(strings.ToUpper(column.Extra), "STORED GENERATED") &&
 			normalizeMySQLGenerationExpression(column.GenerationExpression) == "casewhenis_open=1then1elsenullend"
 	}
-	// GORM development schemas are nullable; formal schemas declare all four NOT NULL.
-	nullable := -1
-	for _, columnNullable := range required {
-		if columnNullable == -1 {
-			return fmt.Errorf("buyer intent columns are missing or drifted")
-		}
-		if nullable == -1 {
-			nullable = columnNullable
-			continue
-		}
-		if columnNullable != nullable {
-			return fmt.Errorf("buyer intent columns are missing or drifted")
-		}
+	formal := map[string]mysqlBuyerIntentColumn{
+		"buyer_id":   {DataType: "bigint", ColumnType: "bigint", IsNullable: "NO"},
+		"product_id": {DataType: "bigint", ColumnType: "bigint", IsNullable: "NO"},
+		"status":     {DataType: "varchar", ColumnType: "varchar(16)", IsNullable: "NO"},
+		"is_open":    {DataType: "tinyint", ColumnType: "tinyint(1)", IsNullable: "NO"},
+	}
+	gormDevelopment := map[string]mysqlBuyerIntentColumn{
+		"buyer_id":   {DataType: "bigint", ColumnType: "bigint unsigned", IsNullable: "YES"},
+		"product_id": {DataType: "bigint", ColumnType: "bigint unsigned", IsNullable: "YES"},
+		"status":     {DataType: "varchar", ColumnType: "varchar(16)", IsNullable: "YES"},
+		"is_open":    {DataType: "tinyint", ColumnType: "tinyint(1)", IsNullable: "YES"},
+	}
+	if !matchesMySQLBuyerIntentColumnLayout(required, formal) &&
+		!matchesMySQLBuyerIntentColumnLayout(required, gormDevelopment) {
+		return fmt.Errorf("buyer intent columns are missing or drifted")
 	}
 	return nil
+}
+
+func matchesMySQLBuyerIntentColumnLayout(columns, layout map[string]mysqlBuyerIntentColumn) bool {
+	for name, expected := range layout {
+		column := columns[name]
+		if !strings.EqualFold(column.DataType, expected.DataType) ||
+			!strings.EqualFold(column.ColumnType, expected.ColumnType) ||
+			!strings.EqualFold(column.IsNullable, expected.IsNullable) {
+			return false
+		}
+	}
+	return true
 }
 
 func verifyMySQLBuyerIntentMarker(db *gorm.DB) error {

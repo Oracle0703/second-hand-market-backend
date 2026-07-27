@@ -514,6 +514,114 @@ func TestBuyerIntentModelDoesNotOwnLegacyUniqueIndex(t *testing.T) {
 	}
 }
 
+func formalMySQLBuyerIntentColumns() []mysqlBuyerIntentColumn {
+	return []mysqlBuyerIntentColumn{
+		{Name: "buyer_id", DataType: "bigint", ColumnType: "bigint", IsNullable: "NO", IsGenerated: "NEVER"},
+		{Name: "product_id", DataType: "bigint", ColumnType: "bigint", IsNullable: "NO", IsGenerated: "NEVER"},
+		{Name: "status", DataType: "varchar", ColumnType: "varchar(16)", IsNullable: "NO", IsGenerated: "NEVER"},
+		{Name: "is_open", DataType: "tinyint", ColumnType: "tinyint(1)", IsNullable: "NO", IsGenerated: "NEVER"},
+	}
+}
+
+func gormMySQLBuyerIntentColumns() []mysqlBuyerIntentColumn {
+	return []mysqlBuyerIntentColumn{
+		{Name: "buyer_id", DataType: "bigint", ColumnType: "bigint unsigned", IsNullable: "YES", IsGenerated: "NEVER"},
+		{Name: "product_id", DataType: "bigint", ColumnType: "bigint unsigned", IsNullable: "YES", IsGenerated: "NEVER"},
+		{Name: "status", DataType: "varchar", ColumnType: "varchar(16)", IsNullable: "YES", IsGenerated: "NEVER"},
+		{Name: "is_open", DataType: "tinyint", ColumnType: "tinyint(1)", IsNullable: "YES", IsGenerated: "NEVER"},
+	}
+}
+
+func TestVerifyMySQLBuyerIntentColumnsAcceptsCanonicalLayouts(t *testing.T) {
+	tests := []struct {
+		name    string
+		columns []mysqlBuyerIntentColumn
+	}{
+		{name: "formal migration", columns: formalMySQLBuyerIntentColumns()},
+		{name: "GORM development", columns: gormMySQLBuyerIntentColumns()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var state buyerIntentSchemaState
+			if err := verifyMySQLBuyerIntentColumns(tt.columns, &state); err != nil {
+				t.Fatalf("verify canonical columns: %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifyMySQLBuyerIntentColumnsRejectsRequiredColumnDrift(t *testing.T) {
+	type mutation func([]mysqlBuyerIntentColumn)
+	type testCase struct {
+		name   string
+		mutate mutation
+	}
+	tests := make([]testCase, 0, 22)
+	for i, name := range []string{"buyer_id", "product_id", "status", "is_open"} {
+		index := i
+		columnName := name
+		tests = append(tests,
+			testCase{
+				name: "drifted data_type for " + columnName,
+				mutate: func(columns []mysqlBuyerIntentColumn) {
+					columns[index].DataType = "blob"
+				},
+			},
+			testCase{
+				name: "drifted column_type for " + columnName,
+				mutate: func(columns []mysqlBuyerIntentColumn) {
+					columns[index].ColumnType = "blob"
+				},
+			},
+			testCase{
+				name: "drifted nullability for " + columnName,
+				mutate: func(columns []mysqlBuyerIntentColumn) {
+					columns[index].IsNullable = "YES"
+				},
+			},
+			testCase{
+				name: "generated " + columnName,
+				mutate: func(columns []mysqlBuyerIntentColumn) {
+					columns[index].GenerationExpression = "1"
+					columns[index].Extra = "STORED GENERATED"
+					columns[index].IsGenerated = "ALWAYS"
+				},
+			},
+		)
+	}
+	tests = append(tests,
+		testCase{
+			name: "formal types with GORM nullability",
+			mutate: func(columns []mysqlBuyerIntentColumn) {
+				for i := range columns {
+					columns[i].IsNullable = "YES"
+				}
+			},
+		},
+		testCase{
+			name: "GORM types with formal nullability",
+			mutate: func(columns []mysqlBuyerIntentColumn) {
+				gormColumns := gormMySQLBuyerIntentColumns()
+				copy(columns, gormColumns)
+				for i := range columns {
+					columns[i].IsNullable = "NO"
+				}
+			},
+		},
+	)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			columns := formalMySQLBuyerIntentColumns()
+			tt.mutate(columns)
+			var state buyerIntentSchemaState
+			if err := verifyMySQLBuyerIntentColumns(columns, &state); err == nil {
+				t.Fatal("accepted drifted required-column metadata")
+			}
+		})
+	}
+}
+
 func TestOpenDBTranslatesDuplicateKeys(t *testing.T) {
 	db, err := openDB(Config{
 		DBDriver: "sqlite",
