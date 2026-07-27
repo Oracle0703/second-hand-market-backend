@@ -253,6 +253,12 @@ func TestBuyerIntentOpenUniquenessAcceptanceSourceModesPruneForbiddenSyntheticPa
 		writeBuyerIntentAcceptanceFixtureFile(t, repoDir,
 			filepath.Join("deploy", "acceptance", directory, "forbidden.sh"), "#!/bin/sh\n")
 	}
+	for _, directory := range []string{".env", ".env.local", "fixture.env"} {
+		writeBuyerIntentAcceptanceFixtureFile(t, repoDir,
+			filepath.Join("backend", "internal", directory, "forbidden.go"), "package forbidden\n")
+		writeBuyerIntentAcceptanceFixtureFile(t, repoDir,
+			filepath.Join("deploy", "acceptance", directory, "forbidden.sh"), "#!/bin/sh\n")
+	}
 	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "backend/internal/nested/.tmp/forbidden_test.go", "package forbidden\n")
 	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "deploy/acceptance/config/.env.yml", "secret: forbidden\n")
 	writeBuyerIntentAcceptanceFixtureFile(t, repoDir, "deploy/acceptance/.env.conf", "secret=forbidden\n")

@@ -25,7 +25,8 @@ write_source_file_list() {
         \( -type d \( -name '.tmp' -o -name '.git' -o -name 'node_modules' \
           -o -name '.cache' -o -name 'cache' -o -name 'caches' \
           -o -name 'uploads' -o -name 'evidence' -o -name 'secrets' \
-          -o -name 'backups' -o -name 'database' -o -name 'databases' \) \
+          -o -name 'backups' -o -name 'database' -o -name 'databases' \
+          -o -name '.env' -o -name '.env.*' -o -name '*.env' -o -name '*.env.*' \) \
           -prune \) -o \
         \( -type f -name '*.go' ! -name '.env' ! -name '.env.*' \
           ! -name '*.env' ! -name '*.env.*' -print0 \)
@@ -34,7 +35,8 @@ write_source_file_list() {
         \( -type d \( -name '.tmp' -o -name '.git' -o -name 'node_modules' \
           -o -name '.cache' -o -name 'cache' -o -name 'caches' \
           -o -name 'uploads' -o -name 'evidence' -o -name 'secrets' \
-          -o -name 'backups' -o -name 'database' -o -name 'databases' \) \
+          -o -name 'backups' -o -name 'database' -o -name 'databases' \
+          -o -name '.env' -o -name '.env.*' -o -name '*.env' -o -name '*.env.*' \) \
           -prune \) -o \
         \( -type f \
           \( -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \
