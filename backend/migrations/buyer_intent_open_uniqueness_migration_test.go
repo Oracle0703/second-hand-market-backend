@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const buyerIntentAcceptanceConfirmation = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_BUYER_INTENT_DATA"
@@ -101,6 +103,50 @@ func TestBuyerIntentOpenUniquenessAcceptanceHarnessContract(t *testing.T) {
 		if !strings.Contains(string(readme), required) {
 			t.Errorf("acceptance README missing %q", required)
 		}
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceComposeUsesNoInterpolateSafeSecretBind(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/acceptance/docker-compose.yml")
+	if err != nil {
+		t.Fatalf("read acceptance Compose file: %v", err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Volumes []interface{} `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(raw, &compose); err != nil {
+		t.Fatalf("parse acceptance Compose file: %v", err)
+	}
+	bootstrap, ok := compose.Services["bootstrap-admin"]
+	if !ok {
+		t.Fatal("bootstrap-admin service is missing")
+	}
+
+	const (
+		secretSource = "${ADMIN_BOOTSTRAP_PASSWORD_FILE_HOST:-./secrets/control-admin-password}"
+		secretTarget = "/run/secrets/admin-password"
+	)
+	found := false
+	for _, rawVolume := range bootstrap.Volumes {
+		switch volume := rawVolume.(type) {
+		case string:
+			if strings.Contains(volume, secretTarget) {
+				t.Fatal("admin password bind must use long syntax so Compose --no-interpolate does not parse the default-expression colon as a volume separator")
+			}
+		case map[string]interface{}:
+			if volume["target"] != secretTarget {
+				continue
+			}
+			found = true
+			if volume["type"] != "bind" || volume["source"] != secretSource || volume["read_only"] != true {
+				t.Fatalf("admin password bind = %#v", volume)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("long-form admin password bind is missing")
 	}
 }
 

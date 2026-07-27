@@ -151,7 +151,10 @@ services:
       ADMIN_BOOTSTRAP_PASSWORD_FILE: /run/secrets/admin-password
       TZ: Asia/Shanghai
     volumes:
-      - ${ADMIN_BOOTSTRAP_PASSWORD_FILE_HOST:-./secrets/control-admin-password}:/run/secrets/admin-password:ro
+      - type: bind
+        source: "${ADMIN_BOOTSTRAP_PASSWORD_FILE_HOST:-./secrets/control-admin-password}"
+        target: /run/secrets/admin-password
+        read_only: true
       - uploads:/var/lib/second-hand-market/uploads
     networks:
       - acceptance
