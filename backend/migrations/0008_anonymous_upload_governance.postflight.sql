@@ -93,7 +93,7 @@ BEGIN
 
   SELECT COUNT(*) INTO v_count
   FROM (
-    SELECT index_name
+    SELECT index_name, non_unique AS is_non_unique
     FROM information_schema.statistics
     WHERE table_schema = DATABASE()
       AND table_name = 'file_records'
@@ -143,9 +143,9 @@ BEGIN
     FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'file_quota_guards'
     GROUP BY index_name, non_unique
-    HAVING (index_name = 'PRIMARY' AND non_unique = 0 AND COUNT(*) = 1
+    HAVING (index_name = 'PRIMARY' AND is_non_unique = 0 AND COUNT(*) = 1
         AND GROUP_CONCAT(column_name ORDER BY seq_in_index) = 'id')
-      OR (index_name = 'uk_file_quota_guard_name' AND non_unique = 0 AND COUNT(*) = 1
+      OR (index_name = 'uk_file_quota_guard_name' AND is_non_unique = 0 AND COUNT(*) = 1
         AND GROUP_CONCAT(column_name ORDER BY seq_in_index) = 'guard_name')
   ) expected_guard_indexes;
   IF v_count <> 2 THEN

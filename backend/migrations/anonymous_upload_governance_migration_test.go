@@ -92,6 +92,41 @@ func TestAnonymousUploadGovernanceMigrationArtifacts(t *testing.T) {
 	}
 }
 
+func TestAnonymousUploadGovernanceGroupedIndexHavingProjectsNonUnique(t *testing.T) {
+	tests := []struct {
+		name            string
+		groupedQueries  int
+		aliasPredicates int
+	}{
+		{"0008_anonymous_upload_governance.preflight.sql", 2, 4},
+		{"0008_anonymous_upload_governance.up.sql", 1, 2},
+		{"0008_anonymous_upload_governance.postflight.sql", 1, 2},
+	}
+	aliasPredicate := regexp.MustCompile(`\bis_non_unique\s*=\s*[01]\b`)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := os.ReadFile(tt.name)
+			if err != nil {
+				t.Fatalf("read %s: %v", tt.name, err)
+			}
+			normalized := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
+			grouped := strings.Count(normalized, "group by index_name, non_unique")
+			if grouped != tt.groupedQueries {
+				t.Fatalf("grouped index queries = %d, want %d", grouped, tt.groupedQueries)
+			}
+			projected := strings.Count(normalized,
+				"select index_name, non_unique as is_non_unique from information_schema.statistics")
+			if projected != tt.groupedQueries {
+				t.Fatalf("projected grouped queries = %d, want %d", projected, tt.groupedQueries)
+			}
+			if predicates := len(aliasPredicate.FindAllString(normalized, -1)); predicates != tt.aliasPredicates {
+				t.Fatalf("HAVING alias predicates = %d, want %d", predicates, tt.aliasPredicates)
+			}
+		})
+	}
+}
+
 func TestAnonymousUploadGovernanceMigrationPreservesHistoricalRows(t *testing.T) {
 	raw, err := os.ReadFile("0008_anonymous_upload_governance.up.sql")
 	if err != nil {
