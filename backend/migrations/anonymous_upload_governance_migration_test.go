@@ -103,6 +103,10 @@ func TestAnonymousUploadGovernanceGroupedIndexHavingProjectsNonUnique(t *testing
 		{"0008_anonymous_upload_governance.postflight.sql", 1, 2},
 	}
 	aliasPredicate := regexp.MustCompile(`\bis_non_unique\s*=\s*[01]\b`)
+	boundProjection := regexp.MustCompile(
+		`select index_name, non_unique as is_non_unique from information_schema\.statistics[^;]*` +
+			`group by index_name, non_unique having`,
+	)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,6 +123,10 @@ func TestAnonymousUploadGovernanceGroupedIndexHavingProjectsNonUnique(t *testing
 				"select index_name, non_unique as is_non_unique from information_schema.statistics")
 			if projected != tt.groupedQueries {
 				t.Fatalf("projected grouped queries = %d, want %d", projected, tt.groupedQueries)
+			}
+			bound := len(boundProjection.FindAllString(normalized, -1))
+			if bound != tt.groupedQueries {
+				t.Fatalf("bound grouped projections = %d, want %d", bound, tt.groupedQueries)
 			}
 			if predicates := len(aliasPredicate.FindAllString(normalized, -1)); predicates != tt.aliasPredicates {
 				t.Fatalf("HAVING alias predicates = %d, want %d", predicates, tt.aliasPredicates)

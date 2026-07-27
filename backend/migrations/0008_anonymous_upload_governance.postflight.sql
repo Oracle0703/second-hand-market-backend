@@ -93,7 +93,7 @@ BEGIN
 
   SELECT COUNT(*) INTO v_count
   FROM (
-    SELECT index_name, non_unique AS is_non_unique
+    SELECT index_name
     FROM information_schema.statistics
     WHERE table_schema = DATABASE()
       AND table_name = 'file_records'
@@ -139,7 +139,7 @@ BEGIN
 
   SELECT COUNT(*) INTO v_count
   FROM (
-    SELECT index_name
+    SELECT index_name, non_unique AS is_non_unique
     FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'file_quota_guards'
     GROUP BY index_name, non_unique
