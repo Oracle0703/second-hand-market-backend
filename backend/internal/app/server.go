@@ -55,6 +55,9 @@ func NewServer(cfg Config) (*Server, error) {
 			return nil, err
 		}
 	}
+	if err := verifyBuyerIntentOpenUniqueness(db); err != nil {
+		return nil, err
+	}
 	if err := seedDefaults(db); err != nil {
 		return nil, err
 	}
@@ -155,6 +158,9 @@ func migrate(db *gorm.DB) error {
 		return err
 	}
 	if err := migrateFileQuotaGuard(db); err != nil {
+		return err
+	}
+	if err := migrateBuyerIntentOpenUniqueness(db); err != nil {
 		return err
 	}
 	return nil
