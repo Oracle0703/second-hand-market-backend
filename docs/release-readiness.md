@@ -30,7 +30,7 @@
 | F-16 分类 schema | 已修复：复合索引 + parent-aware seed | **同一矩阵的 AutoMigrate RED→GREEN 通过** | 新后端尚未部署 |
 | F-02 文件绑定授权 | 已修复：商家归属 + PUBLIC 一次性 capability + 商品/执照事务校验 | **MySQL 8.4.8 回填/失败门禁/API/并发/AutoMigrate 矩阵通过** | `0006` 未执行，frontend/backend 未部署 |
 | F-06 匿名上传资源治理 / D-03 大小契约 | 0008 HAVING 兼容性跟进已通过本地门禁和独立审阅 | 隔离 MySQL 8.4 测试服务器仍未审核 | 生产未执行 0008、未部署、未修改生产数据或文件 |
-| F-11 买家意向 open 唯一性 | F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates | a new isolated MySQL 8.4 rerun is pending | production 0009 not executed |
+| F-11 买家意向 open 唯一性 | F-11 code-side fixed; the 0008 compatibility correction passed local gates | the authorized isolated run stopped in 0008 before 0009; a new isolated MySQL 8.4 rerun is pending | production 0009 not executed |
 | F-14 session access 吊销 | 代码侧已修复 | 未审核；专用 Compose 项目尚未获授权运行 | 未部署，未修改生产数据或 session |
 
 F-09/F-16 脱敏证据与 SHA-256 见
