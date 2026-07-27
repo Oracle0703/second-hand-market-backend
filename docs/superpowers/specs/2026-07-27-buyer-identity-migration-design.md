@@ -4,7 +4,7 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** Proposed design; written user approval pending
+**Status:** Design and written specification approved; implementation not started
 
 **Finding:** F-12 - production buyer login accepts synthetic mock identities
 
@@ -597,5 +597,7 @@ is changed under F-12.
   semantics, deployment order, and test strategy were presented in the active
   goal sequence on 2026-07-27.
 - No contrary design direction was received during the continuation sequence.
-- Explicit written specification approval is still required before an
-  implementation plan or code change begins.
+- The user explicitly approved the F-12 written specification on 2026-07-27.
+- This approval authorizes preparation of the implementation plan. It does not
+  authorize source transfer, remote execution, real-platform credentials,
+  production configuration, production data migration, or deployment.
