@@ -117,7 +117,7 @@ chmod 700 "$evidence_dir"
 runtime_dir="$(mktemp -d)"
 
 on_exit() {
-  local status=$?
+  local status="${1:-$?}"
   trap - EXIT INT TERM
   if docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q | grep -q .; then
     "${compose[@]}" stop >/dev/null 2>&1 || true
@@ -132,16 +132,18 @@ on_exit() {
   fi
   exit "$status"
 }
-trap on_exit EXIT INT TERM
+trap on_exit EXIT
+trap 'on_exit 130' INT
+trap 'on_exit 143' TERM
 
 snapshot_production() {
   local output="$1"
   : >"$output"
   for container in "${production_containers[@]}"; do
-    if docker inspect --type container "$container" >/dev/null 2>&1; then
-      docker inspect --type container \
-        --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
-        "$container" >>"$output"
+    if docker inspect --type container \
+      --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
+      "$container" >>"$output" 2>/dev/null; then
+      :
     else
       printf '/%s|absent|absent|absent\n' "$container" >>"$output"
     fi

@@ -10,7 +10,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const buyerIntentAcceptanceConfirmation = "I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_BUYER_INTENT_DATA"
@@ -224,6 +226,193 @@ func TestBuyerIntentOpenUniquenessAcceptanceManifestModeIsReadOnly(t *testing.T)
 	if _, err := os.Stat(dockerCalled); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("source-list mode reached Docker")
 	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceSnapshotsWithFormattedInspectOnly(t *testing.T) {
+	script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
+  "container ls"|"volume ls"|"network ls")
+    exit 0
+    ;;
+  "inspect --type")
+    shift
+    printf '%s\n' "$*" >>"$DOCKER_INSPECT_LOG"
+    if [ "$3" != "--format" ]; then
+      exit 1
+    fi
+    printf '/synthetic|synthetic|running|0\n'
+    exit 0
+    ;;
+esac
+exit 1
+`)
+	inspectLog := filepath.Join(t.TempDir(), "docker-inspect.log")
+	environment = append(environment, "DOCKER_INSPECT_LOG="+inspectLog)
+
+	cmd := exec.Command("/bin/bash", script)
+	cmd.Env = environment
+	if err := cmd.Run(); err == nil {
+		t.Fatal("synthetic harness unexpectedly completed")
+	}
+
+	raw, err := os.ReadFile(inspectLog)
+	if err != nil {
+		t.Fatalf("read inspect log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	want := []string{
+		"--type container --format {{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}} secondhand-market-api",
+		"--type container --format {{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}} secondhand-market-web",
+		"--type container --format {{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}} secondhand-market-mysql",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("production snapshots used inspect arguments %q, want %q", got, want)
+	}
+}
+
+func TestBuyerIntentOpenUniquenessAcceptanceSignalsExitNonzero(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal syscall.Signal
+		want   int
+	}{
+		{name: "interrupt", signal: syscall.SIGINT, want: 130},
+		{name: "terminate", signal: syscall.SIGTERM, want: 143},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := filepath.Join(t.TempDir(), "release")
+			ready := filepath.Join(t.TempDir(), "ready")
+			script, environment := prepareBuyerIntentAcceptanceHarness(t, buyerIntentAcceptanceComposeConfigStub+`case "$1 $2" in
+  "container ls"|"volume ls"|"network ls")
+    exit 0
+    ;;
+  "inspect --type")
+    : >"$DOCKER_READY"
+    while [ ! -e "$DOCKER_RELEASE" ]; do
+      sleep 0.01
+    done
+    printf '/synthetic|synthetic|running|0\n'
+    exit 0
+    ;;
+esac
+exit 1
+`)
+			environment = append(environment,
+				"DOCKER_READY="+ready,
+				"DOCKER_RELEASE="+release,
+			)
+			cmd := exec.Command("/bin/bash", script)
+			cmd.Env = environment
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start synthetic harness: %v", err)
+			}
+			defer func() {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}()
+			waitForBuyerIntentAcceptanceFile(t, ready)
+			if err := cmd.Process.Signal(tc.signal); err != nil {
+				t.Fatalf("send %s: %v", tc.name, err)
+			}
+			if err := os.WriteFile(release, nil, 0o600); err != nil {
+				t.Fatalf("release inspection: %v", err)
+			}
+			err := cmd.Wait()
+			if err == nil {
+				t.Fatalf("%s exited successfully", tc.name)
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != tc.want {
+				t.Fatalf("%s exit = %v, want exit status %d", tc.name, err, tc.want)
+			}
+		})
+	}
+}
+
+func prepareBuyerIntentAcceptanceHarness(t *testing.T, dockerStub string) (string, []string) {
+	t.Helper()
+	repoDir := t.TempDir()
+	acceptanceDir := filepath.Join(repoDir, "deploy", "acceptance")
+	if err := os.MkdirAll(filepath.Join(acceptanceDir, "secrets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"Makefile":             "",
+		"backend/Dockerfile":   "",
+		"backend/go.mod":       "module synthetic\n\ngo 1.22\n",
+		"backend/go.sum":       "",
+		"backend/migrations/x": "",
+	} {
+		file := filepath.Join(repoDir, path)
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := os.ReadFile("../../deploy/acceptance/buyer-intent-open-uniqueness-smoke.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(acceptanceDir, "buyer-intent-open-uniqueness-smoke.sh")
+	if err := os.WriteFile(script, source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(acceptanceDir, ".env"),
+		[]byte("MYSQL_DATABASE=second_hand_market_acceptance\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(acceptanceDir, "secrets", "control-admin-password"),
+		[]byte("synthetic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(dockerStub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return script, []string{
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"BUYER_INTENT_ACCEPTANCE_CONFIRM=" + buyerIntentAcceptanceConfirmation,
+		"ACCEPTANCE_DB_ENGINE=mysql8.4",
+	}
+}
+
+const buyerIntentAcceptanceComposeConfigStub = `#!/bin/sh
+if [ "$1" = compose ]; then
+  previous=""
+  compose_file=""
+  env_file=""
+  for argument in "$@"; do
+    if [ "$previous" = --file ]; then
+      compose_file="$argument"
+    fi
+    if [ "$previous" = --env-file ]; then
+      env_file="$argument"
+    fi
+    previous="$argument"
+  done
+  source_dir=$(sed -n 's/.*context: "\(.*\)"/\1/p' "$compose_file")
+  acceptance_dir=$(dirname "$env_file")
+  repo_dir=$(dirname "$(dirname "$acceptance_dir")")
+  secret="$acceptance_dir/secrets/control-admin-password"
+  migrations="$repo_dir/backend/migrations"
+  printf '%s\n' "{\"services\":{\"bootstrap-admin\":{\"working_dir\":\"/workspace/backend\",\"build\":{\"context\":\"$source_dir\"},\"volumes\":[{\"target\":\"/workspace\",\"source\":\"$source_dir\",\"read_only\":true},{\"target\":\"/run/secrets/admin-password\",\"source\":\"$secret\",\"read_only\":true}],\"environment\":{\"DB_DSN\":\"\${MYSQL_USER}\${MYSQL_PASSWORD}\"}},\"mysql\":{\"volumes\":[{\"target\":\"/acceptance/migrations\",\"source\":\"$migrations\",\"read_only\":true}],\"environment\":{\"MYSQL_DATABASE\":\"\${MYSQL_DATABASE}\",\"MYSQL_USER\":\"\${MYSQL_USER}\",\"MYSQL_PASSWORD\":\"\${MYSQL_PASSWORD}\",\"MYSQL_ROOT_PASSWORD\":\"\${MYSQL_ROOT_PASSWORD}\"}},\"api\":{\"environment\":{\"DB_DSN\":\"\${MYSQL_USER}\${MYSQL_PASSWORD}\",\"JWT_ACCESS_SECRET\":\"\${JWT_ACCESS_SECRET}\",\"JWT_REFRESH_SECRET\":\"\${JWT_REFRESH_SECRET}\",\"FILE_UPLOAD_IP_HASH_SECRET\":\"\${FILE_UPLOAD_IP_HASH_SECRET}\"}}}}"
+  exit 0
+fi
+`
+
+func waitForBuyerIntentAcceptanceFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func TestBuyerIntentOpenUniquenessMigrationArtifacts(t *testing.T) {
