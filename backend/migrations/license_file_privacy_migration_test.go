@@ -133,4 +133,12 @@ func TestLicenseFilePrivacyAcceptanceUsesCurrentMigrationChain(t *testing.T) {
 		`-e AUTO_MIGRATE=false \`,
 		`bootstrap-admin go test ./tests -run '^TestLicenseFilePrivacyWithMigrationOnlyMySQL$' -count=1 -v`,
 	})
+	// Catches adding a false-mode license API run before 0009 postflight in the
+	// clean historical-fixture phase.
+	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
+		"apply_chain_0001_0006\nmysql_sql \"$valid_fixture_sql\"",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestLicenseFilePrivacyWithMigrationOnlyMySQL$' -count=1 -v`,
+	)
 }

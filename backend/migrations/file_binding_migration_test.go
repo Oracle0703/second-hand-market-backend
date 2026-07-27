@@ -100,6 +100,15 @@ func TestFileBindingAcceptanceUsesCurrentMigrationChain(t *testing.T) {
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
 		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
 	})
+	// Catches adding a false-mode file API run before 0009 postflight in the
+	// full-chain phase.
+	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
+		"# Full chain plus real API registration, product binding, concurrent claim, and AutoMigrate compatibility.",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
+	)
 }

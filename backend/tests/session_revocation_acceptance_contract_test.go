@@ -71,6 +71,28 @@ func TestSessionRevocationAcceptanceUsesCurrentMigrationChain(t *testing.T) {
 		"apply_migration_chain",
 		"run_focused_test false mysql-auto-migrate-false",
 	})
+	// Catches calling the false-mode focused API helper before the clean
+	// apply_migration_chain invocation that executes 0009 postflight.
+	requireSessionCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw))
+}
+
+func TestSessionCurrentMigrationChainRejectsEarlyFalseModeFocusedAPI(t *testing.T) {
+	// This fixture models the script mutation that runs the false-mode focused
+	// API helper before the clean migration-chain helper.
+	script := strings.Join([]string{
+		"apply_migration_chain() {",
+		"  for migration in 0009_buyer_intent_open_uniqueness; do",
+		"  mysql_file \"/acceptance/migrations/$migration.postflight.sql\"",
+		"  done",
+		"}",
+		"run_focused_test false mysql-auto-migrate-false",
+		"apply_migration_chain",
+	}, "\n")
+
+	err := sessionCurrentChainBeforeFirstFalseModeFocusedAPI(script)
+	if err == nil || !strings.Contains(err.Error(), "precedes clean 0009 migration chain") {
+		t.Fatalf("early false-mode focused API invocation error = %v, want 0009 ordering rejection", err)
+	}
 }
 
 func requireOrderedSessionSnippets(t *testing.T, text string, snippets []string) {
@@ -84,4 +106,44 @@ func requireOrderedSessionSnippets(t *testing.T, text string, snippets []string)
 		}
 		offset += index + len(snippet)
 	}
+}
+
+func requireSessionCurrentChainBeforeFirstFalseModeFocusedAPI(t *testing.T, script string) {
+	t.Helper()
+
+	if err := sessionCurrentChainBeforeFirstFalseModeFocusedAPI(script); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sessionCurrentChainBeforeFirstFalseModeFocusedAPI(script string) error {
+	chainStart := strings.Index(script, "apply_migration_chain() {")
+	if chainStart < 0 {
+		return errors.New("script missing apply_migration_chain helper")
+	}
+	chainEndOffset := strings.Index(script[chainStart:], "\n}\n")
+	if chainEndOffset < 0 {
+		return errors.New("script has unterminated apply_migration_chain helper")
+	}
+	chainEnd := chainStart + chainEndOffset + len("\n}\n")
+	chain := script[chainStart:chainEnd]
+	if !strings.Contains(chain, "0009_buyer_intent_open_uniqueness") ||
+		!strings.Contains(chain, `mysql_file "/acceptance/migrations/$migration.postflight.sql"`) {
+		return errors.New("apply_migration_chain must execute 0009 postflight")
+	}
+
+	runtime := script[chainEnd:]
+	firstFalseModeAt := strings.Index(runtime, "run_focused_test false mysql-auto-migrate-false")
+	if firstFalseModeAt < 0 {
+		return errors.New("script missing false-mode focused API invocation")
+	}
+	cleanChainAt := strings.Index(runtime, "apply_migration_chain")
+	if cleanChainAt < 0 {
+		return errors.New("script missing clean apply_migration_chain invocation")
+	}
+	if firstFalseModeAt < cleanChainAt {
+		return errors.New("first false-mode focused API invocation precedes clean 0009 migration chain")
+	}
+
+	return nil
 }

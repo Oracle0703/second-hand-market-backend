@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -160,8 +161,38 @@ func TestFileSchemaSmokeUsesCurrentMigrationChain(t *testing.T) {
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
 		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
 	})
+	// Catches adding a false-mode file API run before 0009 postflight in the
+	// clean full-chain phase.
+	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
+		"# Clean full migration chain, migration-only API flow, then AutoMigrate compatibility.",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v`,
+	)
+}
+
+func TestCurrentMigrationChainRejectsEarlyFalseModeFocusedAPI(t *testing.T) {
+	// This fixture models the script mutation that inserts a migration-only
+	// false-mode focused API run before 0009 postflight.
+	script := strings.Join([]string{
+		"# Clean phase",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v`,
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+	}, "\n")
+
+	err := currentChainBeforeFirstFalseModeFocusedAPI(script,
+		"# Clean phase",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./tests -run '^TestFocused$' -count=1 -v`,
+	)
+	if err == nil || !strings.Contains(err.Error(), "precedes 0009 postflight") {
+		t.Fatalf("early false-mode focused API invocation error = %v, want 0009 ordering rejection", err)
+	}
 }
 
 func requireOrderedScriptSnippets(t *testing.T, text string, snippets []string) {
@@ -175,4 +206,51 @@ func requireOrderedScriptSnippets(t *testing.T, text string, snippets []string) 
 		}
 		offset += index + len(snippet)
 	}
+}
+
+func requireCurrentChainBeforeFirstFalseModeFocusedAPI(
+	t *testing.T,
+	script string,
+	cleanPhaseStart string,
+	postflight string,
+	falseMode string,
+	focusedTest string,
+) {
+	t.Helper()
+
+	if err := currentChainBeforeFirstFalseModeFocusedAPI(script, cleanPhaseStart, postflight, falseMode, focusedTest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func currentChainBeforeFirstFalseModeFocusedAPI(
+	script string,
+	cleanPhaseStart string,
+	postflight string,
+	falseMode string,
+	focusedTest string,
+) error {
+	phaseAt := strings.Index(script, cleanPhaseStart)
+	if phaseAt < 0 {
+		return fmt.Errorf("script missing clean phase %q", cleanPhaseStart)
+	}
+	phase := script[phaseAt:]
+
+	postflightAt := strings.Index(phase, postflight)
+	if postflightAt < 0 {
+		return fmt.Errorf("clean phase missing 0009 postflight %q", postflight)
+	}
+	falseModeAt := strings.Index(phase, falseMode)
+	if falseModeAt < 0 {
+		return fmt.Errorf("clean phase missing false-mode focused API marker %q", falseMode)
+	}
+	focusedTestAt := strings.Index(phase[falseModeAt:], focusedTest)
+	if focusedTestAt < 0 {
+		return fmt.Errorf("first false-mode API marker is not followed by focused test %q", focusedTest)
+	}
+	if falseModeAt < postflightAt {
+		return fmt.Errorf("first false-mode focused API marker %q precedes 0009 postflight %q", falseMode, postflight)
+	}
+
+	return nil
 }

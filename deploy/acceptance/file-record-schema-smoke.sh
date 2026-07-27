@@ -185,6 +185,7 @@ mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.s
 "${compose[@]}" --profile tools build bootstrap-admin
 "${compose[@]}" --profile tools run --rm \
   -e FILE_SCHEMA_MYSQL_TEST=1 \
+  -e AUTO_MIGRATE=false \
   bootstrap-admin go test ./tests -run '^TestFileFlowWithMigrationOnlyMySQL$' -count=1 -v \
   | tee "$evidence_dir/file-flow.txt"
 

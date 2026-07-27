@@ -226,4 +226,12 @@ func TestAnonymousUploadGovernanceAcceptanceUsesCurrentMigrationChain(t *testing
 		`-e AUTO_MIGRATE=false \`,
 		`bootstrap-admin go test ./internal/app -run '^TestUploadGovernanceMySQLConcurrencyAndCleanup$' -count=1 -v`,
 	})
+	// Catches adding a false-mode upload API run before 0009 postflight in the
+	// clean historical-fixture phase.
+	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
+		"apply_chain_0001_0007\nseed_historical_rows",
+		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		"-e AUTO_MIGRATE=false",
+		`bootstrap-admin go test ./internal/app -run '^TestUploadGovernanceMySQLConcurrencyAndCleanup$' -count=1 -v`,
+	)
 }
