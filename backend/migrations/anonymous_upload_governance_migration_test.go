@@ -124,11 +124,23 @@ func TestAnonymousUploadGovernanceGroupedIndexHavingProjectsNonUnique(t *testing
 			if projected != tt.groupedQueries {
 				t.Fatalf("projected grouped queries = %d, want %d", projected, tt.groupedQueries)
 			}
-			bound := len(boundProjection.FindAllString(normalized, -1))
+			bound := 0
+			predicates := 0
+			for _, statement := range strings.Split(normalized, ";") {
+				if !boundProjection.MatchString(statement) {
+					continue
+				}
+				bound++
+				_, having, found := strings.Cut(statement, " having ")
+				if !found {
+					t.Fatalf("bound grouped query has no HAVING clause")
+				}
+				predicates += len(aliasPredicate.FindAllString(having, -1))
+			}
 			if bound != tt.groupedQueries {
 				t.Fatalf("bound grouped projections = %d, want %d", bound, tt.groupedQueries)
 			}
-			if predicates := len(aliasPredicate.FindAllString(normalized, -1)); predicates != tt.aliasPredicates {
+			if predicates != tt.aliasPredicates {
 				t.Fatalf("HAVING alias predicates = %d, want %d", predicates, tt.aliasPredicates)
 			}
 		})
