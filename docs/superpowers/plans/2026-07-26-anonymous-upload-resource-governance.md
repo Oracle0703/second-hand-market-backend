@@ -10,6 +10,15 @@
 
 **Execution status (2026-07-26):** Tasks 1-9 completed through code review and local gates. Task 10 remains pending path-specific transfer authorization and isolated MySQL 8.4 acceptance. Production migration/deployment is not part of this execution.
 
+**Frontend quota-message follow-up (2026-07-28):** Commit `03309d1` added the
+missing shared frontend mapping for HTTP 409 / code `10013`; commit `8bba664`
+then covered the real Axios rejected-error branch. Removing the mapping made
+both resolved and rejected quota cases fail with the English backend message.
+Restoring it passed 5 focused tests, 12 files / 27 full frontend tests, and the
+production build. Scoped review of `8bba664` found no Critical, Important, or
+Minor issues. The local Node version was `19.7.0`, so the locked Node `22.22.2`
+test-server gate remains open.
+
 ## Global Constraints
 
 - The business file limit is exactly `10 * 1024 * 1024 = 10,485,760` bytes at the frontend, presign, multipart file, actual-read, and processor boundaries.

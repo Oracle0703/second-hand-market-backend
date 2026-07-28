@@ -13,7 +13,7 @@
 - 文件元数据表名以 `file_records` 为唯一契约（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`FileRecord.TableName()` 已固定；`0005` preflight/up/postflight 已入库（up 重复形态校验）。
 - 分类唯一性以 `(parent_id,name)` 为唯一契约（F-16）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**。GORM 模型和两条 seed 路径已对齐历史 SQL migration。
 - F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
-- F-06：0008 HAVING 兼容性已在 F-11 的隔离 MySQL 8.4.8 完整迁移链中通过；F-06 专用治理矩阵仍单独跟踪；生产未执行 0008、未部署、未修改生产数据或文件。
+- F-06 代码侧已修复：0008 HAVING 兼容性已在 F-11 的隔离 MySQL 8.4.8 完整迁移链中通过，前端 code `10013` 配额错误映射已在 `03309d1` 补齐并独立复审；F-06 专用治理矩阵仍单独跟踪；生产未执行 0008、未部署、未修改生产数据或文件。
 - F-11 已在提交 `6f84cc6` 通过隔离 MySQL 8.4.8 测试服务器审核；生产未执行 0009、未部署。F-12 的 F-11 前置条件已满足，但 F-12 尚未实现或验收。
 - F-15 原子幂等已在代码侧实现并通过本地 focused/full/race/vet 与无 `.git` 源包门禁。首次隔离 MySQL 8.4 运行在 harness `test_metadata` 阶段因 metadata 容器 UID/GID 边界失败；`f46bb3c` 已按 TDD 修复并通过独立复审，测试服务器仍未批准，生产未部署、未修改线上数据。
 
@@ -30,7 +30,7 @@
 | F-09 文件表 schema | 已修复：`file_records` 契约 + `0005` 三段门禁 | **MySQL 8.4.8 完整八态矩阵通过** | `0005` 未在生产执行 |
 | F-16 分类 schema | 已修复：复合索引 + parent-aware seed | **同一矩阵的 AutoMigrate RED→GREEN 通过** | 新后端尚未部署 |
 | F-02 文件绑定授权 | 已修复：商家归属 + PUBLIC 一次性 capability + 商品/执照事务校验 | **MySQL 8.4.8 回填/失败门禁/API/并发/AutoMigrate 矩阵通过** | `0006` 未执行，frontend/backend 未部署 |
-| F-06 匿名上传资源治理 / D-03 大小契约 | 0008 HAVING 兼容性跟进已关闭 | F-11 隔离矩阵已证明 0008 preflight/up/postflight 可在 MySQL 8.4.8 运行；F-06 专用治理矩阵仍单独跟踪 | 生产未执行 0008、未部署、未修改生产数据或文件 |
+| F-06 匿名上传资源治理 / D-03 大小契约 | 代码侧已修复；0008 HAVING 兼容性与前端 `10013` 中文映射均已关闭 | F-11 隔离矩阵已证明 0008 preflight/up/postflight 可在 MySQL 8.4.8 运行；F-06 专用治理矩阵仍单独跟踪 | 生产未执行 0008、未部署、未修改生产数据或文件 |
 | F-11 买家意向 open 唯一性 | 代码侧修复并固定接受提交 `6f84cc6` | **MySQL 8.4.8 完整 0008/0009、API、AutoMigrate、full/race/vet 矩阵通过** | 生产未执行 0009、未部署；F-12 前置已满足但尚未实现 |
 | F-14 session access 吊销 | 代码侧已修复 | 未审核；专用 Compose 项目尚未获授权运行 | 未部署，未修改生产数据或 session |
 | F-15 原子幂等与失败回滚 | 代码侧已修复并本地验证；成功结果与业务写同事务提交，失败不留 claim；`f46bb3c` 修复验收 metadata UID/GID 边界 | **未通过审核**；首次运行 MySQL 8.4 门禁通过，但在 `test_metadata` 失败，完整矩阵未运行；修复后重跑待重新授权 | 无迁移；未部署、未修改生产数据或幂等记录；固定生产容器快照前后一致 |
@@ -58,7 +58,7 @@ make acceptance-anonymous-upload-governance-smoke
 - 主 smoke 已同步新库存断言：数量与总价、剩余库存不售罄、库存归零才 `SOLD`、关单释放预占且不改变上下架状态。
 - F-09/F-16：专用测试服务器 MySQL 8.4.8 完整矩阵退出 0；修复前同一 AutoMigrate 测试因 `uk_parent_name` 1061 失败，修复后通过。
 - F-02：专用项目 `secondhand-file-binding-acceptance` 完整矩阵退出 0；六类脏引用均以 SQLSTATE 45000 在 DDL 前失败，干净回填、PUBLIC/MERCHANT 未绑定文件、注册认领、商品绑定、并发单赢家及 AutoMigrate 兼容均通过。资源与脱敏证据保留在独立测试目录，生产容器 ID/状态/重启计数前后一致。
-- F-06：在代码提交 `c598f38` 上执行 `make test`，全部 Go 包通过；`go vet ./...` 通过；frontend Vitest 为 12 files / 25 tests 全量通过，`npm run build` 成功；`anonymous-upload-governance-smoke.sh` 通过 `bash -n`。本地没有 Docker，因此这些结果不替代 MySQL 8.4 并发、迁移引擎和 Nginx 入口验收。
+- F-06：在代码提交 `c598f38` 上执行 `make test`，全部 Go 包通过；`go vet ./...` 通过；frontend Vitest 为 12 files / 25 tests 全量通过，`npm run build` 成功；`anonymous-upload-governance-smoke.sh` 通过 `bash -n`。补充提交 `03309d1` 修复 code `10013` 中文映射，`8bba664` 覆盖真实 Axios rejected HTTP 409 分支；反向变异使 resolved/rejected 两条 quota 用例准确失败，恢复后 focused 5/5、frontend 12 files / 27 tests、production build 均通过。本次补充使用 Node `19.7.0`，不替代锁定 Node `22.22.2` 的服务器审核；这些结果也不替代 MySQL 8.4 并发、迁移引擎和 Nginx 入口验收。
 - F-11：提交 `6f84cc6` 的 120 文件 committed whitelist 在专用 Compose 项目中完整退出 0。MySQL 8.4.8、0008/0009 成功与拒绝矩阵、最终/API schema、AutoMigrate false/true、full/race/vet 均通过；`forbidden_matches=0`，26 个 evidence hash 全部校验通过，三个生产容器固定字段快照前后字节相同。脱敏报告见 `docs/superpowers/reviews/2026-07-27-buyer-intent-open-uniqueness-isolated-acceptance.md`。
 - F-15：代码提交至 `15f57dd` 后，focused idempotency/buyer/order 套件、串行 `go test ./... -count=1`、`go test -race ./internal/app ./tests -count=1`、`go vet ./...`、shell/gofmt/diff 门禁均通过；最终 race 的 `tests` 包耗时 368.402 秒。首次与 race 并行的 full 因一个信号 fixture 五秒 ready-file 超时未被接受；该 fixture 单独 2.99 秒通过，随后串行 full 全绿。提交 `ce8787a` 的 127 个 `HEAD` 白名单路径禁入项为 0，metadata-free package 校验通过。唯一一次已授权服务器运行通过源码与 MySQL 8.4 门禁，但在 `test_metadata` 因 root 容器写宿主目录而失败；生产固定字段快照前后一致，脱敏失败报告见 `docs/superpowers/reviews/2026-07-28-idempotency-atomicity-isolated-acceptance-failure.md`。`f46bb3c` 已加入宿主 UID:GID/`HOME=/tmp` 契约，独立复审无问题，fresh focused/full/shell/gofmt/diff 门禁通过；以上仍不构成测试服务器批准。
 

@@ -4,7 +4,7 @@
 
 **分支：** `codex/reconcile-code-reviews`
 
-**状态：** 0008 HAVING 兼容性跟进已通过本地门禁和独立审阅；隔离 MySQL 8.4 测试服务器仍未审核；生产未执行 0008、未部署、未修改生产数据或文件
+**状态：** 代码侧已修复（含 0008 HAVING 兼容性与前端 `10013` 配额错误映射），并通过本地门禁和独立审阅；隔离 MySQL 8.4 测试服务器仍未审核；生产未执行 0008、未部署、未修改生产数据或文件
 
 **问题：** F-06 - 匿名上传缺少持久化频率限制、存储配额和孤儿文件清理，应用、代理与前端的上传大小契约不一致
 
@@ -457,6 +457,8 @@ c03611c test(acceptance): verify upload governance
 d44942a fix(files): preserve upload governance invariants
 e36d23a fix(files): preserve migration-owned quota guard schema
 c598f38 fix(files): require transactional quota tables
+03309d1 fix(frontend): map upload quota errors
+8bba664 test(frontend): cover rejected upload quota errors
 ~~~
 
 审查 RED/GREEN 修订：
@@ -477,3 +479,19 @@ bash -n anonymous-upload-governance-smoke.sh   PASS
 ~~~
 
 前端构建仍输出既有 React Router future flag、Ant Design/Rollup 循环 chunk 和大 chunk warning，但退出码为 0。本机没有 Docker，因此未运行 Compose config、MySQL 8.4 并发/迁移或 Nginx 入口测试；测试服务器状态保持“未审核”。本轮未连接生产数据库、未执行生产 SQL、未读取或修改生产上传目录，也未部署任何应用或代理配置。
+
+## 17. 2026-07-28 前端配额错误映射补充验证
+
+提交 `03309d1` 将后端 HTTP 409 / code `10013` 的英文 message 稳定映射为
+`上传配额已用尽，请稍后重试`。TDD RED 证明修复前共享 HTTP 拦截器直接显示
+`upload quota exceeded`。后续只读复核发现原 adapter 用例只覆盖 resolved
+response 分支；提交 `8bba664` 增加真实 `AxiosError` / rejected HTTP 409
+回归。临时删除 `10013` 映射的反向变异使 5 个 focused 测试中对应两条路径
+准确失败；恢复后 focused 5/5、全量 frontend Vitest 12 files / 27 tests、
+production build 均以退出码 0 完成。
+
+`03309d1` 的独立规格与质量复审无问题；`8bba664` 的 scoped 复审同样无
+Critical、Important 或 Minor 问题。该补充验证使用本机 Node `19.7.0`，
+因此不替代计划要求的锁定 Node
+`22.22.2` 测试服务器审核，也不替代 F-06 专用 MySQL 8.4/Nginx 治理矩阵。
+测试服务器和生产状态保持不变。
