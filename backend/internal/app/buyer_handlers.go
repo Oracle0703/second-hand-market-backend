@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
@@ -950,21 +951,7 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 		common.Fail(c, common.ErrForbidden)
 		return
 	}
-	if err := s.checkRateLimit("buyer:intent:min", fmt.Sprintf("%d", actor.UserID), 5, time.Minute); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	if err := s.checkRateLimit("buyer:intent:day", fmt.Sprintf("%d", actor.UserID), 20, 24*time.Hour); err != nil {
-		common.Fail(c, err)
-		return
-	}
 	deviceID := getDeviceID(c)
-	if deviceID != "" {
-		if err := s.checkRateLimit("buyer:intent:device_day", deviceID, 30, 24*time.Hour); err != nil {
-			common.Fail(c, err)
-			return
-		}
-	}
 
 	var req dto.BuyerIntentCreateRequest
 	if err := bindJSON(c, &req); err != nil {
@@ -976,19 +963,29 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 		return
 	}
 
-	var product model.Product
-	if err := s.DB.Where("id = ?", req.ProductID).First(&product).Error; err != nil {
-		common.Fail(c, s.dbError(err))
-		return
-	}
-	if product.Status != model.ProductOnShelf {
-		common.Fail(c, common.ErrInvalidTransition)
-		return
-	}
-
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
-	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
-		found, err := findOpenBuyerIntent(s.DB, actor.UserID, req.ProductID)
+	data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]interface{}, error) {
+		if err := s.checkRateLimit("buyer:intent:min", fmt.Sprintf("%d", actor.UserID), 5, time.Minute); err != nil {
+			return nil, err
+		}
+		if err := s.checkRateLimit("buyer:intent:day", fmt.Sprintf("%d", actor.UserID), 20, 24*time.Hour); err != nil {
+			return nil, err
+		}
+		if deviceID != "" {
+			if err := s.checkRateLimit("buyer:intent:device_day", deviceID, 30, 24*time.Hour); err != nil {
+				return nil, err
+			}
+		}
+
+		var product model.Product
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", req.ProductID).First(&product).Error; err != nil {
+			return nil, s.dbError(err)
+		}
+		if product.Status != model.ProductOnShelf {
+			return nil, common.ErrInvalidTransition
+		}
+
+		found, err := findOpenBuyerIntent(tx, actor.UserID, req.ProductID)
 		if err != nil {
 			return nil, err
 		}
@@ -1008,9 +1005,9 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 			ContactWechat:  req.ContactWechat,
 			Message:        req.Message,
 		}
-		if err := s.DB.Create(&intent).Error; err != nil {
+		if err := tx.Create(&intent).Error; err != nil {
 			return nil, classifyBuyerIntentCreateError(
-				s.DB, err, actor.UserID, req.ProductID,
+				tx, err, actor.UserID, req.ProductID,
 			)
 		}
 		return map[string]interface{}{

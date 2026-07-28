@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -473,7 +474,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 
 func TestBuyerIntentConcurrentCreateHasOneWinner(t *testing.T) {
 	cfg := newTestAppConfig(t, "local")
-	cfg.DBDSN = fmt.Sprintf("file:buyer_intent_concurrent_%d?mode=memory&cache=shared&_pragma=busy_timeout(5000)", time.Now().UnixNano())
+	cfg.DBDSN = "file:" + filepath.Join(t.TempDir(), "buyer-intent.db") + "?_pragma=busy_timeout(5000)&_txlock=immediate"
 	srv := newTestServerFromConfig(t, cfg)
 	sqlDB, err := srv.DB.DB()
 	if err != nil {

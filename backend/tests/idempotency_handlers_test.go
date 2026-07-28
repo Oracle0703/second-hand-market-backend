@@ -34,6 +34,145 @@ type idempotencyTransitionSnapshot struct {
 	idempotencyRecords int64
 }
 
+type buyerIntentIdempotencyFixture struct {
+	srv       *app.Server
+	headers   map[string]string
+	body      map[string]interface{}
+	buyerID   uint64
+	productID uint64
+}
+
+func TestBuyerIntentIdempotencyReplayBypassesChangedProductAndRateLimit(t *testing.T) {
+	fixture := newBuyerIntentIdempotencyFixture(t)
+	first := requestBuyerIntentIdempotency(t, fixture, "buyer-intent-replay-key", fixture.body)
+	assertSuccessfulBuyerIntentIdempotency(t, first, false)
+
+	if err := fixture.srv.DB.Model(&model.Product{}).Where("id = ?", fixture.productID).Update("status", model.ProductOffShelf).Error; err != nil {
+		t.Fatalf("change product status after commit: %v", err)
+	}
+	for index := 0; index < 6; index++ {
+		replay := requestBuyerIntentIdempotency(t, fixture, "buyer-intent-replay-key", fixture.body)
+		assertSuccessfulBuyerIntentIdempotency(t, replay, true)
+		assertSameIdempotencyBusinessPayload(t, first, replay)
+	}
+	assertSingleBuyerIntentMutation(t, fixture, "buyer-intent-replay-key")
+}
+
+func TestBuyerIntentIdempotencyTerminalFailureRollsBackAndRetrySucceeds(t *testing.T) {
+	fixture := newBuyerIntentIdempotencyFixture(t)
+	failGORMTableOperation(t, fixture.srv.DB, "update", "idempotency_records", errors.New("forced buyer intent terminal failure"))
+
+	failed := requestBuyerIntentIdempotency(t, fixture, "buyer-intent-terminal-key", fixture.body)
+	if failed.HTTPStatus != http.StatusInternalServerError || failed.Code != common.CodeInternal {
+		t.Fatalf("terminal failure response = status %d, code %d", failed.HTTPStatus, failed.Code)
+	}
+	assertNoBuyerIntentMutation(t, fixture, "buyer-intent-terminal-key")
+
+	removeGORMTableOperation(t, fixture.srv.DB, "update", "idempotency_records")
+	retry := requestBuyerIntentIdempotency(t, fixture, "buyer-intent-terminal-key", fixture.body)
+	assertSuccessfulBuyerIntentIdempotency(t, retry, false)
+	assertSingleBuyerIntentMutation(t, fixture, "buyer-intent-terminal-key")
+}
+
+func TestBuyerIntentIdempotencyDifferentHashReturns10011(t *testing.T) {
+	fixture := newBuyerIntentIdempotencyFixture(t)
+	first := requestBuyerIntentIdempotency(t, fixture, "buyer-intent-hash-key", fixture.body)
+	assertSuccessfulBuyerIntentIdempotency(t, first, false)
+
+	different := map[string]interface{}{
+		"product_id":     fixture.productID,
+		"contact_wechat": "different-contact",
+		"message":        "idempotent buyer intent",
+	}
+	mismatch := requestBuyerIntentIdempotency(t, fixture, "buyer-intent-hash-key", different)
+	if mismatch.HTTPStatus != http.StatusConflict || mismatch.Code != common.CodeDuplicateSubmit {
+		t.Fatalf("different-hash response = status %d, code %d", mismatch.HTTPStatus, mismatch.Code)
+	}
+	assertSingleBuyerIntentMutation(t, fixture, "buyer-intent-hash-key")
+}
+
+func newBuyerIntentIdempotencyFixture(t *testing.T) buyerIntentIdempotencyFixture {
+	t.Helper()
+	srv := newTestServer(t)
+	merchantID, username, password := registerMerchant(t, srv, "buyer_intent_idempotency")
+	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
+	merchant := merchantLogin(t, srv, username, password)
+	if merchant.Code != common.CodeOK {
+		t.Fatalf("merchant login: code %d", merchant.Code)
+	}
+	productID := createAndOnShelfProduct(t, srv, str(merchant.Data["access_token"]))
+	buyer := buyerLogin(t, serverAdapter{h: srv.Router}, "buyer-intent-idempotency", "buyer-intent-idempotency-device")
+	if buyer.Code != common.CodeOK {
+		t.Fatalf("buyer login: code %d", buyer.Code)
+	}
+	return buyerIntentIdempotencyFixture{
+		srv: srv,
+		headers: map[string]string{
+			"Authorization": "Bearer " + str(buyer.Data["access_token"]),
+			"X-Device-Id":   "buyer-intent-idempotency-device",
+		},
+		body: map[string]interface{}{
+			"product_id":     productID,
+			"contact_wechat": "idempotent-contact",
+			"message":        "idempotent buyer intent",
+		},
+		buyerID:   numToUint64(buyer.Data["user"].(map[string]interface{})["id"]),
+		productID: productID,
+	}
+}
+
+func requestBuyerIntentIdempotency(t *testing.T, fixture buyerIntentIdempotencyFixture, key string, body map[string]interface{}) apiResp {
+	t.Helper()
+	headers := make(map[string]string, len(fixture.headers)+1)
+	for name, value := range fixture.headers {
+		headers[name] = value
+	}
+	headers["Idempotency-Key"] = key
+	return requestJSON(t, fixture.srv.Router, http.MethodPost, "/api/v1/buyer/intents", body, headers)
+}
+
+func assertSuccessfulBuyerIntentIdempotency(t *testing.T, response apiResp, replay bool) {
+	t.Helper()
+	if response.HTTPStatus != http.StatusOK || response.Code != common.CodeOK {
+		t.Fatalf("buyer intent response = status %d, code %d", response.HTTPStatus, response.Code)
+	}
+	if numToUint64(response.Data["intent_id"]) == 0 || str(response.Data["intent_no"]) == "" || str(response.Data["status"]) != model.IntentNew || str(response.Data["created_at"]) == "" {
+		t.Fatal("buyer intent success payload changed")
+	}
+	if replay {
+		if got, ok := response.Data["idempotent"].(bool); !ok || !got {
+			t.Fatalf("replay idempotent flag = %v, want true", response.Data["idempotent"])
+		}
+	} else if _, ok := response.Data["idempotent"]; ok {
+		t.Fatalf("first execution unexpectedly included idempotent flag: %v", response.Data["idempotent"])
+	}
+}
+
+func assertNoBuyerIntentMutation(t *testing.T, fixture buyerIntentIdempotencyFixture, key string) {
+	t.Helper()
+	assertBuyerIntentMutationCounts(t, fixture, key, 0, 0)
+}
+
+func assertSingleBuyerIntentMutation(t *testing.T, fixture buyerIntentIdempotencyFixture, key string) {
+	t.Helper()
+	assertBuyerIntentMutationCounts(t, fixture, key, 1, 1)
+}
+
+func assertBuyerIntentMutationCounts(t *testing.T, fixture buyerIntentIdempotencyFixture, key string, wantIntents, wantRecords int64) {
+	t.Helper()
+	var intents int64
+	if err := fixture.srv.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND product_id = ?", fixture.buyerID, fixture.productID).Count(&intents).Error; err != nil {
+		t.Fatalf("count buyer intents: %v", err)
+	}
+	var records int64
+	if err := fixture.srv.DB.Model(&model.IdempotencyRecord{}).Where("idem_key = ?", key).Count(&records).Error; err != nil {
+		t.Fatalf("count buyer intent idempotency records: %v", err)
+	}
+	if intents != wantIntents || records != wantRecords {
+		t.Fatalf("buyer intent/idempotency counts = %d/%d, want %d/%d", intents, records, wantIntents, wantRecords)
+	}
+}
+
 func TestIdempotentMerchantAndOrderTransitionsRollbackWhenTerminalWriteFails(t *testing.T) {
 	for _, transition := range idempotencyTransitionCases() {
 		t.Run(transition.name, func(t *testing.T) {
