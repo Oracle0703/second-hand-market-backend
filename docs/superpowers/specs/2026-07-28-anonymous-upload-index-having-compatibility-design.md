@@ -4,7 +4,7 @@
 
 **分支：** `codex/f11-buyer-intent-open-uniqueness`
 
-**状态：** 方案、完整设计与书面规格已批准；兼容性代码侧已修复并通过独立审阅；隔离 MySQL 8.4 重跑待授权；生产 0008/0009 未执行
+**状态：** 兼容性代码侧已修复并通过独立审阅及 F-11 隔离 MySQL 8.4.8 完整迁移链；生产 0008/0009 未执行
 
 **问题归属：** F-11 隔离验收暴露的 F-06/0008 MySQL 8.4 兼容性跟进
 
@@ -226,3 +226,17 @@ Critical/Important finding 必须通过新的 RED/GREEN 修复轮次关闭。
   HAVING 使用别名。
 - 2026-07-28：用户批准完整设计、测试边界和远端失败现场保留策略。
 - 2026-07-28：用户批准本书面规格，允许进入实施计划阶段。
+
+## 13. 2026-07-28 隔离验收结果
+
+提交 `6f84cc68c2f6dd870e2e6943f240d9b8589d6396` 在专用
+`secondhand-buyer-intent-acceptance` 项目中完整退出 0。fail-fast 迁移链在所有
+0009 场景前通过 0008 preflight/up/postflight，原 HAVING 1054 阻断未复现；随后
+0009、API schema、AutoMigrate false/true、full/race/vet 全部通过。
+
+成功 evidence 的独立漏扫与 retained marker 均为 `forbidden_matches=0`，26 个
+SHA-256 条目全部校验通过，三个固定生产容器的 before/after 字段快照字节相同。
+完整脱敏结果见
+`docs/superpowers/reviews/2026-07-27-buyer-intent-open-uniqueness-isolated-acceptance.md`。
+该结果关闭 0008 HAVING 兼容性的 F-11 测试服务器门禁，但不代表 F-06 专用治理矩阵、
+生产 0008/0009、应用部署或生产写验证已完成。

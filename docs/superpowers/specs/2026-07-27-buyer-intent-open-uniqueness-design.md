@@ -4,7 +4,7 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates; a new isolated MySQL 8.4 rerun is pending; production 0009 not executed.
+**Status:** F-11 fixed and passed isolated MySQL 8.4.8 test-server review at `6f84cc6`; production `0009` not executed; the F-12 prerequisite is satisfied but F-12 is not implemented.
 
 **Finding:** F-11 - the buyer-intent unique index permits only one closed
 history for a buyer and product
@@ -530,7 +530,7 @@ F-12 reserves `0010_buyer_identity_migration` and may reassign source buyer
 intents to a canonical buyer. It depends on F-11 because reassignment must
 retain any number of closed histories while detecting a conflicting open row.
 
-F-12 implementation remains blocked until all of these are true:
+F-12 implementation may begin only after all of these are true:
 
 - F-11 written specification and implementation plan are approved;
 - F-11 code and `0009` artifacts are committed and locally verified;
@@ -632,7 +632,25 @@ All local gates recorded PASS with these results:
 - `cd backend && env GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" go vet ./...`
   exited 0 with no error output.
 
-The remaining gates are an exactly authorized isolated MySQL 8.4 acceptance
-run that records an accepted F-11 range, followed only by separately authorized
-production `0009` execution and deployment. F-12 remains blocked until that
-isolated acceptance records the accepted F-11 range.
+The authorized isolated MySQL 8.4 acceptance now records the accepted F-11
+snapshot and repair range in
+`docs/superpowers/reviews/2026-07-27-buyer-intent-open-uniqueness-isolated-acceptance.md`.
+F-12's F-11 prerequisite is satisfied; F-12 implementation and validation have
+not started. Production `0009` execution and deployment remain separately
+authorized future work.
+
+## 20. 2026-07-28 Isolated MySQL 8.4 Acceptance
+
+F-11 fixed and passed isolated test-server review at source commit
+`6f84cc68c2f6dd870e2e6943f240d9b8589d6396`; production `0009` was not
+executed.
+
+The dedicated `secondhand-buyer-intent-acceptance` project passed MySQL 8.4.8,
+the complete 0008/0009 success and rejection matrix, final/API schema checks,
+both AutoMigrate modes, full tests, race tests, and vet. The retained evidence
+reported `forbidden_matches=0`; all 26 SHA-256 entries verified; the fixed-field
+production before/after snapshots were byte-identical. The accepted evidence
+and exact commit ranges are recorded in the sanitized report above.
+
+This satisfies the four F-12 dependency bullets in section 15. It does not
+claim that F-12 is implemented, tested, deployed, or production-authorized.
