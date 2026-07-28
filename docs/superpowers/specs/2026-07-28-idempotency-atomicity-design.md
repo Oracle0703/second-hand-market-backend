@@ -216,7 +216,7 @@ F-15 implementation and isolated acceptance do not query production.
 
 ### 7.6 SQLite concurrency-fixture transaction mode
 
-The historical `TestBuyerIntentConcurrentCreateHasOneWinner` regression uses a
+The historical `TestBuyerIntentConcurrentCreateHasOneWinner` regression used a
 four-connection, shared-memory SQLite database. After buyer-intent creation is
 moved into the wrapper-owned transaction, SQLite's default deferred transaction
 mode allows both requests to read the product and open-intent state before
@@ -224,12 +224,15 @@ either owns the single writer path. SQLite ignores GORM's `FOR UPDATE` clause,
 so one read transaction can then fail while upgrading to a writer with
 `SQLITE_BUSY` instead of reaching the open-intent uniqueness result.
 
-The approved fixture-only correction is to add `_txlock=immediate` to this
-test's DSN. The modernc/glebarez driver maps that option to `BEGIN IMMEDIATE`.
-The first request acquires the writer path at transaction start; the second
-waits under the existing five-second busy timeout, then reads the committed open
-intent and returns the existing HTTP 409 conflict. The test keeps four open
-connections and still asserts exactly one success and one conflict.
+Adding `_txlock=immediate` while retaining shared cache is not sufficient. The
+modernc/glebarez driver maps that option to `BEGIN IMMEDIATE`, but the second
+shared-cache connection receives `SQLITE_LOCKED_SHAREDCACHE` instead of the
+`SQLITE_BUSY` condition covered by the five-second timeout. The approved
+fixture-only correction moves this test to a file under `t.TempDir()`, omits
+shared cache, and keeps `_txlock=immediate`. The first request acquires the
+writer path at transaction start; the second waits under the existing timeout,
+then reads the committed open intent and returns HTTP 409. The test keeps four
+open connections and still asserts exactly one success and one conflict.
 
 This option is not injected by `openDB`, is not added to application
 configuration, and does not change MySQL behavior. The MySQL implementation
@@ -324,12 +327,30 @@ tests must prove response compatibility and that a forced terminal-record
 failure cannot leave each protected business mutation committed.
 
 The SQLite historical concurrency regression is a dialect fixture, not the
-production contention gate. Before the approved DSN correction it returned
-HTTP 500 / `20001` in 4 of 20 repeated runs. After adding
-`_txlock=immediate`, run that test at least 20 consecutive times, then run the
-complete Task 4 focused set and `go test ./internal/app ./tests -count=1`.
-Do not weaken the expected one-success/one-conflict result or reduce the
-connection pool to one.
+production contention gate. The original shared-memory deferred-transaction
+fixture returned HTTP 500 / `20001` in 4 of 20 repeated runs. The first
+proposed correction retained `mode=memory&cache=shared` and added
+`_txlock=immediate`; runtime diagnostics rejected that design because 19 of 20
+runs failed at `BEGIN IMMEDIATE` with `SQLITE_LOCKED_SHAREDCACHE` (extended
+code 262), before callback SQL ran. SQLite `busy_timeout` handles
+`SQLITE_BUSY`, not shared-cache table-lock failures.
+
+The approved fixture therefore uses a file-backed database under
+`t.TempDir()` with private-cache behavior, `_pragma=busy_timeout(5000)`, and
+`_txlock=immediate`:
+
+```go
+cfg.DBDSN = "file:" + filepath.Join(t.TempDir(), "buyer-intent.db") +
+    "?_pragma=busy_timeout(5000)&_txlock=immediate"
+```
+
+This keeps four open connections and the strict one-success/one-conflict
+result. It changes only this historical test fixture: application and MySQL
+DSNs remain unchanged, and no retry, process-local mutex, or assertion
+weakening is allowed. The diagnostic candidate passed 20 consecutive runs and
+then 50 consecutive runs. The committed implementation must repeat at least 20
+runs, then run the complete Task 4 focused set and
+`go test ./internal/app ./tests -count=1`.
 
 ### 10.3 MySQL 8.4 concurrency gate
 
