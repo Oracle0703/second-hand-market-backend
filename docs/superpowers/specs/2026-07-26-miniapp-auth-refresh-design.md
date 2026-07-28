@@ -4,7 +4,10 @@
 
 **Branch:** `codex/reconcile-code-reviews`
 
-**Status:** Design approved; implementation not started
+**Status:** Design approved; implementation complete. The Node `19.7.0`
+replay verifies `.nvmrc` committed-whitelist completeness only; the locked Node
+`22.22.2` / npm `10.9.7` local complete gate and isolated test-server review
+remain pending; production miniapp not released
 
 **Finding:** F-05 - the miniapp throws on HTTP 401 before its token-refresh branch can run
 
@@ -163,6 +166,11 @@ F-05 has no database migration and does not require production or MySQL access. 
 
 Any source transfer requires separate authorization for its exact remote path and whitelist. `.env`, credentials, storage data, build output, caches, `node_modules`, `.git`, evidence directories, `backend/app.db`, and the three protected review documents are excluded.
 
+The committed transfer whitelist must include `miniapp/.nvmrc` together with
+`miniapp/package.json` and `miniapp/package-lock.json`. The full suite reads all
+three files to enforce Node `22.22.2` and npm `10.9.7`; omitting `.nvmrc` makes
+the isolated source incomplete and must fail before test-server approval.
+
 ## 11. Acceptance Criteria
 
 - HTTP 401 reaches the refresh path before generic non-2xx rejection.
@@ -173,3 +181,18 @@ Any source transfer requires separate authorization for its exact remote path an
 - Public/`skipAuth` requests and non-authentication error contracts do not regress.
 - Full miniapp tests and both platform builds pass locally and on the authorized test server.
 - F-05 status distinguishes code-side closure, test-server approval, and production release; it is not marked fixed before implementation and verification evidence exist.
+
+## 12. 2026-07-28 Transfer-Whitelist Verification
+
+A committed-whitelist replay that followed the implementation plan exactly
+omitted `miniapp/.nvmrc`. The full miniapp run produced one deterministic
+`ENOENT` failure in `build-toolchain-lock.test.ts`; the remaining 11 files and
+35 tests passed. Adding the same `HEAD` version of `.nvmrc` to the isolated
+source made the focused toolchain/refresh set pass 20/20 and the full suite pass
+12 files / 36 tests. Both WeChat and Douyin production builds then exited 0
+with `TARO_APP_API_BASE_URL=https://example.invalid/api/v1`.
+
+This local replay used Node `19.7.0`, so it proves whitelist completeness only;
+it does not satisfy the required Node `22.22.2` / npm `10.9.7` local complete
+gate or replace the isolated test-server review. No bundle was deployed and no
+API, database, production service, credential, or production data was accessed.

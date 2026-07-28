@@ -672,6 +672,10 @@ Docker service, DSN, application server, or application API request. It must
 run from the retained dedicated source directory at the exact reviewed commit
 with Node `v22.22.2` and npm `10.9.7`:
 
+The committed transfer whitelist must include `miniapp/.nvmrc` alongside
+`miniapp/package.json` and `miniapp/package-lock.json`; the toolchain-lock test
+reads all three and an incomplete source directory is not reviewable.
+
 ```bash
 MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_RUNS_ONLY_ISOLATED_MINIAPP_TESTS \
 make acceptance-miniapp-auth-refresh-smoke

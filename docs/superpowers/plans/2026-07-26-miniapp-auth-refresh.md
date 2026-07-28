@@ -8,6 +8,12 @@
 
 **Tech Stack:** TypeScript 5.9, Taro 3.6.34, Zustand 5, Vitest 3.2, Node 22.22.2, npm 10.9.7, Bash.
 
+**Execution status (2026-07-28):** Implementation is complete. A Node `19.7.0`
+committed-whitelist replay verified that adding `miniapp/.nvmrc` completes the
+source whitelist; it does not satisfy the locked Node `22.22.2` / npm `10.9.7`
+local complete gate. That local gate and isolated test-server review remain
+pending; the production miniapp is unreleased.
+
 ## Global Constraints
 
 - Implement only F-05; do not claim F-12 real-provider identity, F-14 server-side access revocation, or another open finding is closed.
@@ -387,6 +393,7 @@ Obtain authorization for remote path:
 Whitelist only tracked source required by the harness:
 
 ```text
+miniapp/.nvmrc
 miniapp/babel.config.js
 miniapp/config/
 miniapp/package.json
