@@ -357,8 +357,12 @@ func inspectMySQLBuyerIntentSchema(db *gorm.DB) (buyerIntentSchemaState, error) 
 	var state buyerIntentSchemaState
 	var columns []mysqlBuyerIntentColumn
 	if err := db.Raw(`
-		SELECT column_name, data_type, column_type, is_nullable,
-			generation_expression, extra,
+		SELECT column_name AS column_name,
+			data_type AS data_type,
+			column_type AS column_type,
+			is_nullable AS is_nullable,
+			generation_expression AS generation_expression,
+			extra AS extra,
 			CASE
 				WHEN generation_expression IS NOT NULL AND generation_expression <> '' THEN 'ALWAYS'
 				ELSE 'NEVER'
@@ -376,7 +380,10 @@ func inspectMySQLBuyerIntentSchema(db *gorm.DB) (buyerIntentSchemaState, error) 
 
 	var indexColumns []mysqlBuyerIntentIndexColumn
 	if err := db.Raw(`
-		SELECT index_name, non_unique, seq_in_index, column_name
+		SELECT index_name AS index_name,
+			non_unique AS non_unique,
+			seq_in_index AS seq_in_index,
+			column_name AS column_name
 		FROM information_schema.statistics
 		WHERE table_schema = DATABASE() AND table_name = 'buyer_intents'
 		ORDER BY index_name, seq_in_index`).Scan(&indexColumns).Error; err != nil {
