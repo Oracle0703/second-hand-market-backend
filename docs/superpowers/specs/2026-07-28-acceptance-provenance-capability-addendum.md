@@ -104,12 +104,22 @@ an explicit fail-closed state.
 Docker Compose must consume the verified private build-context copy of
 `deploy/acceptance/docker-compose.yml`, never the received-tree pathname.
 
-Every Docker harness opens its received `.env` once through a fixed read-only
-file descriptor after type and identity checks, records descriptor metadata,
-copies bytes from that descriptor into a mode-`0600` runtime snapshot, and
-rechecks descriptor metadata after the copy. The snapshot is then validated and
-is the only `--env-file` consumed by Compose. A path replacement, copy-time
-metadata change, or descriptor mismatch fails before Docker.
+Every Docker harness opens its received `.env` through two independent fixed
+read-only file descriptors after type and identity checks. Both descriptors
+must bind the same prevalidated regular-file device/inode. The harness records
+each descriptor's identity, size, mode, modification time, and change time;
+copies each descriptor independently into a separate mode-`0600` runtime
+candidate; then rechecks both descriptor signatures. The two candidates must be
+byte-identical. One validated candidate becomes the only `--env-file` consumed
+by Compose and the other is removed. A path replacement, copy-time metadata
+change, candidate mismatch, or descriptor mismatch fails before Docker.
+
+This is a byte-stability check across two independently opened descriptions,
+not a claim that portable Bash places a mandatory write lock on the source
+inode. A peer with authority to rewrite the same inode before both reads is
+outside the provenance guarantee; remote `.env` authenticity remains an
+operator/secrets boundary. The harness guarantee is that it never follows a
+later pathname replacement and never consumes a mixed or non-repeatable copy.
 
 All Compose and MySQL standard error remains under the private runtime
 directory. No received execution-configuration pathname is consumed after its

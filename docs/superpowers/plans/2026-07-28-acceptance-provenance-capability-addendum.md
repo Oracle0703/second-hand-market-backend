@@ -8,6 +8,18 @@
 
 **Tech Stack:** Bash 3.2-compatible shell, Go 1.22 contract tests, Git archive plumbing, Docker Compose command stubs, POSIX file descriptors, SHA-256.
 
+## Execution Status (2026-07-29)
+
+- F-04/F-13 capability-publication work is **paused and handed off** at the
+  user's direction. It is not code-side fixed by this addendum and is not
+  test-server approved.
+- The exact partial state, passing focused test, open finding, and continuation
+  commands are recorded in
+  `docs/superpowers/reviews/2026-07-29-f04-capability-publication-handoff.md`.
+- Do not mark Task 3 or the integrated gates complete from the focused result.
+  No SSH, remote Docker, server database, production deployment, migration, or
+  production-data change occurred during this attempt.
+
 ## Global Constraints
 
 - Follow `docs/superpowers/specs/2026-07-28-acceptance-provenance-capability-addendum.md` and its parent design.
@@ -107,7 +119,7 @@ Expected: a received path is consumed or F-06 accepts the copy-time mutation.
 
 - [ ] **Step 3: Implement descriptor-backed snapshots**
 
-Use the verified private build-context Compose file. Open `.env` once through a fixed read-only descriptor, record descriptor identity and metadata, copy from that descriptor to a mode-`0600` runtime file, recheck descriptor metadata, validate the snapshot, and make it the only `--env-file`.
+Use the verified private build-context Compose file. Open `.env` through two independent fixed read-only descriptors, require both to match the prevalidated regular-file identity, record both descriptor signatures, copy them to separate mode-`0600` runtime candidates, and require stable signatures plus byte-identical candidates. Validate one candidate and make it the only `--env-file`; remove the duplicate.
 
 - [ ] **Step 4: Capture GREEN**
 
