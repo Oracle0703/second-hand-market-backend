@@ -61,6 +61,28 @@ describe('http blob responses', () => {
     ).rejects.toThrow('上传配额已用尽，请稍后重试')
   })
 
+  it('maps a rejected HTTP 409 upload quota response to the same message', async () => {
+    await expect(
+      http.post('/files/presign', {}, {
+        adapter: async (config) => {
+          const response = adapterResponse(config, {
+            code: 10013,
+            message: 'upload quota exceeded',
+            request_id: 'req-upload-quota-rejected',
+            data: null
+          }, 409)
+          throw new AxiosError(
+            'Request failed with status code 409',
+            AxiosError.ERR_BAD_REQUEST,
+            config,
+            undefined,
+            response
+          )
+        }
+      })
+    ).rejects.toThrow('上传配额已用尽，请稍后重试')
+  })
+
   it('refreshes concurrent blob 401 responses once and replays both with the new token', async () => {
     vi.resetModules()
     const actualAxios = await vi.importActual<typeof import('axios')>('axios')
