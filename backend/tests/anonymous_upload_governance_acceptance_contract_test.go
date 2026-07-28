@@ -270,6 +270,16 @@ exec /usr/bin/tar "$@"
 				t.Fatal(err)
 			}
 		}},
+		{"received ancestor directory symlink", func(t *testing.T, remoteRepo, _ string) {
+			backend := filepath.Join(remoteRepo, "backend")
+			relocated := filepath.Join(remoteRepo, "received-backend")
+			if err := os.Rename(backend, relocated); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("received-backend", backend); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"archive extra file", func(t *testing.T, _, packageDir string) {
 			anonymousUploadGovernanceRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "", "backend/archive-extra.go", "")
 			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
@@ -280,6 +290,26 @@ exec /usr/bin/tar "$@"
 		}},
 		{"archive symlink entry", func(t *testing.T, _, packageDir string) {
 			anonymousUploadGovernanceRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "", "", "Makefile")
+			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive duplicate directory entry", func(t *testing.T, _, packageDir string) {
+			anonymousUploadGovernanceRewriteArchiveMember(t, filepath.Join(packageDir, "source.tar"), "backend/", "duplicate", "")
+			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive omitted directory entry", func(t *testing.T, _, packageDir string) {
+			anonymousUploadGovernanceRewriteArchiveMember(t, filepath.Join(packageDir, "source.tar"), "backend/", "omit", "")
+			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive special entry", func(t *testing.T, _, packageDir string) {
+			anonymousUploadGovernanceRewriteArchiveMember(t, filepath.Join(packageDir, "source.tar"), "Makefile", "fifo", "")
+			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive unsafe entry", func(t *testing.T, _, packageDir string) {
+			anonymousUploadGovernanceRewriteArchiveMember(t, filepath.Join(packageDir, "source.tar"), "Makefile", "rename", "../Makefile")
+			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive noncanonical entry", func(t *testing.T, _, packageDir string) {
+			anonymousUploadGovernanceRewriteArchiveMember(t, filepath.Join(packageDir, "source.tar"), "Makefile", "rename", "./Makefile")
 			anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
 		}},
 		{"unsorted source list", func(t *testing.T, _, packageDir string) {
@@ -305,6 +335,16 @@ exec /usr/bin/tar "$@"
 		}},
 		{"dot component source list", func(t *testing.T, _, packageDir string) {
 			paths := append(anonymousUploadGovernanceReadSourcePaths(t, packageDir), "backend/./dot.go")
+			sort.Strings(paths)
+			anonymousUploadGovernanceWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"leading dash source list", func(t *testing.T, _, packageDir string) {
+			paths := append(anonymousUploadGovernanceReadSourcePaths(t, packageDir), "-backend/leading.go")
+			sort.Strings(paths)
+			anonymousUploadGovernanceWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"repeated separator source list", func(t *testing.T, _, packageDir string) {
+			paths := append(anonymousUploadGovernanceReadSourcePaths(t, packageDir), "backend//repeated.go")
 			sort.Strings(paths)
 			anonymousUploadGovernanceWriteSourcePaths(t, packageDir, paths)
 		}},
@@ -592,6 +632,136 @@ exec /usr/bin/tar "$@"
 		for _, entry := range entries {
 			if strings.HasPrefix(entry.Name(), "anonymous-upload-governance.publish.") {
 				t.Fatalf("partial sibling publication directory survived: %q", entry.Name())
+			}
+		}
+	})
+
+	t.Run("malformed initial snapshot uses hardcoded fallback without caller leakage", func(t *testing.T) {
+		remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect "*)
+    case "$*" in
+      *secondhand-market-api*) name=secondhand-market-api ;;
+      *secondhand-market-web*) name=secondhand-market-web ;;
+      *) name=secondhand-market-mysql ;;
+    esac
+    case "$*" in
+      *" --format "*)
+        printf '/%s|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|running|\n' "$name"
+        printf 'Authorization: Bearer initial-inspect-secret\n' >&2
+        ;;
+    esac
+    exit 0 ;;
+  *" compose "*) : >"$DOCKER_CALLED"; exit 99 ;;
+esac
+exit 0
+`)
+		output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, "")
+		if err == nil {
+			t.Fatal("malformed initial snapshot unexpectedly succeeded")
+		}
+		if bytes.Contains(output, []byte("initial-inspect-secret")) {
+			t.Fatalf("formatted inspect diagnostics leaked to caller: %q", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("malformed initial snapshot reached Compose")
+		}
+		assertAnonymousUploadGovernanceSanitizationFallback(t, remoteRepo)
+	})
+
+	t.Run("staged publication tamper leaves no partial evidence", func(t *testing.T) {
+		remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect "*)
+    case "$*" in
+      *secondhand-market-api*) name=secondhand-market-api ;;
+      *secondhand-market-web*) name=secondhand-market-web ;;
+      *) name=secondhand-market-mysql ;;
+    esac
+    case "$*" in *" --format "*) printf '/%s|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|running|0\n' "$name" ;; esac
+    exit 0 ;;
+  *" compose "*) exit 42 ;;
+esac
+exit 0
+`)
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "tar", `#!/bin/sh
+previous=
+destination=
+for argument in "$@"; do
+  [ "$previous" != -C ] || destination="$argument"
+  previous="$argument"
+done
+case "$destination| $* " in
+  *anonymous-upload-governance.publish.*'| '*' -xf - '*)
+    /usr/bin/tar "$@" || exit $?
+    printf 'classification=staging_tamper|result=PASS|count=1\n' >"$destination/acceptance-results.txt"
+    exit 0 ;;
+esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+		if output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, ""); err == nil {
+			t.Fatalf("staged evidence tamper unexpectedly succeeded: %s", output)
+		}
+		assertAnonymousUploadGovernanceNoPublicationState(t, remoteRepo)
+	})
+
+	t.Run("publication no-clobber collision leaves no partial evidence", func(t *testing.T) {
+		remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect "*)
+    case "$*" in
+      *secondhand-market-api*) name=secondhand-market-api ;;
+      *secondhand-market-web*) name=secondhand-market-web ;;
+      *) name=secondhand-market-mysql ;;
+    esac
+    case "$*" in *" --format "*) printf '/%s|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|running|0\n' "$name" ;; esac
+    exit 0 ;;
+  *" compose "*) exit 42 ;;
+esac
+exit 0
+`)
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "mv", `#!/bin/sh
+case " $* " in
+  *" -n "*anonymous-upload-governance.publish.*)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in -n|--) shift ;; *) break ;; esac
+    done
+    source=$1
+    target=$2
+    mkdir "$target" || exit $?
+    printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
+    exec /bin/mv -n -- "$source" "$target" ;;
+esac
+exec /bin/mv "$@"
+`, 0o700)
+		if output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, ""); err == nil {
+			t.Fatalf("publication collision unexpectedly succeeded: %s", output)
+		}
+		retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
+		entries, err := os.ReadDir(retained)
+		if err != nil {
+			t.Fatalf("read concurrent publication directory: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "concurrent-owner.txt" || !entries[0].Type().IsRegular() {
+			t.Fatalf("harness changed concurrent publication directory: %v", entries)
+		}
+		owner, err := os.ReadFile(filepath.Join(retained, "concurrent-owner.txt"))
+		if err != nil || string(owner) != "concurrent-owner\n" {
+			t.Fatalf("concurrent publication marker changed: %q, %v", owner, err)
+		}
+		parentEntries, err := os.ReadDir(filepath.Dir(retained))
+		if err != nil {
+			t.Fatalf("read evidence parent: %v", err)
+		}
+		for _, entry := range parentEntries {
+			if strings.HasPrefix(entry.Name(), "anonymous-upload-governance.publish.") || entry.Name() == "anonymous-upload-governance.publish.lock" {
+				t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 			}
 		}
 	})
@@ -967,6 +1137,116 @@ func anonymousUploadGovernanceRewriteArchive(t *testing.T, archivePath, omit, ex
 	}
 	if err := os.WriteFile(archivePath, rewritten.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func anonymousUploadGovernanceRewriteArchiveMember(t *testing.T, archivePath, target, operation, replacement string) {
+	t.Helper()
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(bytes.NewReader(raw))
+	var rewritten bytes.Buffer
+	writer := tar.NewWriter(&rewritten)
+	found := false
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cloned := *header
+		if header.Name == target {
+			found = true
+			switch operation {
+			case "omit":
+				continue
+			case "duplicate":
+				if err := anonymousUploadGovernanceWriteTarMember(writer, &cloned, contents); err != nil {
+					t.Fatal(err)
+				}
+			case "fifo":
+				cloned.Typeflag = tar.TypeFifo
+				cloned.Size = 0
+				contents = nil
+			case "rename":
+				cloned.Name = replacement
+			default:
+				t.Fatalf("unknown archive mutation %q", operation)
+			}
+		}
+		if err := anonymousUploadGovernanceWriteTarMember(writer, &cloned, contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !found {
+		t.Fatalf("archive member %q was not found", target)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, rewritten.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func anonymousUploadGovernanceWriteTarMember(writer *tar.Writer, header *tar.Header, contents []byte) error {
+	if err := writer.WriteHeader(header); err != nil {
+		return err
+	}
+	if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
+		_, err := writer.Write(contents)
+		return err
+	}
+	return nil
+}
+
+func assertAnonymousUploadGovernanceSanitizationFallback(t *testing.T, remoteRepo string) {
+	t.Helper()
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
+	entries, err := os.ReadDir(evidenceDir)
+	if err != nil {
+		t.Fatalf("read sanitization fallback: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("sanitization fallback entries = %v, want exactly three", entries)
+	}
+	results, err := os.ReadFile(filepath.Join(evidenceDir, "acceptance-results.txt"))
+	if err != nil || string(results) != "classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n" {
+		t.Fatalf("sanitization fallback classification = %q, %v", results, err)
+	}
+	scan, err := os.ReadFile(filepath.Join(evidenceDir, "evidence-leak-scan.txt"))
+	if err != nil || string(scan) != "classification=evidence_scan|result=FAIL|count=1\n" {
+		t.Fatalf("sanitization fallback scan = %q, %v", scan, err)
+	}
+	check := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
+	check.Dir = evidenceDir
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("verify sanitization fallback hashes: %v: %s", err, output)
+	}
+}
+
+func assertAnonymousUploadGovernanceNoPublicationState(t *testing.T, remoteRepo string) {
+	t.Helper()
+	retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
+	if _, err := os.Lstat(retained); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial retained evidence survived: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(retained))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "anonymous-upload-governance.publish.") || entry.Name() == "anonymous-upload-governance.publish.lock" {
+			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
+		}
 	}
 }
 

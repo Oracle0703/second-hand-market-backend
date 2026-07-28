@@ -8,6 +8,7 @@ project_name="secondhand-upload-governance-acceptance"
 retained_evidence_dir="$base_dir/evidence/anonymous-upload-governance"
 evidence_dir=""
 evidence_publish_tmp=""
+evidence_publish_lock=""
 compose=(docker compose --project-name "$project_name" --env-file "$base_dir/.env" --file "$base_dir/docker-compose.yml")
 production_containers=(secondhand-market-api secondhand-market-web secondhand-market-mysql)
 runtime_dir=""
@@ -128,18 +129,18 @@ write_context_file_list() {
 }
 
 validate_received_source_files() {
-  local directory="$1" source_list="$2" path
+  local directory="$1" source_list="$2" path current component
+  local -a components=()
+  [[ ! -L "$directory" ]] || return 1
   while IFS= read -r -d '' path; do
-    [[ -f "$directory/$path" && ! -L "$directory/$path" ]] || return 1
+    current="$directory"
+    IFS=/ read -r -a components <<<"$path"
+    for component in "${components[@]}"; do
+      current="$current/$component"
+      [[ ! -L "$current" ]] || return 1
+    done
+    [[ -f "$current" ]] || return 1
   done <"$source_list"
-}
-
-source_list_contains_child() {
-  local source_list="$1" directory="$2" path
-  while IFS= read -r -d '' path; do
-    [[ "$path" == "$directory"/* ]] && return 0
-  done <"$source_list"
-  return 1
 }
 
 validate_package_artifact_list() {
@@ -171,26 +172,41 @@ validate_package_checksums() {
 }
 
 validate_archive_list() {
-  local package_dir="$1" source_list="$2" runtime="$3" line path
+  local package_dir="$1" source_list="$2" runtime="$3" line path parent type_line expected_type
+  local unsorted_expected="$runtime/expected-archive-paths.unsorted"
+  local expected_paths="$runtime/expected-archive-paths.raw"
   : >"$runtime/archive-source-files.z"
+  : >"$unsorted_expected"
+  while IFS= read -r -d '' path; do
+    printf '%s\n' "$path" >>"$unsorted_expected"
+    parent="${path%/*}"
+    while [[ "$parent" != "$path" && -n "$parent" ]]; do
+      printf '%s/\n' "$parent" >>"$unsorted_expected"
+      path="$parent"
+      parent="${path%/*}"
+    done
+  done <"$source_list"
+  LC_ALL=C sort -u "$unsorted_expected" >"$expected_paths"
   tar -tvf "$package_dir/source.tar" >"$runtime/archive-types.raw" 2>"$runtime/archive-types-errors.raw" || return 1
-  while IFS= read -r line; do
-    case "${line:0:1}" in
-      -|d) ;;
-      *) return 1 ;;
-    esac
-  done <"$runtime/archive-types.raw"
   tar -tf "$package_dir/source.tar" >"$runtime/archive-paths.raw" 2>"$runtime/archive-paths-errors.raw" || return 1
+  exec 3<"$runtime/archive-types.raw"
   while IFS= read -r path; do
+    IFS= read -r type_line <&3 || { exec 3<&-; return 1; }
     source_path_is_portable "${path%/}" || return 1
     if [[ "$path" == */ ]]; then
-      path="${path%/}"
-      source_path_is_forbidden "$path" && return 1
-      source_list_contains_child "$source_list" "$path" || return 1
+      expected_type=d
     else
+      expected_type=-
       printf '%s\0' "$path" >>"$runtime/archive-source-files.z"
     fi
+    [[ "${type_line:0:1}" == "$expected_type" ]] || { exec 3<&-; return 1; }
   done <"$runtime/archive-paths.raw"
+  if IFS= read -r line <&3; then
+    exec 3<&-
+    return 1
+  fi
+  exec 3<&-
+  cmp -s "$expected_paths" "$runtime/archive-paths.raw" || return 1
   validate_source_list "$runtime/archive-source-files.z" "$runtime/sorted-archive-source-files.z" || return 1
   cmp -s "$source_list" "$runtime/archive-source-files.z"
 }
@@ -380,7 +396,7 @@ for command in docker curl jq openssl sha256sum truncate base64 sort xargs mktem
   }
 done
 
-[[ ! -e "$retained_evidence_dir" ]] || {
+[[ ! -e "$retained_evidence_dir" && ! -e "${retained_evidence_dir}.publish.lock" ]] || {
   echo "refusing to overwrite existing anonymous upload governance evidence" >&2
   exit 1
 }
@@ -473,7 +489,7 @@ snapshot_file_is_safe() {
     if [[ "$id" == absent ]]; then
       [[ "$state" == absent && "$rest" == absent ]] || return 1
     else
-      [[ "${#id}" -eq 64 && "$id" != *[!0-9a-f]* && "$state" =~ ^[a-z]+$ && "$rest" != *[!0-9]* ]] || return 1
+      [[ "${#id}" -eq 64 && "$id" != *[!0-9a-f]* && "$state" =~ ^[a-z]+$ && "$rest" =~ ^[0-9]+$ ]] || return 1
     fi
     count=$((count + 1))
   done <"$file"
@@ -481,22 +497,88 @@ snapshot_file_is_safe() {
 }
 
 publish_evidence_directory() {
-  local directory="$1" parent="${retained_evidence_dir%/*}"
+  local directory="$1" parent="${retained_evidence_dir%/*}" staging_name=""
   [[ ! -e "$retained_evidence_dir" ]] || return 1
   mkdir -p "$parent" || return 1
-  evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")" || return 1
-  chmod 700 "$evidence_publish_tmp" || return 1
+  evidence_publish_lock="${retained_evidence_dir}.publish.lock"
+  mkdir "$evidence_publish_lock" || {
+    evidence_publish_lock=""
+    return 1
+  }
+  if [[ -e "$retained_evidence_dir" ]]; then
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")"; then
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
+    return 1
+  fi
+  staging_name="${evidence_publish_tmp##*/}"
+  if ! chmod 700 "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
+    return 1
+  fi
   if ! (cd "$directory" && tar -cf - .) | tar -C "$evidence_publish_tmp" -xf -; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
     return 1
   fi
-  if ! mv -- "$evidence_publish_tmp" "$retained_evidence_dir"; then
+  if ! validate_evidence_staging_copy "$directory" "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! mv -n -- "$evidence_publish_tmp" "$retained_evidence_dir" || [[ -e "$evidence_publish_tmp" ]]; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
+    return 1
+  fi
+  if [[ -d "$retained_evidence_dir/$staging_name" ]]; then
+    rm -r -- "$retained_evidence_dir/$staging_name"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_staging_copy "$directory" "$retained_evidence_dir"; then
+    rm -r -- "$retained_evidence_dir"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock"
+    evidence_publish_lock=""
     return 1
   fi
   evidence_publish_tmp=""
+  rmdir "$evidence_publish_lock"
+  evidence_publish_lock=""
+}
+
+validate_evidence_staging_copy() {
+  local source="$1" staged="$2" path
+  local source_list="$runtime_dir/evidence-publish-source-files.z"
+  local staged_list="$runtime_dir/evidence-publish-staged-files.z"
+  [[ -d "$source" && ! -L "$source" && -d "$staged" && ! -L "$staged" ]] || return 1
+  [[ -z "$(find "$source" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  [[ -z "$(find "$staged" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  write_context_file_list "$source" >"$source_list"
+  write_context_file_list "$staged" >"$staged_list"
+  cmp -s "$source_list" "$staged_list" || return 1
+  while IFS= read -r -d '' path; do
+    [[ -f "$staged/$path" && ! -L "$staged/$path" ]] || return 1
+  done <"$source_list"
+  write_directory_manifest "$source" "$source_list" "$runtime_dir/evidence-publish-source-sha256.txt"
+  write_directory_manifest "$staged" "$staged_list" "$runtime_dir/evidence-publish-staged-sha256.txt"
+  cmp -s "$runtime_dir/evidence-publish-source-sha256.txt" "$runtime_dir/evidence-publish-staged-sha256.txt"
 }
 
 scan_evidence_directory() {
@@ -604,6 +686,9 @@ on_exit() {
   if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
   fi
+  if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
+    rmdir "$evidence_publish_lock" || true
+  fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
     rm -r -- "$runtime_dir"
   fi
@@ -616,7 +701,8 @@ snapshot_production() {
   : >"$output"
   for container in "${production_containers[@]}"; do
     if docker inspect --type container "$container" >/dev/null 2>&1; then
-      docker inspect --type container --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' "$container" >>"$output"
+      docker inspect --type container --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' "$container" \
+        >>"$output" 2>>"$runtime_dir/production-snapshot-errors.raw"
     else
       printf '/%s|absent|absent|absent\n' "$container" >>"$output"
     fi
@@ -624,13 +710,13 @@ snapshot_production() {
 }
 
 record_pass source_package "$source_count" "$source_manifest_sha256"
+evidence_eligible=1
 current_stage="production_before"
 snapshot_production "$evidence_dir/production-before.txt"
 snapshot_file_is_safe "$evidence_dir/production-before.txt" || {
   echo "production-before snapshot failed strict validation" >&2
   exit 1
 }
-evidence_eligible=1
 
 compose_override="$runtime_dir/anonymous-upload-governance-compose.yml"
 cat >"$compose_override" <<EOF
