@@ -601,11 +601,62 @@ lock, and the exact isolated Compose project, when one exists, must all be
 absent before a run.
 Retained evidence is limited to validated classifications or approved
 snapshots/fingerprints plus `evidence-leak-scan.txt` and
-`evidence-sha256.txt`. A controlled failure may retain only the validated PASS
-prefix plus
-`classification=acceptance_failure|result=FAIL|stage=<fixed-stage>|count=1`;
-sanitization uncertainty collapses to the two hardcoded sanitization/scan FAIL
-classifications and their hash manifest.
+`evidence-sha256.txt`. For F-04/F-13, F-05, and F-06, a controlled failure may
+retain only the validated PASS prefix followed by this exact final line in
+`acceptance-results.txt`:
+
+```text
+classification=acceptance_failure|result=FAIL|stage=<permitted-stage>|count=1
+```
+
+`<permitted-stage>` is not a free-form value. Each harness accepts only its
+following runtime-ordered list:
+
+- F-04/F-13 license privacy: `production_before`, `mysql_start`,
+  `mysql_version`, `license_preflight_failures`, `clean_migration`,
+  `build_test_image`, `api_auto_migrate_false`, `api_auto_migrate_true`,
+  `production_after`, `evidence_scan`, `evidence_publish`.
+- F-05 miniapp auth refresh: `toolchain`, `npm_ci`, `focused_tests`,
+  `full_tests`, `build_weapp`, `build_tt`, `evidence_scan`,
+  `evidence_publish`.
+- F-06 anonymous upload governance: `production_before`, `mysql_start`,
+  `mysql_version`, `build_test_images`, `skipped_0007_preflight`,
+  `dirty_0008_preflights`, `clean_migration`,
+  `mysql_auto_migrate_false`, `mysql_auto_migrate_true`, `backend_tests`,
+  `frontend_tests_build`, `upload_boundaries`, `historical_rows_files`,
+  `production_after`, `evidence_scan`, `evidence_publish`.
+- F-14 session revocation: `production_before`, `mysql_start`,
+  `mysql_version`, `bootstrap_build`, `migration_chain`,
+  `session_auto_migrate_false`, `migration_chain_true_reset`,
+  `session_auto_migrate_true`, `backend_tests`, `go_vet`,
+  `production_snapshot`, `evidence_publication`.
+
+F-14 instead retains its validated `acceptance-results.txt` source results and
+permitted production snapshots separately, and writes the exact controlled
+failure record above to `failure-status.txt`. For every controlled failure,
+`evidence-leak-scan.txt` contains exactly this one line after the candidate
+evidence has passed its leak scan:
+
+```text
+classification=evidence_scan|result=PASS|count=0
+```
+
+If evidence validation, snapshots, or the leak scan cannot establish that
+candidate evidence is safe, the final retained evidence directory contains
+only this two-record fallback in this file order: first
+`acceptance-results.txt` with
+`classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1`,
+then `evidence-leak-scan.txt` with
+`classification=evidence_scan|result=FAIL|count=1`. The final
+`evidence-sha256.txt` hash manifest is required and hashes both fallback files.
+Failures before evidence eligibility retain no evidence at all.
+
+The local final-implementation-head verification record is for clean commit
+`9733826d7062ba07f1f32e0e4ee151c3f86c8c82`. It confirms only local contracts
+and repository gates; it is not a package export, test-server approval, or
+production change. The exact command, toolchain, warning, and elapsed-time
+record is maintained in the accompanying provenance design and implementation
+plan.
 
 Do not invoke normal mode until a later exact one-run authorization approves
 the final reviewed `HEAD`, package-manifest digest, fixed remote root,

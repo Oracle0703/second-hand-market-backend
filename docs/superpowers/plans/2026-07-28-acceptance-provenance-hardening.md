@@ -11,20 +11,28 @@
 ## Execution Status (2026-07-28)
 
 - Tasks 1-4 are implemented and their scoped Critical/Important review loops
-  are closed through `f507a7d`. The reviewed code range starts at `d90c8e6`;
-  the final whole-branch review still remains before package export.
-- The final four-harness combined contract command passed at `bf45902` in
-  172.461s. Repository backend full/race/vet gates passed at `2dffb36`; the
-  later `f507a7d` changes only reviewed F-06 migration-contract assertions and
-  the complete migrations package passed in 8.853s.
-- Committed-`HEAD` temporary frontend and miniapp exports passed frontend 12
-  files/27 tests plus build, and miniapp 12 files/36 tests plus WeChat/Douyin
-  builds with `TARO_APP_API_BASE_URL=https://example.invalid/api/v1`.
-- Local Node `v19.7.0` and npm `9.5.0` do not match the locked F-05 versions;
-  engine, dependency, React Router, circular-chunk, and chunk-size warnings are
-  recorded in the SDD ledger. These local results are not the locked F-05 gate.
-- Task 5 documentation integration is in progress. Task 6 package generation
-  has not started. Task 7 has no current server authorization and has not run.
+  are closed through `f507a7d`. Task 5 implementation and fresh
+  final-implementation-head gates are complete at clean commit
+  `9733826d7062ba07f1f32e0e4ee151c3f86c8c82`; its fix round 1 is pending
+  scoped independent re-review. The reviewed code range starts at `d90c8e6`.
+- At that exact commit, the combined four-harness command passed
+  (`backend/tests` 199.011s; real 202.47s); backend full passed (`migrations`
+  13.735s, `backend/tests` 219.382s; real 224.12s); race passed
+  (`internal/app` 16.812s, `backend/tests` 342.557s; real 345.45s) with no
+  race report; and `go vet ./...` passed (real 1.21s).
+- Committed-`9733826` temporary exports outside the repository passed frontend
+  `npm ci` (16.07s), 12 files/27 tests (Vitest 15.37s; real 17.86s), and the
+  9989-module build (built 22.63s; real 31.30s); miniapp `npm ci` (21.76s), 12
+  files/36 tests (Vitest 3.52s; real 6.10s), WeChat (compiled 8.47s; real
+  13.46s), and Douyin (compiled 7.83s; real 12.42s) builds using the exact
+  `example.invalid` API base. The Node `v19.7.0`/npm `9.5.0` mismatch means
+  none of this approves the locked F-05 toolchain. Engine/deprecation, React
+  Router future, Rollup circular-chunk, and 663.23 kB chunk-over-500 kB warnings
+  remain for final review.
+- Four `bash -n` commands and `git diff --check` passed. Temporary export
+  directories were removed; no repository `node_modules` or build output was
+  generated. Task 6 package generation has not started. Task 7 has no current
+  server authorization and has not run.
 - F-04/F-13, F-05, F-06, and F-14 remain **not test-server approved** under
   this plan. Production migrations/deployments/releases and production data,
   files, services, and configuration remain unchanged.
