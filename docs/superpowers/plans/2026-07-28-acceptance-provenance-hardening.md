@@ -8,6 +8,27 @@
 
 **Tech Stack:** Bash 3.2-compatible shell, Git archive plumbing, GNU `sha256sum`, Docker Compose, MySQL 8.4, Go 1.22 tests, Node 22.22.2, npm 10.9.7, Vitest, Vite/Taro.
 
+## Execution Status (2026-07-28)
+
+- Tasks 1-4 are implemented and their scoped Critical/Important review loops
+  are closed through `f507a7d`. The reviewed code range starts at `d90c8e6`;
+  the final whole-branch review still remains before package export.
+- The final four-harness combined contract command passed at `bf45902` in
+  172.461s. Repository backend full/race/vet gates passed at `2dffb36`; the
+  later `f507a7d` changes only reviewed F-06 migration-contract assertions and
+  the complete migrations package passed in 8.853s.
+- Committed-`HEAD` temporary frontend and miniapp exports passed frontend 12
+  files/27 tests plus build, and miniapp 12 files/36 tests plus WeChat/Douyin
+  builds with `TARO_APP_API_BASE_URL=https://example.invalid/api/v1`.
+- Local Node `v19.7.0` and npm `9.5.0` do not match the locked F-05 versions;
+  engine, dependency, React Router, circular-chunk, and chunk-size warnings are
+  recorded in the SDD ledger. These local results are not the locked F-05 gate.
+- Task 5 documentation integration is in progress. Task 6 package generation
+  has not started. Task 7 has no current server authorization and has not run.
+- F-04/F-13, F-05, F-06, and F-14 remain **not test-server approved** under
+  this plan. Production migrations/deployments/releases and production data,
+  files, services, and configuration remain unchanged.
+
 ## Global Constraints
 
 - Follow `docs/superpowers/specs/2026-07-28-acceptance-provenance-hardening-design.md` exactly.

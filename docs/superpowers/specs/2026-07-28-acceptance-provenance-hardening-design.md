@@ -5,13 +5,29 @@
 **Branch:** `codex/f15-idempotency-atomicity`
 
 **Status:** Architecture and written specification approved on 2026-07-28.
-Implementation has not started.
+Local implementation and scoped Critical/Important review closure are complete
+through `f507a7d`; final whole-branch review and final-`HEAD` package generation
+remain pending. F-04/F-13, F-05, F-06, and F-14 are not test-server approved by
+this work yet. Production migrations, deployments, releases, data, files, and
+services are unchanged.
 
 **Approval record:** The user explicitly approved the complete architecture for
 Unified Approach A on 2026-07-28. After the written specification was committed
 as `dcf811c`, the user directed work to continue through F-15. That approves the
 transition to implementation planning and code work. It does not authorize a
 test-server run, source transfer, remote cleanup, or production access.
+
+**Local execution record:** The four-harness combined contract gate passed at
+`bf45902` in 172.461s. At `2dffb36`, `go test ./... -count=1`,
+`go test -race ./internal/app ./tests -count=1`, and `go vet ./...` passed; the
+subsequent `f507a7d` changes only reviewed migration-contract assertions and the
+complete migrations package passed in 8.853s. Committed-`HEAD` temporary exports
+also passed frontend 12 files/27 tests and production build, plus miniapp 12
+files/36 tests and both builds with the fixed `example.invalid` API base. Those
+JavaScript gates used local Node `v19.7.0`/npm `9.5.0`, emitted engine and
+existing build/dependency warnings, and therefore do not satisfy the locked
+F-05 Node `v22.22.2`/npm `10.9.7` authority. No SSH, transfer, remote execution,
+Docker server run, or production access occurred.
 
 ## 1. Problem Statement
 

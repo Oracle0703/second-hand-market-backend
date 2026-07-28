@@ -548,49 +548,177 @@ docker compose --project-name secondhand-file-binding-acceptance \
   down --volumes --remove-orphans
 ```
 
+## Immutable source packages for F-04/F-05/F-06/F-14
+
+The four acceptance harnesses below never test the transferred working tree
+directly. Their list and export modes derive paths with `git ls-tree HEAD` and
+bytes with `git archive HEAD`, then exit before Docker, Node, npm, network,
+evidence, or test access. Export mode writes exactly four mode-`0600` regular
+files into an absent absolute mode-`0700` directory:
+
+```text
+source-files.z
+source-sha256.txt
+source.tar
+package-sha256.txt
+```
+
+`package-sha256.txt` contains exactly the first three artifact names in that
+order. Its own SHA-256 is the out-of-band authorization digest:
+
+```bash
+sha256sum /absolute/package/directory/package-sha256.txt
+```
+
+List mode writes the exact NUL-delimited committed whitelist to standard
+output. Export mode requires an absent absolute destination and creates it;
+neither mode uses the normal-run variables or performs Docker, Node, npm,
+network, evidence, or test work. On the authorized host, verify and unpack the
+package without changing the authorization digest:
+
+```bash
+cd /absolute/package/directory
+sha256sum -c package-sha256.txt
+sha256sum package-sha256.txt
+tar -xf source.tar -C /fixed/remote/source/root
+```
+
+The last SHA-256 must equal the exact lowercase value approved out of band.
+The extraction root must be the fixed remote directory documented for that
+harness; the package stays in its dedicated `source-package/` child.
+
+Transfer only these four artifacts. On the test server, verify all artifact
+SHA-256 values and materialize the NUL-listed committed source only by
+extracting the authenticated `source.tar` into the dedicated remote source
+directory. Provide both the absolute package directory and the out-of-band
+digest. Normal mode verifies the package, archive, extracted temporary tree,
+and received source before Docker or npm. Builds, dependencies, raw output,
+and generated files exist only in a mode-`0700` temporary runtime that is
+removed on every exit.
+
+The retained evidence directory, its harness-specific sibling publication
+lock, and the exact isolated Compose project, when one exists, must all be
+absent before a run.
+Retained evidence is limited to validated classifications or approved
+snapshots/fingerprints plus `evidence-leak-scan.txt` and
+`evidence-sha256.txt`. A controlled failure may retain only the validated PASS
+prefix plus
+`classification=acceptance_failure|result=FAIL|stage=<fixed-stage>|count=1`;
+sanitization uncertainty collapses to the two hardcoded sanitization/scan FAIL
+classifications and their hash manifest.
+
+Do not invoke normal mode until a later exact one-run authorization approves
+the final reviewed `HEAD`, package-manifest digest, fixed remote root,
+permitted tool/network use, and evidence/resource retention. A failed
+authorized run consumes that authorization: do not delete, overwrite, retry,
+or reuse its package/evidence silently. Export a package from the new reviewed
+`HEAD` and obtain a new exact authorization first.
+
 ## License file privacy acceptance
 
 The F-04/F-13 matrix uses the separate fixed Compose project
-`secondhand-license-privacy-acceptance`. It accepts no external DSN, refuses
-pre-existing resources with that project label, and writes sanitized evidence
-only under `evidence/license-file-privacy/`.
+`secondhand-license-privacy-acceptance` and the fixed remote root
+`/home/yu/services/secondhand-license-privacy-acceptance-20260726`. It accepts
+no external DSN, refuses pre-existing resources with that project label, and
+writes sanitized evidence only under `evidence/license-file-privacy/`.
 
-Prepare acceptance-only secrets with `./prepare.sh`, then run from the dedicated
-acceptance checkout at the exact reviewed commit:
+From the reviewed local `HEAD`, inspect the whitelist or export its immutable
+package directly:
 
 ```bash
+LICENSE_FILE_PRIVACY_SOURCE_LIST_ONLY=1 \
+  ./deploy/acceptance/license-file-privacy-smoke.sh | tr '\0' '\n'
+
+LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=/absolute/absent/license-file-privacy-package \
+  ./deploy/acceptance/license-file-privacy-smoke.sh
+```
+
+After the four package artifacts have been transferred and hash-matched, and
+their authenticated NUL-listed source has been extracted into the fixed remote
+root, the exact normal-mode interface is shown below. Prepare acceptance-only
+secrets with `./prepare.sh`, then run from the dedicated acceptance source root:
+
+```bash
+COMPOSE_PROJECT_NAME=secondhand-license-privacy-acceptance \
 LICENSE_FILE_PRIVACY_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_LICENSE_PRIVACY_DATA \
 ACCEPTANCE_DB_ENGINE=mysql8.4 \
+LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_DIR=/home/yu/services/secondhand-license-privacy-acceptance-20260726/source-package \
+LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_MANIFEST_SHA256=<authorized-lowercase-sha256> \
 make acceptance-license-file-privacy-smoke
 ```
+
+The `source-package/` directory, retained evidence directory, and every
+container, volume, or network for the exact Compose project must be new for the
+authorized run. The harness validates received source, then builds only from a
+temporary verified extraction; raw output and the temporary context are always
+removed. Only classified, leak-scanned, hashed evidence may be retained.
 
 The command rebuilds the `0001..0006` schema for every dirty fixture, proves
 that `0007` preflight failures do not change file rows or license URLs, applies
 the clean `0006 -> 0007 -> 0008 -> 0009 -> new API/frontend` sequence, and
 runs the private-file API matrix with both `AUTO_MIGRATE=false` and
 `AUTO_MIGRATE=true`. It requires MySQL 8.4.x, retains the isolated Compose
-resources for review, and records source-independent runtime evidence under
-the directory above.
+resources for review, and records classified runtime evidence under the
+directory above, bound to the authorized package digest.
+
+A successful `acceptance-results.txt` has this exact ordered schema:
+
+```text
+classification=source_package|result=PASS|count=<source_count>|sha256=<source_manifest_sha256>
+classification=mysql_version|result=PASS|count=1
+classification=license_preflight_failures|result=PASS|count=14
+classification=clean_migration|result=PASS|count=1
+classification=api_auto_migrate_false|result=PASS|count=1
+classification=api_auto_migrate_true|result=PASS|count=1
+classification=production_snapshot|result=PASS|count=3
+```
 
 This procedure must not execute production SQL, deploy backend or frontend
 artifacts, read or change production uploads, or mutate production data. Its
-only production interaction is read-only `docker inspect` of the named API,
-Web, and MySQL containers before and after the isolated run; the snapshots must
-match exactly before the success marker is printed.
+only production interaction is read-only exact-name enumeration followed, when
+present, by formatted `docker inspect` of the named API, Web, and MySQL
+containers before and after the isolated run; the snapshots must match exactly
+before the success marker is printed.
 
 ## Anonymous upload governance acceptance
 
 The F-06 matrix uses only the fixed Compose project
-`secondhand-upload-governance-acceptance`. It refuses any existing container,
-volume, or network with that project label, accepts no external DSN, keeps
-MySQL internal, and binds API/Web only to `127.0.0.1`. Run it only from the
-dedicated authorized checkout at the exact reviewed commit:
+`secondhand-upload-governance-acceptance` and the fixed remote root
+`/home/yu/services/secondhand-upload-governance-acceptance-20260726`. It
+refuses any existing container, volume, or network with that project label,
+accepts no external DSN, keeps MySQL internal, and binds API/Web only to
+`127.0.0.1`.
+
+From the reviewed local `HEAD`, inspect the whitelist or export its immutable
+package directly:
 
 ```bash
+ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_LIST_ONLY=1 \
+  ./deploy/acceptance/anonymous-upload-governance-smoke.sh | tr '\0' '\n'
+
+ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=/absolute/absent/upload-governance-package \
+  ./deploy/acceptance/anonymous-upload-governance-smoke.sh
+```
+
+Run normal mode only after the four artifacts are transferred and hash-matched,
+and their authenticated NUL-listed source is extracted into the fixed remote
+root:
+
+```bash
+COMPOSE_PROJECT_NAME=secondhand-upload-governance-acceptance \
 ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA \
 ACCEPTANCE_DB_ENGINE=mysql8.4 \
+ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_PACKAGE_DIR=/home/yu/services/secondhand-upload-governance-acceptance-20260726/source-package \
+ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_PACKAGE_MANIFEST_SHA256=<authorized-lowercase-sha256> \
 make acceptance-anonymous-upload-governance-smoke
 ```
+
+The package directory, retained evidence path and its publication lock, and
+all exact-project Docker resources must be absent before the one authorized
+run. Compose build contexts point only at a temporary verified extraction.
+Raw Docker, migration, test, build, and HTTP output stays in that runtime and
+is removed on exit; retained evidence is schema-validated, leak-scanned, and
+hashed before publication.
 
 The command requires MySQL 8.4.x and applies the full `0001..0009` chain. It
 proves dirty `0008` states fail with SQLSTATE `45000`, historical rows and
@@ -600,6 +728,23 @@ file, and cleanup claims remain retryable and fail closed. The same focused
 test runs with `AUTO_MIGRATE=false` and `AUTO_MIGRATE=true`, followed by the
 full backend/frontend gates and exact 10 MiB file / 11 MiB request boundary
 checks through both the API and Nginx.
+
+A successful `acceptance-results.txt` has this exact ordered schema:
+
+```text
+classification=source_package|result=PASS|count=<source_count>|sha256=<source_manifest_sha256>
+classification=mysql_version|result=PASS|count=1
+classification=skipped_0007_preflight|result=PASS|count=1
+classification=dirty_0008_preflights|result=PASS|count=4
+classification=clean_migration|result=PASS|count=1
+classification=mysql_auto_migrate_false|result=PASS|count=1
+classification=mysql_auto_migrate_true|result=PASS|count=1
+classification=backend_tests|result=PASS|count=1
+classification=frontend_tests_build|result=PASS|count=1
+classification=upload_boundaries|result=PASS|count=7
+classification=historical_rows_files|result=PASS|count=2
+classification=production_snapshot|result=PASS|count=3
+```
 
 Sanitized results, source hashes, and an evidence SHA-256 manifest are written
 only under the ignored
@@ -611,8 +756,10 @@ uploads, deploys an artifact, prints a secret, or automatically removes a
 container, network, or volume.
 
 The script stops isolated services at exit but retains all project resources
-and evidence for review. After evidence has been approved, remove only this
-project with a separate, explicit command:
+and evidence for review. Only after separately authorized evidence review and
+cleanup may this exact project be removed. Removal does not authorize a rerun;
+export a fresh final-`HEAD` package and obtain a new exact one-run authorization
+first. The separately authorized cleanup command is:
 
 ```bash
 docker compose --project-name secondhand-upload-governance-acceptance \
@@ -630,14 +777,37 @@ refuses an existing project container, volume, network, or evidence directory;
 accepts only the internal Compose DSN
 `mysql:3306/second_hand_market_acceptance`; and requires MySQL 8.4.x.
 
-After `deploy/acceptance/prepare.sh` has generated remote-only secrets, run:
+From the reviewed local `HEAD`, inspect the whitelist or export its immutable
+package directly:
+
+```bash
+SESSION_REVOCATION_SOURCE_LIST_ONLY=1 \
+  ./deploy/acceptance/session-revocation-smoke.sh | tr '\0' '\n'
+
+SESSION_REVOCATION_SOURCE_EXPORT_DIR=/absolute/absent/session-revocation-package \
+  ./deploy/acceptance/session-revocation-smoke.sh
+```
+
+After the four artifacts are transferred and hash-matched, and their
+authenticated NUL-listed source is extracted into the fixed remote root,
+generate remote-only secrets with `deploy/acceptance/prepare.sh`. The exact
+normal-mode interface is:
 
 ```bash
 COMPOSE_PROJECT_NAME=secondhand-session-revocation-acceptance \
 SESSION_REVOCATION_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA \
 ACCEPTANCE_DB_ENGINE=mysql8.4 \
+SESSION_REVOCATION_SOURCE_PACKAGE_DIR=/home/yu/services/secondhand-session-revocation-acceptance-20260727/source-package \
+SESSION_REVOCATION_SOURCE_PACKAGE_MANIFEST_SHA256=<authorized-lowercase-sha256> \
 make acceptance-session-revocation-smoke
 ```
+
+The package directory, retained evidence path and publication lock, and all
+exact-project Docker resources must be absent before the authorized run. Every
+Compose build uses the temporary verified extraction. Raw migration, test,
+vet, Docker, and diagnostic output is removed with that runtime; only validated
+classifications, approved production snapshots, the leak-scan result, and
+deterministic evidence hashes may be retained.
 
 The script applies the full `0001..0009` migration chain and runs the focused
 ADMIN, MERCHANT, and BUYER revocation matrix with both `AUTO_MIGRATE=false` and
@@ -645,6 +815,19 @@ ADMIN, MERCHANT, and BUYER revocation matrix with both `AUTO_MIGRATE=false` and
 survival, explicit account disablement, merchant review downgrade, invalid
 session rejection, fail-closed database errors, and primary-key MySQL query
 plans. It then runs the complete backend suite and `go vet ./...`.
+
+A successful `acceptance-results.txt` has this exact ordered schema:
+
+```text
+classification=source_package|result=PASS|count=<source_count>|sha256=<source_manifest_sha256>
+classification=mysql_version|result=PASS|count=1
+classification=migration_chain|result=PASS|count=1
+classification=session_auto_migrate_false|result=PASS|count=1
+classification=session_auto_migrate_true|result=PASS|count=1
+classification=backend_tests|result=PASS|count=1
+classification=go_vet|result=PASS|count=1
+classification=production_snapshot|result=PASS|count=3
+```
 
 The transfer whitelist is limited to backend Go source/tests/migrations and
 Dockerfile, non-sensitive `deploy/acceptance/` source/manifests, `Makefile`,
@@ -656,30 +839,55 @@ the remote-only `.env`, secrets, and evidence never enter the Docker build
 context.
 
 Sanitized evidence is retained under
-`deploy/acceptance/evidence/session-access-revocation/`. It contains committed
-source hashes, MySQL/tool results, PASS summaries, query-plan assertions,
-production-container snapshots, and an evidence SHA-256 manifest. The only
-production interaction is read-only `docker inspect` of three named container
-identities, states, and restart counts; before and after snapshots must match.
-The script never executes production SQL, reads production uploads, deploys or
-restarts production services, or changes production data or sessions. It stops
-the dedicated project services at exit and retains its resources for review.
+`deploy/acceptance/evidence/session-access-revocation/`. It contains only the
+authorized source-package classification, validated gate classifications,
+approved production-container snapshots, the evidence leak-scan result, and a
+deterministic evidence SHA-256 manifest. The only production interaction is
+read-only inspection of three named container identities, states, and restart
+counts; before and after snapshots must match. The script never executes
+production SQL, reads production uploads, deploys or restarts production
+services, or changes production data or sessions. It stops the dedicated
+project services at exit and retains its resources for review.
 
 ## Miniapp auth refresh acceptance
 
 The F-05 matrix is a source-only test-server review. It uses no database,
 Docker service, DSN, application server, or application API request. It must
-run from the retained dedicated source directory at the exact reviewed commit
-with Node `v22.22.2` and npm `10.9.7`:
+run from the fixed remote root
+`/home/yu/services/secondhand-miniapp-auth-refresh-acceptance-20260726` at the
+exact reviewed commit with Node `v22.22.2` and npm `10.9.7`.
 
 The committed transfer whitelist must include `miniapp/.nvmrc` alongside
 `miniapp/package.json` and `miniapp/package-lock.json`; the toolchain-lock test
 reads all three and an incomplete source directory is not reviewable.
 
+From the reviewed local `HEAD`, inspect the whitelist or export its immutable
+package directly. These modes do not invoke Node, npm, or the network:
+
+```bash
+MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY=1 \
+  ./deploy/acceptance/miniapp-auth-refresh-smoke.sh | tr '\0' '\n'
+
+MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=/absolute/absent/miniapp-auth-refresh-package \
+  ./deploy/acceptance/miniapp-auth-refresh-smoke.sh
+```
+
+After the four artifacts are transferred and hash-matched, and their
+authenticated NUL-listed source is extracted into the fixed remote root, the
+exact normal-mode interface is:
+
 ```bash
 MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_RUNS_ONLY_ISOLATED_MINIAPP_TESTS \
+MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR=/home/yu/services/secondhand-miniapp-auth-refresh-acceptance-20260726/source-package \
+MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256=<authorized-lowercase-sha256> \
 make acceptance-miniapp-auth-refresh-smoke
 ```
+
+The package and retained evidence directories must be new for the one
+authorized run. All npm commands execute from a temporary verified copy, so
+`node_modules`, build output, and raw logs never enter the received source or
+retained evidence. The temporary copy is removed on every exit, and only
+schema-validated, leak-scanned, hashed classifications may be retained.
 
 The guard and exact toolchain checks run before `npm ci`. Dependency downloads
 use the public `https://registry.npmmirror.com` registry with npm lockfile-host
@@ -690,8 +898,21 @@ WeChat and Douyin production builds with
 bundle, contact a production API, read an `.env` file, or modify production
 data.
 
-Sanitized command output and its SHA-256 manifest are written only under the
-ignored `deploy/acceptance/evidence/miniapp-auth-refresh/` directory. Keep the
+A successful `acceptance-results.txt` has this exact ordered schema:
+
+```text
+classification=source_package|result=PASS|count=<source_count>|sha256=<source_manifest_sha256>
+classification=toolchain|result=PASS|count=2
+classification=npm_ci|result=PASS|count=1
+classification=focused_tests|result=PASS|count=1
+classification=full_tests|result=PASS|count=1
+classification=build_weapp|result=PASS|count=1
+classification=build_tt|result=PASS|count=1
+```
+
+Only validated classifications, the evidence leak-scan result, and their
+SHA-256 manifest are written under the ignored
+`deploy/acceptance/evidence/miniapp-auth-refresh/` directory. Keep the
 authorized source directory and evidence in place for review. Passing this
 matrix is test-server approval of the reviewed source; it is not a production
 miniapp release and neither generated bundle may be deployed by this workflow.
