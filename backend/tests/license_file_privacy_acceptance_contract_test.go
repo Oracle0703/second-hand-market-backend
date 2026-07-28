@@ -611,7 +611,7 @@ done
 case "$destination| $* " in
   *license-file-privacy.publish.*'| '*' -xf - '*)
     /usr/bin/tar "$@" || exit $?
-    printf 'classification=staging_tamper|result=PASS|count=1\n' >"$destination/acceptance-results.txt"
+    printf 'unexpected staged evidence\n' >"$destination/unexpected.txt"
     exit 0 ;;
 esac
 exec /usr/bin/tar "$@"
@@ -643,9 +643,10 @@ case " $* " in
     target=$2
     case "$source|$target" in
       *license-file-privacy.publish.*'|'*/license-file-privacy)
+        [ -d "${target}.publish.lock" ] || exit 91
         mkdir "$target" || exit $?
         printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
-        exec /bin/mv -n -- "$source" "$target" ;;
+        exec /bin/mv "$source" "$target" ;;
     esac ;;
 esac
 exec /bin/mv "$@"
@@ -654,6 +655,57 @@ exec /bin/mv "$@"
 		t.Fatalf("publication collision unexpectedly succeeded: %s", output)
 	}
 	assertLicensePrivacyConcurrentPublicationPreserved(t, remote)
+}
+
+func TestLicenseFilePrivacyAcceptancePreservesPostRenamePublicationAmbiguity(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+	writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+[ -d "${target}.publish.lock" ] || exit 91
+/bin/mv "$source" "$target" || exit $?
+printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acceptance-results.txt"
+`, 0o700)
+	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
+	}
+	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
+}
+
+func TestLicenseFilePrivacyAcceptancePreservesPublicationLockReleaseFailure(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+	writeLicensePrivacyFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
+case "$1" in *.publish.lock) exit 73;; esac
+exec /bin/rmdir "$@"
+`, 0o700)
+	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("lock-release failure unexpectedly succeeded: %s", output)
+	}
+	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
+	tripwire := filepath.Join(t.TempDir(), "docker-called")
+	if _, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, tripwire, ""); err == nil {
+		t.Fatal("preserved publication state allowed a later invocation")
+	}
+	if _, err := os.Stat(tripwire); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("preserved publication state reached Docker")
+	}
 }
 
 func prepareMetadataFreeLicensePrivacyAcceptance(t *testing.T) (string, string, string) {
@@ -745,6 +797,17 @@ func assertLicensePrivacyConcurrentPublicationPreserved(t *testing.T, remote str
 		if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") || entry.Name() == "license-file-privacy.publish.lock" {
 			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
+	}
+}
+
+func assertLicensePrivacyAmbiguousPublicationPreserved(t *testing.T, remote string) {
+	t.Helper()
+	retained := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+	if info, err := os.Stat(retained); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous retained evidence was removed: %v", err)
+	}
+	if info, err := os.Stat(retained + ".publish.lock"); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous publication lock was removed: %v", err)
 	}
 }
 

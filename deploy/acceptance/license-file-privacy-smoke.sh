@@ -310,15 +310,12 @@ publish_evidence_directory() {
     return 1
   fi
   if ! validate_evidence_staging_copy "$directory" "$retained_evidence_dir"; then
-    rm -r -- "$retained_evidence_dir"
     evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
     return 1
   fi
   evidence_publish_tmp=""
   if ! rmdir "$evidence_publish_lock"; then
-    rm -r -- "$retained_evidence_dir"
     evidence_publish_lock=""
     return 1
   fi

@@ -440,22 +440,65 @@ func TestSessionRevocationAcceptanceMetadataFreePackageRefusesOrProgressesBefore
 }
 
 func TestSessionRevocationAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
-	t.Run("existing evidence refuses before Docker", func(t *testing.T) {
-		remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
-		evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
-		if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
-			t.Fatalf("create pre-existing evidence: %v", err)
-		}
-		dockerMarker := filepath.Join(t.TempDir(), "docker-called")
-		stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
-		if output, err := runMetadataFreeSessionRevocationAcceptance(t,
-			remoteRepo, packageDir, remoteScript, stubDir, dockerMarker); err == nil {
-			t.Fatalf("pre-existing evidence unexpectedly succeeded: %q", output)
-		}
-		if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("pre-existing evidence reached Docker")
-		}
-	})
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string, string)
+	}{
+		{
+			name: "existing evidence",
+			setup: func(t *testing.T, evidenceDir, _ string) {
+				if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "dangling evidence symlink",
+			setup: func(t *testing.T, evidenceDir, _ string) {
+				if err := os.MkdirAll(filepath.Dir(evidenceDir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(filepath.Dir(evidenceDir), "missing-evidence"), evidenceDir); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "stale publication lock",
+			setup: func(t *testing.T, _, lock string) {
+				if err := os.MkdirAll(lock, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "dangling publication lock",
+			setup: func(t *testing.T, evidenceDir, lock string) {
+				if err := os.MkdirAll(filepath.Dir(evidenceDir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(filepath.Dir(evidenceDir), "missing-lock"), lock); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name+" refuses before Docker", func(t *testing.T) {
+			remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+			evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+			lock := filepath.Join(filepath.Dir(evidenceDir), ".session-access-revocation.publish.lock")
+			tc.setup(t, evidenceDir, lock)
+			dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+			stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+			if output, err := runMetadataFreeSessionRevocationAcceptance(t,
+				remoteRepo, packageDir, remoteScript, stubDir, dockerMarker); err == nil {
+				t.Fatalf("%s unexpectedly succeeded: %q", tc.name, output)
+			}
+			if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s reached Docker", tc.name)
+			}
+		})
+	}
 
 	for _, resource := range []string{"container", "volume", "network"} {
 		t.Run("existing "+resource, func(t *testing.T) {
@@ -601,6 +644,82 @@ exec /bin/chmod "$@"
 		t.Fatalf("forced evidence publication failure unexpectedly succeeded: %s", output)
 	}
 	assertSessionRevocationNoPublicationState(t, remoteRepo)
+}
+
+func TestSessionRevocationAcceptanceRejectsStagedEvidenceTamper(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "tar", `#!/bin/sh
+previous=
+destination=
+for argument in "$@"; do
+  [ "$previous" != -C ] || destination="$argument"
+  previous="$argument"
+done
+case "$destination| $* " in
+  *.session-access-revocation.publish.*'| '*' -xf - '*)
+    /usr/bin/tar "$@" || exit $?
+    printf 'unexpected staged evidence\n' >"$destination/unexpected.txt"
+    exit 0 ;;
+esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatalf("staged evidence tamper unexpectedly succeeded: %s", output)
+	}
+	assertSessionRevocationNoPublicationState(t, remoteRepo)
+}
+
+func TestSessionRevocationAcceptancePreservesPostRenamePublicationAmbiguity(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "mv", `#!/bin/sh
+case " $* " in
+  *" -n "*.session-access-revocation.publish.*) ;;
+  *) exec /bin/mv "$@" ;;
+esac
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+lock="$(dirname "$target")/.session-access-revocation.publish.lock"
+[ -d "$lock" ] || exit 91
+/bin/mv "$source" "$target" || exit $?
+printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acceptance-results.txt"
+`, 0o700)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
+	}
+	assertSessionRevocationAmbiguousPublicationPreserved(t, remoteRepo, output)
+}
+
+func TestSessionRevocationAcceptancePreservesPublicationLockReleaseFailure(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
+case "$1" in *.session-access-revocation.publish.lock) exit 73;; esac
+exec /bin/rmdir "$@"
+`, 0o700)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatalf("lock-release failure unexpectedly succeeded: %s", output)
+	}
+	assertSessionRevocationAmbiguousPublicationPreserved(t, remoteRepo, output)
+	tripwire := filepath.Join(t.TempDir(), "docker-called")
+	if _, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, tripwire); err == nil {
+		t.Fatal("preserved publication state allowed a later invocation")
+	}
+	if _, err := os.Stat(tripwire); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("preserved publication state reached Docker")
+	}
 }
 
 func TestSessionRevocationAcceptanceRefusesProductionInspectionError(t *testing.T) {
@@ -876,6 +995,18 @@ func assertSessionRevocationNoPublicationState(t *testing.T, remoteRepo string) 
 		if strings.HasPrefix(entry.Name(), ".session-access-revocation.") {
 			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
+	}
+}
+
+func assertSessionRevocationAmbiguousPublicationPreserved(t *testing.T, remoteRepo string, output []byte) {
+	t.Helper()
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+	lock := filepath.Join(filepath.Dir(evidenceDir), ".session-access-revocation.publish.lock")
+	if info, err := os.Stat(evidenceDir); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous retained evidence was removed: %v; output=%q", err, output)
+	}
+	if info, err := os.Stat(lock); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous publication lock was removed: %v; output=%q", err, output)
 	}
 }
 

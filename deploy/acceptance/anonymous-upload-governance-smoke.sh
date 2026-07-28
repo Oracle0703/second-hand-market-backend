@@ -396,7 +396,8 @@ for command in docker curl jq openssl sha256sum truncate base64 sort xargs mktem
   }
 done
 
-[[ ! -e "$retained_evidence_dir" && ! -e "${retained_evidence_dir}.publish.lock" ]] || {
+[[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" &&
+  ! -e "${retained_evidence_dir}.publish.lock" && ! -L "${retained_evidence_dir}.publish.lock" ]] || {
   echo "refusing to overwrite existing anonymous upload governance evidence" >&2
   exit 1
 }
@@ -498,14 +499,14 @@ snapshot_file_is_safe() {
 
 publish_evidence_directory() {
   local directory="$1" parent="${retained_evidence_dir%/*}" staging_name=""
-  [[ ! -e "$retained_evidence_dir" ]] || return 1
+  [[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" ]] || return 1
   mkdir -p "$parent" || return 1
   evidence_publish_lock="${retained_evidence_dir}.publish.lock"
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
     return 1
   }
-  if [[ -e "$retained_evidence_dir" ]]; then
+  if [[ -e "$retained_evidence_dir" || -L "$retained_evidence_dir" ]]; then
     rmdir "$evidence_publish_lock"
     evidence_publish_lock=""
     return 1
@@ -552,14 +553,15 @@ publish_evidence_directory() {
     return 1
   fi
   if ! validate_evidence_staging_copy "$directory" "$retained_evidence_dir"; then
-    rm -r -- "$retained_evidence_dir"
     evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock"
     evidence_publish_lock=""
     return 1
   fi
   evidence_publish_tmp=""
-  rmdir "$evidence_publish_lock"
+  if ! rmdir "$evidence_publish_lock"; then
+    evidence_publish_lock=""
+    return 1
+  fi
   evidence_publish_lock=""
 }
 

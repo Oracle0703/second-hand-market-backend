@@ -492,7 +492,7 @@ done
 case "$destination| $* " in
   *miniapp-auth-refresh.publish.*'| '*' -xf - '*)
     /usr/bin/tar "$@" || exit $?
-    printf 'classification=staging_tamper|result=PASS|count=1\n' >"$destination/acceptance-results.txt"
+    printf 'unexpected staged evidence\n' >"$destination/unexpected.txt"
     exit 0 ;;
 esac
 exec /usr/bin/tar "$@"
@@ -516,9 +516,10 @@ case " $* " in
     target=$2
     case "$source|$target" in
       *miniapp-auth-refresh.publish.*'|'*/miniapp-auth-refresh)
+        [ -d "${target}.publish.lock" ] || exit 91
         mkdir "$target" || exit $?
         printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
-        exec /bin/mv -n -- "$source" "$target" ;;
+        exec /bin/mv "$source" "$target" ;;
     esac ;;
 esac
 exec /bin/mv "$@"
@@ -527,6 +528,43 @@ exec /bin/mv "$@"
 		t.Fatalf("publication collision unexpectedly succeeded: %s", output)
 	}
 	assertMiniappAuthRefreshConcurrentPublicationPreserved(t, remoteRepo)
+}
+
+func TestMiniappAuthRefreshAcceptancePreservesPostRenamePublicationAmbiguity(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "mv", `#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+[ -d "${target}.publish.lock" ] || exit 91
+/bin/mv "$source" "$target" || exit $?
+printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acceptance-results.txt"
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
+	}
+	assertMiniappAuthRefreshAmbiguousPublicationPreserved(t, remoteRepo)
+}
+
+func TestMiniappAuthRefreshAcceptancePreservesPublicationLockReleaseFailure(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
+case "$1" in *.publish.lock) exit 73;; esac
+exec /bin/rmdir "$@"
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("lock-release failure unexpectedly succeeded: %s", output)
+	}
+	assertMiniappAuthRefreshAmbiguousPublicationPreserved(t, remoteRepo)
+	tripwire := filepath.Join(t.TempDir(), "npm-called")
+	if _, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, tripwire); err == nil {
+		t.Fatal("preserved publication state allowed a later invocation")
+	}
+	if _, err := os.Stat(tripwire); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("preserved publication state reached npm")
+	}
 }
 
 func TestMiniappAuthRefreshAcceptanceFailsClosedOnMalformedCheckpoint(t *testing.T) {
@@ -1180,6 +1218,17 @@ func assertMiniappAuthRefreshConcurrentPublicationPreserved(t *testing.T, remote
 		if strings.HasPrefix(entry.Name(), "miniapp-auth-refresh.publish.") || entry.Name() == "miniapp-auth-refresh.publish.lock" {
 			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
+	}
+}
+
+func assertMiniappAuthRefreshAmbiguousPublicationPreserved(t *testing.T, remoteRepo string) {
+	t.Helper()
+	retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
+	if info, err := os.Stat(retained); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous retained evidence was removed: %v", err)
+	}
+	if info, err := os.Stat(retained + ".publish.lock"); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous publication lock was removed: %v", err)
 	}
 }
 

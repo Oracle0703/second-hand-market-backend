@@ -384,21 +384,63 @@ exec /usr/bin/tar "$@"
 }
 
 func TestAnonymousUploadGovernanceAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
-	t.Run("evidence directory", func(t *testing.T) {
-		remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
-		evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
-		if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
-		output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, "")
-		if err == nil || !strings.Contains(string(output), "refusing to overwrite existing anonymous upload governance evidence") {
-			t.Fatalf("evidence reuse refusal = %q, err = %v", output, err)
-		}
-		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("evidence reuse reached Docker before refusal: %q", output)
-		}
-	})
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{
+			name: "evidence directory",
+			setup: func(t *testing.T, evidenceDir string) {
+				if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "dangling evidence symlink",
+			setup: func(t *testing.T, evidenceDir string) {
+				if err := os.MkdirAll(filepath.Dir(evidenceDir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(filepath.Dir(evidenceDir), "missing-evidence"), evidenceDir); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "stale publication lock",
+			setup: func(t *testing.T, evidenceDir string) {
+				if err := os.MkdirAll(evidenceDir+".publish.lock", 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "dangling publication lock",
+			setup: func(t *testing.T, evidenceDir string) {
+				if err := os.MkdirAll(filepath.Dir(evidenceDir), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(filepath.Dir(evidenceDir), "missing-lock"), evidenceDir+".publish.lock"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+			evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
+			tc.setup(t, evidenceDir)
+			marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+			output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, "")
+			if err == nil || !strings.Contains(string(output), "refusing to overwrite existing anonymous upload governance evidence") {
+				t.Fatalf("%s reuse refusal = %q, err = %v", tc.name, output, err)
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s reuse reached Docker before refusal: %q", tc.name, output)
+			}
+		})
+	}
 
 	for _, resource := range []string{"container", "volume", "network"} {
 		t.Run(resource+" reuse", func(t *testing.T) {
@@ -710,7 +752,7 @@ done
 case "$destination| $* " in
   *anonymous-upload-governance.publish.*'| '*' -xf - '*)
     /usr/bin/tar "$@" || exit $?
-    printf 'classification=staging_tamper|result=PASS|count=1\n' >"$destination/acceptance-results.txt"
+    printf 'unexpected staged evidence\n' >"$destination/unexpected.txt"
     exit 0 ;;
 esac
 exec /usr/bin/tar "$@"
@@ -746,9 +788,10 @@ case " $* " in
     done
     source=$1
     target=$2
+    [ -d "${target}.publish.lock" ] || exit 91
     mkdir "$target" || exit $?
     printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
-    exec /bin/mv -n -- "$source" "$target" ;;
+    exec /bin/mv "$source" "$target" ;;
 esac
 exec /bin/mv "$@"
 `, 0o700)
@@ -777,6 +820,59 @@ exec /bin/mv "$@"
 			}
 		}
 	})
+}
+
+func TestAnonymousUploadGovernanceAcceptancePreservesPostRenamePublicationAmbiguity(t *testing.T) {
+	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+: >>"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" compose "*" stop "*) exit 0 ;;
+  *" compose "*) exit 42 ;;
+esac
+exit 0
+`)
+	writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "mv", `#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+[ -d "${target}.publish.lock" ] || exit 91
+/bin/mv "$source" "$target" || exit $?
+printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acceptance-results.txt"
+`, 0o700)
+	if output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
+	}
+	assertAnonymousUploadGovernanceAmbiguousPublicationPreserved(t, remoteRepo)
+}
+
+func TestAnonymousUploadGovernanceAcceptancePreservesPublicationLockReleaseFailure(t *testing.T) {
+	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+: >>"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" compose "*" stop "*) exit 0 ;;
+  *" compose "*) exit 42 ;;
+esac
+exit 0
+`)
+	writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
+case "$1" in *.publish.lock) exit 73;; esac
+exec /bin/rmdir "$@"
+`, 0o700)
+	if output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("lock-release failure unexpectedly succeeded: %s", output)
+	}
+	assertAnonymousUploadGovernanceAmbiguousPublicationPreserved(t, remoteRepo)
+	tripwire := filepath.Join(t.TempDir(), "docker-called")
+	if _, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, tripwire, ""); err == nil {
+		t.Fatal("preserved publication state allowed a later invocation")
+	}
+	if _, err := os.Stat(tripwire); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("preserved publication state reached Docker")
+	}
 }
 
 func TestAnonymousUploadGovernanceAcceptancePreservesUploadBoundaryMatrix(t *testing.T) {
@@ -1322,6 +1418,17 @@ func assertAnonymousUploadGovernanceNoPublicationState(t *testing.T, remoteRepo 
 		if strings.HasPrefix(entry.Name(), "anonymous-upload-governance.publish.") || entry.Name() == "anonymous-upload-governance.publish.lock" {
 			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
+	}
+}
+
+func assertAnonymousUploadGovernanceAmbiguousPublicationPreserved(t *testing.T, remoteRepo string) {
+	t.Helper()
+	retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
+	if info, err := os.Stat(retained); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous retained evidence was removed: %v", err)
+	}
+	if info, err := os.Stat(retained + ".publish.lock"); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous publication lock was removed: %v", err)
 	}
 }
 

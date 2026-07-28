@@ -468,15 +468,12 @@ publish_evidence_directory() {
     return 1
   fi
   if ! validate_evidence_copy "$directory" "$evidence_dir"; then
-    rm -r -- "$evidence_dir"
     evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
     return 1
   fi
   evidence_publish_tmp=""
   if ! rmdir "$evidence_publish_lock"; then
-    rm -r -- "$evidence_dir"
     evidence_publish_lock=""
     return 1
   fi
@@ -724,7 +721,9 @@ verify_source_package
 printf 'classification=source_package|result=PASS|count=%s|sha256=%s\n' \
   "$source_count" "$source_manifest_sha256" >"$source_results"
 
-[[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || {
+[[ ! -e "$evidence_dir" && ! -L "$evidence_dir" &&
+  ! -e "$evidence_parent/.session-access-revocation.publish.lock" &&
+  ! -L "$evidence_parent/.session-access-revocation.publish.lock" ]] || {
   echo "refusing to overwrite existing session revocation evidence" >&2
   exit 1
 }
