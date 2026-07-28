@@ -6,6 +6,8 @@
 
 **Architecture:** The existing unique index on `(idem_key, operator_id, path)` is the serialization point. A wrapper-owned GORM transaction inserts an uncommitted JSON `null` claim, passes the same `*gorm.DB` to the business callback, writes a non-nil successful JSON object into that row, and commits both units together. MySQL startup verifies that every table participating in these transactions uses InnoDB; isolated MySQL 8.4 acceptance exercises real unique-index contention.
 
+**Task 4 approved revision (2026-07-28):** The historical four-connection SQLite concurrency fixture uses `_txlock=immediate` so wrapper-owned transactions serialize at `BEGIN` instead of failing during a deferred read-to-write upgrade. This is test-only; MySQL and application DSNs remain unchanged.
+
 **Tech Stack:** Go 1.22, Gin 1.10, GORM 1.30 with `TranslateError`, `glebarez/sqlite`, MySQL 8.4, Docker Compose, Bash.
 
 ## Global Constraints
@@ -542,6 +544,31 @@ Expected: no matches. Delete `runWithLegacyIdempotency` from `idempotency.go`.
 
 - [ ] **Step 5: Run GREEN and buyer concurrency regressions**
 
+The pre-fix historical concurrency regression returned HTTP 500 / `20001` in
+4 of 20 repeated runs:
+
+```bash
+cd backend
+GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
+  go test ./tests -run '^TestBuyerIntentConcurrentCreateHasOneWinner$' -count=20 -v
+```
+
+Root cause: the shared-memory SQLite DSN uses deferred transactions; both
+requests can read before either writes, SQLite ignores `FOR UPDATE`, and one
+transaction can fail its write upgrade with `SQLITE_BUSY`. The approved minimal
+implementation changes only that test DSN by appending `_txlock=immediate`.
+Keep `SetMaxOpenConns(4)`, the five-second busy timeout, and the strict expected
+one-success/one-conflict result. Do not add application retries, a process-local
+mutex, or a global SQLite DSN rewrite.
+
+First require 20 consecutive GREEN runs:
+
+```bash
+cd backend
+GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
+  go test ./tests -run '^TestBuyerIntentConcurrentCreateHasOneWinner$' -count=20 -v
+```
+
 ```bash
 cd backend
 GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
@@ -857,6 +884,7 @@ git commit -m "docs(idempotency): record isolated MySQL acceptance"
 | No persisted failed/pending state or migration | Tasks 1 and 7 |
 | Five callback transactions and strict operation logs | Tasks 3 and 4 |
 | Buyer product lock and replay-before-rate-limit behavior | Task 4 |
+| SQLite deferred write-upgrade regression without weakening concurrency assertions | Task 4 approved revision |
 | Six-table InnoDB prerequisite | Tasks 2, 5, 6 |
 | SQLite focused and MySQL 8.4 contention tests | Tasks 1 through 6 |
 | Sanitized evidence and production isolation | Tasks 6 and 8 |

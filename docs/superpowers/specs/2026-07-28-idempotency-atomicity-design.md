@@ -4,7 +4,8 @@
 
 **Branch:** `codex/f15-idempotency-atomicity`
 
-**Status:** Written specification approved on 2026-07-28; implementation planning in progress
+**Status:** Written specification approved on 2026-07-28; Tasks 1-3 complete;
+Task 4 SQLite concurrency-fixture revision approved on 2026-07-28
 
 **Finding:** The current idempotency wrapper reads before the business action,
 runs the action in a separate transaction, inserts the replay record afterward,
@@ -213,6 +214,30 @@ The isolated MySQL 8.4 gate records the same six-table engine result. Production
 engine inspection and deployment remain separate, explicitly authorized work;
 F-15 implementation and isolated acceptance do not query production.
 
+### 7.6 SQLite concurrency-fixture transaction mode
+
+The historical `TestBuyerIntentConcurrentCreateHasOneWinner` regression uses a
+four-connection, shared-memory SQLite database. After buyer-intent creation is
+moved into the wrapper-owned transaction, SQLite's default deferred transaction
+mode allows both requests to read the product and open-intent state before
+either owns the single writer path. SQLite ignores GORM's `FOR UPDATE` clause,
+so one read transaction can then fail while upgrading to a writer with
+`SQLITE_BUSY` instead of reaching the open-intent uniqueness result.
+
+The approved fixture-only correction is to add `_txlock=immediate` to this
+test's DSN. The modernc/glebarez driver maps that option to `BEGIN IMMEDIATE`.
+The first request acquires the writer path at transaction start; the second
+waits under the existing five-second busy timeout, then reads the committed open
+intent and returns the existing HTTP 409 conflict. The test keeps four open
+connections and still asserts exactly one success and one conflict.
+
+This option is not injected by `openDB`, is not added to application
+configuration, and does not change MySQL behavior. The MySQL implementation
+continues to rely on InnoDB transaction and unique-index locking plus
+`SELECT ... FOR UPDATE`. Application-level `SQLITE_BUSY` retries and
+process-local mutexes remain out of scope because they would broaden runtime
+error semantics or fail to coordinate multiple processes.
+
 ## 8. Caller Conversion
 
 Each existing callback is flattened so it uses the supplied transaction:
@@ -298,6 +323,14 @@ Cover all five call sites through focused handler or integration tests. The
 tests must prove response compatibility and that a forced terminal-record
 failure cannot leave each protected business mutation committed.
 
+The SQLite historical concurrency regression is a dialect fixture, not the
+production contention gate. Before the approved DSN correction it returned
+HTTP 500 / `20001` in 4 of 20 repeated runs. After adding
+`_txlock=immediate`, run that test at least 20 consecutive times, then run the
+complete Task 4 focused set and `go test ./internal/app ./tests -count=1`.
+Do not weaken the expected one-success/one-conflict result or reduce the
+connection pool to one.
+
 ### 10.3 MySQL 8.4 concurrency gate
 
 An opt-in test in an isolated MySQL 8.4 database must run concurrent same-scope
@@ -348,6 +381,9 @@ deployment authorization is executed and verified.
 - All five callers use the wrapper-supplied transaction for protected work.
 - Existing response fields, business state transitions, and error codes do not
   regress.
+- The four-connection SQLite buyer-intent concurrency regression passes at
+  least 20 consecutive runs with one success and one conflict; no HTTP 500 is
+  accepted.
 - MySQL startup fails closed unless all six transaction-participating tables use
   InnoDB; isolated acceptance records that verification.
 - Focused, full, race, and vet gates pass locally.
