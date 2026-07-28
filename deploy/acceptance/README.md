@@ -6,42 +6,70 @@ concurrency, and UI acceptance before a production deployment.
 
 ## Idempotency atomicity acceptance
 
-The idempotency acceptance is a separately authorized, one-run check. Transfer
-its committed source whitelist only to the fixed remote directory
-`/home/yu/services/secondhand-idempotency-acceptance-20260728`. Generate the
-NUL-delimited whitelist without Docker or remote access:
+The idempotency acceptance is a separately authorized, one-run check. Build its
+transfer package locally from the reviewed commit. Source-list mode enumerates
+the immutable `HEAD` tree, not the index or working tree, and performs no Docker
+or remote action:
 
 ```bash
 IDEMPOTENCY_SOURCE_LIST_ONLY=1 \
   ./deploy/acceptance/idempotency-atomicity-smoke.sh > /tmp/idempotency-source-list.z
 ```
 
-The list is built from the Git index and contains only `Makefile`, the backend
-Dockerfile and Go module files, committed backend Go files, committed
-migrations, and committed non-sensitive acceptance files. It excludes `.env`,
-secrets, databases, `backend/app.db`, uploads, evidence, backups, `.git`,
-caches, `node_modules`, `.tmp`, and protected review documents. Create transfer
-archives from that NUL-delimited list; do not copy a workspace directory or add
-untracked files.
-
-Before transfer, compute the sorted file SHA-256 manifest and its digest in the
-source checkout. Recompute both from source-list mode in the remote checkout
-and require byte-for-byte manifest equality and the same digest before the one
-authorized run:
+Create a new package directory outside the repository. The exporter refuses an
+existing or relative destination, writes the NUL list, exports the listed bytes
+with `git archive HEAD`, hashes the extracted snapshot, and binds the list,
+manifest, and archive in `package-sha256.txt`:
 
 ```bash
-xargs -0 sha256sum < /tmp/idempotency-source-list.z \
-  > /tmp/idempotency-source-sha256.txt
-sha256sum /tmp/idempotency-source-sha256.txt
+idempotency_export_root="$(mktemp -d)"
+IDEMPOTENCY_SOURCE_EXPORT_DIR="$idempotency_export_root/.idempotency-source" \
+  ./deploy/acceptance/idempotency-atomicity-smoke.sh
+cmp /tmp/idempotency-source-list.z \
+  "$idempotency_export_root/.idempotency-source/source-files.z"
+(
+  cd "$idempotency_export_root/.idempotency-source"
+  sha256sum -c package-sha256.txt
+)
+sha256sum "$idempotency_export_root/.idempotency-source/package-sha256.txt"
 ```
 
+Record the final digest out of band. Subject to separate transfer authorization,
+transfer only the resulting `.idempotency-source` directory to the exact remote
+directory `/home/yu/services/secondhand-idempotency-acceptance-20260728`, then
+extract its `source.tar` there. Do not transfer a workspace, `.git`, untracked
+source, environment files, or generated evidence. On the remote host, compare
+the recorded digest before extracting and running anything:
+
+```bash
+cd /home/yu/services/secondhand-idempotency-acceptance-20260728
+test "$(sha256sum .idempotency-source/package-sha256.txt | cut -d ' ' -f1)" = \
+  "$EXPECTED_IDEMPOTENCY_PACKAGE_MANIFEST_SHA256"
+(
+  cd .idempotency-source
+  sha256sum -c package-sha256.txt
+)
+tar -xf .idempotency-source/source.tar
+```
+
+The whitelist contains only `Makefile`, the backend Dockerfile and Go module
+files, committed backend Go files, committed migrations, and committed
+non-sensitive acceptance files. It excludes `.env`, secrets, databases,
+`backend/app.db`, uploads, evidence, backups, `.git`, caches, `node_modules`,
+`.tmp`, and protected review documents.
+
 Generate only acceptance credentials with `deploy/acceptance/prepare.sh` in the
-fixed remote directory. Then run exactly:
+fixed remote directory. Normal mode defaults to `.idempotency-source`, validates
+the package checksums, validates the received regular files against the source
+manifest, and reconstructs the build context from the validated archive before
+its first Docker call. It neither requires nor reads remote Git metadata. Run
+exactly:
 
 ```bash
 IDEMPOTENCY_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_IDEMPOTENCY_DATA \
 ACCEPTANCE_DB_ENGINE=mysql8.4 \
 COMPOSE_PROJECT_NAME=secondhand-idempotency-acceptance \
+IDEMPOTENCY_SOURCE_PACKAGE_MANIFEST_SHA256="$EXPECTED_IDEMPOTENCY_PACKAGE_MANIFEST_SHA256" \
 make acceptance-idempotency-smoke
 ```
 
@@ -61,6 +89,16 @@ digests, the zero-match sanitization result, and SHA-256 hashes of every
 evidence file. It never includes test payloads, stored responses, credentials,
 tokens, buyer contact fields, database connection values, or raw test
 identifiers.
+
+After the production-before snapshot succeeds, any MySQL, migration, test,
+race, vet, later snapshot, or evidence failure stops isolated containers and
+retains a freshly constructed failure evidence set. That set can contain only
+validated PASS checkpoints, a fixed classified failure stage, complete
+authorized snapshots already captured, the leak-scan classification, and
+hashes. Raw command output stays in temporary storage and is deleted. If a
+checkpoint, snapshot, or sanitization scan cannot be validated, the harness
+publishes only hardcoded evidence-sanitization failure classifications and
+their hashes.
 
 Before and after the run, the harness compares only the name, container ID,
 state, and restart count of `secondhand-market-api`, `secondhand-market-web`,
