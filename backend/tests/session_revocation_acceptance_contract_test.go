@@ -611,9 +611,10 @@ func TestSessionRevocationAcceptanceRefusesProductionInspectionError(t *testing.
 : >>"$DOCKER_CALLED"
 args=" $* "
 case "$args" in
-  *" container ls "*"name=^/secondhand-market-"*) printf 'production-inspection-secret\n' >&2; exit 125 ;;
+  *" container ls "*"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-"*) exit 0 ;;
   *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
-  *" inspect --type container "*) printf 'production-inspection-secret\n' >&2; exit 125 ;;
+  *" inspect --type container "*" secondhand-market-api "*) printf 'production-inspection-secret\n' >&2; exit 125 ;;
   *" compose "*" up "*) exit 0 ;;
   *" compose "*" exec "*)
     case "$args" in *"SELECT VERSION()"*) printf '8.4.0\n' ;; esac
@@ -635,6 +636,9 @@ exit 0
 	if bytes.Contains(output, []byte("production-inspection-secret")) {
 		t.Fatalf("production inspection diagnostics leaked to caller: %q", output)
 	}
+	if bytes.Contains(output, []byte("classification=production_snapshot|result=PASS")) {
+		t.Fatalf("production inspection error published normal PASS evidence: %q", output)
+	}
 	assertSessionRevocationSanitizationFallback(t, remoteRepo, output)
 }
 
@@ -642,6 +646,7 @@ func TestSessionRevocationAcceptancePreservesRuntimeGateOrder(t *testing.T) {
 	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
 	stateDir := t.TempDir()
 	dockerLog := filepath.Join(stateDir, "docker.log")
+	cmpLog := filepath.Join(stateDir, "cmp.log")
 	projectStarted := filepath.Join(stateDir, "project-started")
 	stubDir := writeIdempotencyAcceptanceDockerStub(t, `#!/bin/sh
 printf '%s\n' "$*" >>"$DOCKER_LOG"
@@ -669,10 +674,17 @@ case "$args" in
 esac
 exit 0
 `)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "cmp", `#!/bin/sh
+case " $* " in
+  *"production-before.txt "*"production-after.txt "*) printf '%s\n' "$*" >>"$CMP_LOG" ;;
+esac
+exec /usr/bin/cmp "$@"
+`, 0o700)
 	output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
 		remoteRepo, packageDir, remoteScript, stubDir, filepath.Join(stateDir, "docker-called"),
 		sessionRevocationPackageDigest(t, packageDir), []string{
 			"DOCKER_LOG=" + dockerLog,
+			"CMP_LOG=" + cmpLog,
 			"PROJECT_STARTED=" + projectStarted,
 		})
 	if err != nil {
@@ -711,10 +723,12 @@ exit 0
 		"compose --project-name secondhand-session-revocation-acceptance",
 		" up -d --wait mysql",
 		"SELECT VERSION()",
+		"DROP TABLE IF EXISTS file_quota_guards",
 	}
 	ordered = append(ordered, expectedMigrationChain...)
 	ordered = append(ordered,
 		"AUTO_MIGRATE=false",
+		"DROP TABLE IF EXISTS file_quota_guards",
 	)
 	ordered = append(ordered, expectedMigrationChain...)
 	ordered = append(ordered,
@@ -732,6 +746,25 @@ exit 0
 	}
 	if count := strings.Count(logText, "name=^/secondhand-market-api$"); count != 2 {
 		t.Fatalf("production API snapshot count = %d, want 2: %s", count, logText)
+	}
+	if count := strings.Count(logText, "DROP TABLE IF EXISTS file_quota_guards"); count != 2 {
+		t.Fatalf("clean schema reset count = %d, want 2: %s", count, logText)
+	}
+	cmpBytes, err := os.ReadFile(cmpLog)
+	if err != nil {
+		t.Fatalf("read production snapshot comparison log: %v", err)
+	}
+	cmpLines := strings.Split(strings.TrimSpace(string(cmpBytes)), "\n")
+	if len(cmpLines) != 2 {
+		t.Fatalf("production snapshot byte comparison count = %d, want final and publication checks: %q", len(cmpLines), cmpBytes)
+	}
+	for _, line := range cmpLines {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "-s" ||
+			!strings.HasSuffix(fields[1], "/production-before.txt") ||
+			!strings.HasSuffix(fields[2], "/production-after.txt") {
+			t.Fatalf("production snapshot byte comparison = %q, want cmp -s before after", line)
+		}
 	}
 	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
 	results, err := os.ReadFile(filepath.Join(evidenceDir, "acceptance-results.txt"))
@@ -754,6 +787,17 @@ exit 0
 		if lines[index+1] != expected {
 			t.Fatalf("success classification %d = %q, want %q", index+1, lines[index+1], expected)
 		}
+	}
+	before, err := os.ReadFile(filepath.Join(evidenceDir, "production-before.txt"))
+	if err != nil {
+		t.Fatalf("read production-before evidence: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(evidenceDir, "production-after.txt"))
+	if err != nil {
+		t.Fatalf("read production-after evidence: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("published production snapshots differ: before=%q after=%q", before, after)
 	}
 	runtimePath := ""
 	for _, field := range strings.Fields(logText) {
