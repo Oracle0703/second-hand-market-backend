@@ -251,6 +251,30 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		}
 	})
 
+	t.Run("missing package manifest digest refuses before node or npm", func(t *testing.T) {
+		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
+		cmd := exec.Command("/bin/bash", remoteScript)
+		cmd.Dir = remoteRepo
+		cmd.Env = []string{
+			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
+			"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR=" + packageDir,
+			"NODE_CALLED=" + nodeMarker,
+			"NPM_CALLED=" + marker,
+			"NPM_COMMAND_LOG=" + commandLog,
+			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		output, err := cmd.CombinedOutput()
+		if err == nil || !errors.Is(func() error { _, statErr := os.Stat(marker); return statErr }(), os.ErrNotExist) {
+			t.Fatalf("missing package manifest digest reached node or npm: %v: %q", err, output)
+		}
+		if _, err := os.Stat(nodeMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing package manifest digest reached node: %v: %q", err, output)
+		}
+	})
+
 	t.Run("valid package reaches npm after exact toolchain checks", func(t *testing.T) {
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
