@@ -274,12 +274,19 @@ fi
   exit 1
 }
 for command in docker sha256sum sort xargs mktemp grep cmp tar chmod \
-  mkdir rm wc tr cut cat find cp; do
+  mkdir rm wc tr cut cat find cp id; do
   command -v "$command" >/dev/null || {
     echo "required command is unavailable: $command" >&2
     exit 1
   }
 done
+host_uid="$(id -u)"
+host_gid="$(id -g)"
+[[ -n "$host_uid" && "$host_uid" != *[!0-9]* &&
+  -n "$host_gid" && "$host_gid" != *[!0-9]* ]] || {
+  echo "failed to determine host uid and gid for metadata initialization" >&2
+  exit 1
+}
 
 source_package_dir="${IDEMPOTENCY_SOURCE_PACKAGE_DIR:-$repo_dir/.idempotency-source}"
 [[ "$source_package_dir" == /* && -d "$source_package_dir" && ! -L "$source_package_dir" ]] || {
@@ -670,6 +677,7 @@ current_stage="build_test_image"
 "${compose[@]}" --profile tools build idempotency-test >/dev/null
 current_stage="test_metadata"
 if ! "${compose[@]}" --profile tools run --rm --no-deps \
+  --user "$host_uid:$host_gid" -e HOME=/tmp \
   idempotency-test sh -ec '
     git init -q /workspace
     git -C /workspace add -- .

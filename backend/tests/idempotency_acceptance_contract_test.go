@@ -198,6 +198,7 @@ func TestIdempotencyAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker
 func TestIdempotencyAcceptanceRetainsSanitizedFailureEvidence(t *testing.T) {
 	remoteRepo, packageDir, remoteScript := prepareMetadataFreeIdempotencyAcceptance(t)
 	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	metadataOwnershipMarker := dockerMarker + ".metadata-ownership-missing"
 	stubDir := writeIdempotencyAcceptanceDockerStub(t, `#!/bin/sh
 : >>"$DOCKER_CALLED"
 args=" $* "
@@ -215,6 +216,15 @@ case "$args" in
     exit 0
     ;;
   *" compose "*" run "*"git init"*)
+    expected_user="$(id -u):$(id -g)"
+    case "$args" in
+      *" --user $expected_user "*) ;;
+      *) : >"$DOCKER_CALLED.metadata-ownership-missing"; exit 43 ;;
+    esac
+    case "$args" in
+      *" -e HOME=/tmp "*) ;;
+      *) : >"$DOCKER_CALLED.metadata-ownership-missing"; exit 43 ;;
+    esac
     exit 0
     ;;
   *" compose "*" run "*)
@@ -231,6 +241,9 @@ exit 0
 	}
 	if _, err := os.Stat(dockerMarker); err != nil {
 		t.Fatalf("controlled failure did not exercise fake Docker: %v", err)
+	}
+	if _, err := os.Stat(metadataOwnershipMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("metadata-init tools container did not use the host uid:gid with HOME=/tmp")
 	}
 
 	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "idempotency-atomicity")
