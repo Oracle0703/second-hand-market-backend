@@ -406,8 +406,15 @@ validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" || { e
 validate_received_source_files "$repo_dir" "$source_files" || { echo "received license privacy source contains a missing or unsafe file" >&2; exit 1; }
 write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt" || { echo "received license privacy source does not match package manifest" >&2; exit 1; }
 cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || { echo "received license privacy source does not match package manifest" >&2; exit 1; }
-tar -tvf "$source_package_dir/source.tar" | grep -Eq '^[lh]' && { echo "source archive contains a link" >&2; exit 1; }
-tar -C "$build_context" -xf "$source_package_dir/source.tar"
+if ! tar -tvf "$source_package_dir/source.tar" >"$runtime_dir/source-archive-validation.raw" 2>&1; then
+  echo "transferred license privacy source archive is invalid" >&2
+  exit 1
+fi
+grep -Eq '^[lh]' "$runtime_dir/source-archive-validation.raw" && { echo "source archive contains a link" >&2; exit 1; }
+if ! tar -C "$build_context" -xf "$source_package_dir/source.tar" >"$runtime_dir/source-archive-extract.raw" 2>&1; then
+  echo "transferred license privacy source archive extraction failed" >&2
+  exit 1
+fi
 [[ -z "$(find "$build_context" -type l -print -quit)" ]] || { echo "source archive contains a symlink" >&2; exit 1; }
 write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z"
 cmp -s "$source_files" "$runtime_dir/build-context-files.z" || { echo "source archive contents do not match the committed source list" >&2; exit 1; }

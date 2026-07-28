@@ -197,6 +197,34 @@ func TestLicenseFilePrivacyAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			t.Fatalf("valid metadata-free package did not reach Docker: %v: %s", err, output)
 		}
 	})
+	t.Run("malformed archive diagnostics stay private", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		writeLicensePrivacyFixtureFile(t, packageDir, "source.tar", "malformed archive\n", 0o600)
+		licensePrivacyWritePackageManifest(t, packageDir, "  ")
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		writeLicensePrivacyFixtureFile(t, stubDir, "tar", `#!/bin/sh
+case " $* " in
+  *" -tvf "*)
+    printf 'Authorization: Bearer archive-diagnostic-secret\n' >&2
+    exit 64
+    ;;
+esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+		output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+		if err == nil {
+			t.Fatal("malformed re-authorized archive unexpectedly succeeded")
+		}
+		if licensePrivacyFileExists(marker) {
+			t.Fatal("malformed re-authorized archive reached Docker")
+		}
+		for _, secret := range []string{"Authorization", "Bearer", "archive-diagnostic-secret"} {
+			if bytes.Contains(output, []byte(secret)) {
+				t.Fatalf("archive validation diagnostic leaked %q to caller output: %q", secret, output)
+			}
+		}
+	})
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, remote, packageDir string)
