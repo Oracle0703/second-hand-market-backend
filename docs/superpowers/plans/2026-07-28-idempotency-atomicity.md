@@ -8,6 +8,17 @@
 
 **Task 4 approved revision (2026-07-28):** The historical four-connection SQLite concurrency fixture uses a file-backed database under `t.TempDir()` with private-cache behavior, `_pragma=busy_timeout(5000)`, and `_txlock=immediate`. The earlier shared-memory `_txlock=immediate` proposal was rejected by a 19/20 failure reproduction of `SQLITE_LOCKED_SHAREDCACHE` at transaction start; the file-backed diagnostic passed 20/20 and 50/50. This is test-only; MySQL and application DSNs remain unchanged.
 
+**Task 6 review revision (2026-07-28):** The transferable source package is
+generated locally from immutable `HEAD` objects with `git ls-tree` and
+`git archive`, then bound by a NUL path list, per-file SHA-256 manifest, archive
+hashes, and one out-of-band package-manifest digest. Normal remote execution
+consumes and verifies that package without `.git`. Failed runs retain only
+validated classified checkpoints, authorized production snapshots, leak-scan
+status, and hashes; raw output remains temporary and is deleted.
+
+**Local status (2026-07-28):** Code-side implemented and locally verified;
+isolated MySQL 8.4 test-server review pending; production unchanged.
+
 **Tech Stack:** Go 1.22, Gin 1.10, GORM 1.30 with `TranslateError`, `glebarez/sqlite`, MySQL 8.4, Docker Compose, Bash.
 
 ## Global Constraints
@@ -64,7 +75,7 @@
 - Produces: `func (s *Server) replayIdempotencyResult(scope idempotencyScope) (map[string]interface{}, error)`.
 - Temporary: `runWithLegacyIdempotency` contains the old implementation until Tasks 3 and 4 migrate all five call sites; it must be deleted in Task 4.
 
-- [ ] **Step 1: Add focused tests for the final callback contract**
+- [x] **Step 1: Add focused tests for the final callback contract**
 
 Create an isolated shared-memory SQLite database with `TranslateError: true`, migrate `model.IdempotencyRecord` and a test-only effect model, and invoke the helper through a Gin route so `c.FullPath()` is populated:
 
@@ -119,7 +130,7 @@ func TestRunWithIdempotencyRetryConvergesForBothCommitOutcomes(t *testing.T)
 
 For terminal-update failure, register a test-only GORM callback that calls `tx.AddError(errForcedFinalize)` only when `tx.Statement.Table == "idempotency_records"`, then assert the effect and claim counts remain zero.
 
-- [ ] **Step 2: Run the focused tests and capture RED**
+- [x] **Step 2: Run the focused tests and capture RED**
 
 Run:
 
@@ -131,7 +142,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: compilation fails because the old callback is `func()`, or behavioral assertions fail because the old read/action/insert sequence commits effects before replay persistence.
 
-- [ ] **Step 3: Preserve a green intermediate history while introducing the final helper**
+- [x] **Step 3: Preserve a green intermediate history while introducing the final helper**
 
 Rename the current function to `runWithLegacyIdempotency` and mechanically change the five existing calls to that temporary name. Then implement the final helper in the same file:
 
@@ -210,7 +221,7 @@ func (s *Server) runWithIdempotency(
 
 `runIdempotentTransaction` must reject nil results inside its transaction. `replayIdempotencyResult` must query by all three scope columns, compare the hash, require `result_code == common.CodeOK`, unmarshal a non-nil JSON object, copy/set `idempotent=true`, and return `common.ErrInternal` for missing/null/corrupt/non-success records.
 
-- [ ] **Step 4: Run focused and package tests for GREEN**
+- [x] **Step 4: Run focused and package tests for GREEN**
 
 Run:
 
@@ -224,7 +235,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: all focused tests and both packages pass while the production handlers still use the explicitly named legacy path.
 
-- [ ] **Step 5: Commit the atomic core**
+- [x] **Step 5: Commit the atomic core**
 
 ```bash
 git add backend/internal/app/idempotency.go backend/internal/app/idempotency_test.go \
@@ -246,7 +257,7 @@ git commit -m "fix(idempotency): add atomic transaction wrapper"
 - Produces: `verifyIdempotencyTransactionalTables(db *gorm.DB) error`.
 - Produces: `validateIdempotencyTableEngines(rows []mysqlTableEngine) error` for a deterministic unit-test matrix.
 
-- [ ] **Step 1: Write the engine-state RED tests**
+- [x] **Step 1: Write the engine-state RED tests**
 
 Use the exact six-table set and test canonical, reordered, lowercase engine, missing table, duplicate table, extra/unknown table, empty engine, and MyISAM cases:
 
@@ -258,7 +269,7 @@ func TestVerifyIdempotencyTransactionalTablesSkipsSQLite(t *testing.T)
 
 The rejected cases must assert only the stable message `idempotency transactional tables are missing or drifted`, not driver text.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd backend
@@ -268,7 +279,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: compilation fails because the validator does not exist.
 
-- [ ] **Step 3: Implement the MySQL-only startup gate**
+- [x] **Step 3: Implement the MySQL-only startup gate**
 
 ```go
 var idempotencyTransactionalTables = []string{
@@ -309,7 +320,7 @@ if err := verifyIdempotencyTransactionalTables(db); err != nil {
 }
 ```
 
-- [ ] **Step 4: Run GREEN and startup regressions**
+- [x] **Step 4: Run GREEN and startup regressions**
 
 ```bash
 cd backend
@@ -319,7 +330,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: validator tests pass; SQLite server tests remain unchanged because the MySQL query is skipped.
 
-- [ ] **Step 5: Commit the storage prerequisite**
+- [x] **Step 5: Commit the storage prerequisite**
 
 ```bash
 git add backend/internal/app/idempotency_schema.go \
@@ -342,7 +353,7 @@ git commit -m "fix(idempotency): require transactional MySQL tables"
 - Changes: `writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) error` returns `insertOperationLog` failure.
 - Consumes: `runWithIdempotency(c *gin.Context, payload interface{}, fn idempotentOperation) (map[string]interface{}, error)` from Task 1.
 
-- [ ] **Step 1: Write HTTP-level RED tests for four protected transitions**
+- [x] **Step 1: Write HTTP-level RED tests for four protected transitions**
 
 Add table-driven subtests that register narrowly scoped GORM callbacks and always remove them with `t.Cleanup`:
 
@@ -369,7 +380,7 @@ Cover exactly:
 
 For terminal failure, intercept only the `idempotency_records` update. For log failure, intercept only `operation_logs` create. After each 500 response, assert the domain row, inventory/reservation, event count, operation-log count, and idempotency-record count match the before snapshot. Remove the callback and retry the same key; assert one successful mutation and one terminal record.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd backend
@@ -379,7 +390,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: old legacy handlers either commit the domain mutation despite terminal failure or ignore the operation-log error.
 
-- [ ] **Step 3: Return operation-log errors**
+- [x] **Step 3: Return operation-log errors**
 
 ```go
 func (s *Server) writeOperationLog(
@@ -403,7 +414,7 @@ func (s *Server) writeOperationLog(
 
 Existing non-F-15 call statements may discard this returned error as permitted by Go. The four protected callbacks must explicitly return it.
 
-- [ ] **Step 4: Flatten the four callbacks onto the supplied transaction**
+- [x] **Step 4: Flatten the four callbacks onto the supplied transaction**
 
 Replace each legacy call and nested `s.DB.Transaction` with this shape:
 
@@ -422,7 +433,7 @@ data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]inte
 
 For order actions, propagate each of the two log insert errors separately. Do not reorder inventory, order update, event creation, or response-field construction beyond removing the nested transaction.
 
-- [ ] **Step 5: Run GREEN and focused domain regressions**
+- [x] **Step 5: Run GREEN and focused domain regressions**
 
 ```bash
 cd backend
@@ -432,7 +443,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: forced failures roll back completely; retry succeeds once; response fields and existing state transitions pass.
 
-- [ ] **Step 6: Commit the four converted writes**
+- [x] **Step 6: Commit the four converted writes**
 
 ```bash
 git add backend/internal/app/server.go backend/internal/app/merchant_intent_handlers.go \
@@ -455,7 +466,7 @@ git commit -m "fix(idempotency): share transactions across merchant writes"
 - Consumes: `findOpenBuyerIntent(tx, buyerID, productID)` and `classifyBuyerIntentCreateError(tx, err, buyerID, productID)`.
 - Final state: `runWithLegacyIdempotency` no longer exists or has callers.
 
-- [ ] **Step 1: Write buyer replay and rollback RED tests**
+- [x] **Step 1: Write buyer replay and rollback RED tests**
 
 ```go
 func TestBuyerIntentIdempotencyReplayBypassesChangedProductAndRateLimit(t *testing.T)
@@ -465,7 +476,7 @@ func TestBuyerIntentIdempotencyDifferentHashReturns10011(t *testing.T)
 
 The first test creates with a key, changes the product status directly after commit, then replays the exact request at least six times. Every replay must return the stored intent fields with `idempotent=true`, proving it does not run product validation or consume the 5/minute buyer rate limit. The terminal-failure test intercepts `idempotency_records` update and asserts no buyer intent or claim survives; after removing the callback, the same request/key succeeds exactly once. The mismatch test changes a contact field under the same key and asserts HTTP 409 / `10011` with one intent row.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd backend
@@ -475,7 +486,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: the old handler validates/rate-limits before replay and its direct `s.DB` writes survive replay-finalization failure.
 
-- [ ] **Step 3: Move first-execution work into the supplied transaction**
+- [x] **Step 3: Move first-execution work into the supplied transaction**
 
 Keep authentication, actor type, JSON binding, and contact-field validation before the wrapper. Remove the transaction-external product query and move these operations into the callback in this order:
 
@@ -531,7 +542,7 @@ data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]inte
 })
 ```
 
-- [ ] **Step 4: Delete the temporary legacy helper and prove all five callers migrated**
+- [x] **Step 4: Delete the temporary legacy helper and prove all five callers migrated**
 
 ```bash
 rg -n 'runWithLegacyIdempotency|func\(\) \(map\[string\]interface\{\}, error\)' \
@@ -542,7 +553,7 @@ rg -n 'runWithLegacyIdempotency|func\(\) \(map\[string\]interface\{\}, error\)' 
 
 Expected: no matches. Delete `runWithLegacyIdempotency` from `idempotency.go`.
 
-- [ ] **Step 5: Run GREEN and buyer concurrency regressions**
+- [x] **Step 5: Run GREEN and buyer concurrency regressions**
 
 The pre-fix historical concurrency regression returned HTTP 500 / `20001` in
 4 of 20 repeated runs:
@@ -590,7 +601,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: replay bypasses changed product/rate limits; failure leaves no row; historical F-11 uniqueness/state tests remain green.
 
-- [ ] **Step 6: Commit buyer conversion and legacy removal**
+- [x] **Step 6: Commit buyer conversion and legacy removal**
 
 ```bash
 git add backend/internal/app/buyer_handlers.go backend/internal/app/idempotency.go \
@@ -616,7 +627,7 @@ git commit -m "fix(idempotency): atomically create buyer intents"
 - Produces: `runIdempotencyFailureReleaseMySQL(t *testing.T, srv *app.Server, fixture buyerIntentMySQLFixture)`.
 - Produces: `runIdempotencyTerminalRollbackMySQL(t *testing.T, srv *app.Server, fixture buyerIntentMySQLFixture)`.
 
-- [ ] **Step 1: Write the opt-in MySQL acceptance test**
+- [x] **Step 1: Write the opt-in MySQL acceptance test**
 
 ```go
 func TestIdempotencyMySQLAcceptance(t *testing.T) {
@@ -653,7 +664,7 @@ It registers cleanup for the additional product, its images, logs, and idempoten
 
 Use `sync.WaitGroup`, a closed start channel, and `atomic.Int32` only inside test failure callbacks. Do not print keys, payloads, contact fields, user IDs, tokens, or DSN values.
 
-- [ ] **Step 2: Prove the test is opt-in locally**
+- [x] **Step 2: Prove the test is opt-in locally**
 
 ```bash
 cd backend
@@ -663,7 +674,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: `SKIP` with the stable isolated-project instruction and no network connection attempt.
 
-- [ ] **Step 3: Run all local non-opt-in tests**
+- [x] **Step 3: Run all local non-opt-in tests**
 
 ```bash
 cd backend
@@ -673,7 +684,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: all local tests pass; MySQL F-15 test is skipped unless the exact opt-in flag is set.
 
-- [ ] **Step 4: Commit the MySQL gate**
+- [x] **Step 4: Commit the MySQL gate**
 
 ```bash
 git add backend/tests/idempotency_mysql_test.go
@@ -695,24 +706,29 @@ git commit -m "test(idempotency): cover MySQL transaction contention"
 - Evidence directory: `deploy/acceptance/evidence/idempotency-atomicity`.
 - Confirmation: `IDEMPOTENCY_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_IDEMPOTENCY_DATA`.
 - Engine gate: `ACCEPTANCE_DB_ENGINE=mysql8.4`.
-- Source-list mode: `IDEMPOTENCY_SOURCE_LIST_ONLY=1` emits only the NUL-delimited committed whitelist and performs no Docker or remote action.
+- Source-list mode: `IDEMPOTENCY_SOURCE_LIST_ONLY=1` emits only the NUL-delimited `HEAD` whitelist and performs no Docker or remote action.
+- Export mode: `IDEMPOTENCY_SOURCE_EXPORT_DIR=<absent-absolute-directory>` writes the immutable `HEAD` package without Docker or remote action.
+- Normal mode consumes `IDEMPOTENCY_SOURCE_PACKAGE_DIR` (default `.idempotency-source`) and requires the authorized `IDEMPOTENCY_SOURCE_PACKAGE_MANIFEST_SHA256` digest; it does not require remote Git metadata.
 - Planned remote directory, subject to exact authorization: `/home/yu/services/secondhand-idempotency-acceptance-20260728`.
 
-- [ ] **Step 1: Write behavioral safety RED tests**
+- [x] **Step 1: Write behavioral safety RED tests**
 
 Run the real script and Make target with controlled inputs. Do not assert that source files contain particular strings:
 
 ```go
 func TestIdempotencyAcceptanceSourceListContainsOnlyCommittedWhitelist(t *testing.T)
+func TestIdempotencyAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
+func TestIdempotencyAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T)
+func TestIdempotencyAcceptanceRetainsSanitizedFailureEvidence(t *testing.T)
 func TestIdempotencyAcceptanceRefusesBeforeDockerWithoutConfirmation(t *testing.T)
 func TestIdempotencyAcceptanceMakeTargetRefusesBeforeDockerWithoutConfirmation(t *testing.T)
 ```
 
-The source-list test runs the script with only `IDEMPOTENCY_SOURCE_LIST_ONLY=1`, parses its NUL-delimited stdout, and asserts literal required paths are present, every entry succeeds with `git ls-files --error-unmatch`, and no entry is `.env`, a secret, database, upload, evidence, backup, `.git`, cache, `node_modules`, `backend/app.db`, `.tmp`, or a protected review document.
+The source-list test runs the script with only `IDEMPOTENCY_SOURCE_LIST_ONLY=1`, parses its NUL-delimited stdout, and asserts literal required paths are present, every entry exists in `HEAD`, staged-only paths are absent, and no entry is `.env`, a secret, database, upload, evidence, backup, `.git`, cache, `node_modules`, `backend/app.db`, `.tmp`, or a protected review document. The exporter test proves dirty and staged working-tree bytes cannot enter the package. Metadata-free and failure-evidence tests execute the real script with controlled fake Docker behavior rather than asserting source text.
 
 The two refusal tests prepend a temporary fake `docker` executable that writes a marker if invoked. Run the real script or Make target with confirmation variables absent; assert a nonzero exit, the stable missing-confirmation message, and absence of the Docker marker. This proves the guard executes before Docker rather than merely checking source text.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd backend
@@ -722,20 +738,22 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: the source-list test fails because the script does not exist, and the refusal tests fail because the Make target/script behavior is absent.
 
-- [ ] **Step 3: Implement the guarded source manifest and one-shot smoke**
+- [x] **Step 3: Implement the guarded source manifest and one-shot smoke**
 
 The script must:
 
 1. Exit before Docker access unless both confirmation values and the exact project name match.
 2. Refuse any existing project container, volume, network, or evidence directory.
-3. Produce the whitelist with `git ls-files -z` from `Makefile`, `backend/Dockerfile`, `backend/go.mod`, `backend/go.sum`, all committed `.go` files under `backend/`, committed migrations, and committed acceptance files, excluding every protected path. Do not use filesystem discovery to add untracked source files.
+3. Produce the whitelist from `git ls-tree HEAD` for `Makefile`, `backend/Dockerfile`, `backend/go.mod`, `backend/go.sum`, committed `.go` files under `backend/`, committed migrations, and committed acceptance files, excluding every protected path.
 4. In `IDEMPOTENCY_SOURCE_LIST_ONLY=1` mode, print only that list and exit.
-5. Snapshot only `secondhand-market-api`, `secondhand-market-web`, and `secondhand-market-mysql` as `name|ID|state|restart-count`.
-6. Build from a temporary tar context made from the whitelist, never from untracked workspace files.
-7. Start only the fixed Compose project's MySQL 8.4 service, apply `0001` through `0009`, and run `TestIdempotencyMySQLAcceptance` with both AutoMigrate values.
-8. Run `go test ./... -count=1`, `go test -race ./internal/app ./tests -count=1`, and `go vet ./...` with the MySQL opt-in disabled.
-9. Compare before/after production snapshots byte-for-byte.
-10. Write only classified PASS lines and counts to evidence, scan for secrets/identifiers/payload fields, hash every evidence file, stop project containers, and retain project resources for review.
+5. Export the actual listed `HEAD` bytes with `git archive`; bind the NUL list, file manifest, and archive with SHA-256, without reading working-tree source bytes.
+6. In normal mode, verify the out-of-band package-manifest digest, every package checksum, every received regular file, and the reconstructed context without requiring `.git`.
+7. Snapshot only `secondhand-market-api`, `secondhand-market-web`, and `secondhand-market-mysql` as `name|ID|state|restart-count`.
+8. Start only the fixed Compose project's MySQL 8.4 service, apply `0001` through `0009`, and run `TestIdempotencyMySQLAcceptance` with both AutoMigrate values.
+9. Run `go test ./... -count=1`, `go test -race ./internal/app ./tests -count=1`, and `go vet ./...` with the MySQL opt-in disabled.
+10. Compare before/after production snapshots byte-for-byte.
+11. On success, retain only classified PASS lines, counts, authorized snapshots, leak-scan status, and hashes.
+12. On failure after the first authorized snapshot, stop isolated containers and retain only validated classified checkpoints/snapshots/hashes; if sanitization cannot be proven, publish only a hardcoded sanitization-failure classification. Never retain raw command output.
 
 Add the Make target:
 
@@ -746,7 +764,7 @@ acceptance-idempotency-smoke:
 	./deploy/acceptance/idempotency-atomicity-smoke.sh
 ```
 
-- [ ] **Step 4: Run contract GREEN, shell syntax, and source-list leak checks**
+- [x] **Step 4: Run contract GREEN, shell syntax, and source-list leak checks**
 
 ```bash
 bash -n deploy/acceptance/idempotency-atomicity-smoke.sh
@@ -760,9 +778,14 @@ IDEMPOTENCY_SOURCE_LIST_ONLY=1 \
   ./deploy/acceptance/idempotency-atomicity-smoke.sh > /tmp/f15-source-list.z
 ```
 
-Inspect the NUL-delimited list only for forbidden path names and verify every listed file is in the Git index. Do not read the listed protected files or any evidence content. After the commit in Step 5, rerun source-list mode and verify every entry with `git ls-files --error-unmatch` so the transferable list is committed-only.
+Inspect the NUL-delimited list only for forbidden path names, verify every entry
+with `git cat-file -e HEAD:<path>`, and compare it byte-for-byte with export
+mode's list. Do not read protected files or any evidence content. Post-commit
+verification exported 127 `HEAD` paths, found zero forbidden paths, verified
+every `HEAD:<path>` object, and passed all three package checksums before any
+Docker or remote action.
 
-- [ ] **Step 5: Document exact execution and commit**
+- [x] **Step 5: Document exact execution and commit**
 
 Document the local command, fixed remote directory to be separately authorized, fixed project name, source-list transfer rule, SHA-256 manifest comparison, one-run rule, evidence classification, cleanup boundary, and production restrictions.
 
@@ -784,7 +807,7 @@ git commit -m "test(idempotency): add isolated MySQL acceptance"
 **Interfaces:**
 - Status columns remain: code-side closure, isolated test-server approval, production migration/deployment.
 
-- [ ] **Step 1: Format and inspect the complete diff**
+- [x] **Step 1: Format and inspect the complete diff**
 
 ```bash
 gofmt -w backend/internal/app/idempotency.go \
@@ -802,7 +825,7 @@ gofmt -w backend/internal/app/idempotency.go \
 git diff --check
 ```
 
-- [ ] **Step 2: Run fresh focused, full, race, and vet gates**
+- [x] **Step 2: Run fresh focused, full, race, and vet gates**
 
 ```bash
 cd backend
@@ -818,15 +841,37 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
 
 Expected: zero failures. Record exact commands, timestamps, and package summaries; never record payloads or identifiers.
 
-- [ ] **Step 3: Request two-stage code review and resolve every finding**
+Local gate record, 2026-07-28 14:32-15:04 +0800:
+
+- focused `./internal/app ./tests` selection: exit 0;
+- `go vet ./...`: exit 0;
+- `go test -race ./internal/app ./tests -count=1`: exit 0 (`internal/app`
+  and `tests`, with the final run of the latter completing in 368.402 seconds);
+- the first full run was intentionally not accepted because it ran in parallel
+  with race and one signal fixture missed its five-second ready-file deadline;
+  the exact fixture then passed alone in 2.99 seconds and a fresh serial
+  `go test ./... -count=1` passed every package;
+- shell syntax, gofmt diff, `git diff --check`, metadata-free package tests, and
+  the 127-path `HEAD` export audit all passed.
+
+- [x] **Step 3: Request two-stage code review and resolve every finding**
 
 Run specification compliance review first, then code-quality review. For every finding, reproduce it, add a failing regression test when behavioral, implement the minimum fix, and rerun the relevant focused and full gates. Do not accept reviewer summaries without inspecting the diff and rerunning commands.
 
-- [ ] **Step 4: Update status without overstating server or production completion**
+Task-level independent reviews approved Tasks 1-5. Task 6 review found the
+remote `.git` dependency, index-only provenance, and failure-evidence deletion;
+commit `f1b8a93` addressed them and the controller reran focused/full/export
+gates. The final specification and quality pass found no open Critical or
+Important issue. Its only deferred minor was the second order operation-log
+failure branch; commit `15f57dd` added a regression. A temporary mutation that
+discarded that error made the test fail with HTTP 200/code 0, and restoring the
+real propagation made both operation-log rollback suites pass.
+
+- [x] **Step 4: Update status without overstating server or production completion**
 
 Set the F-15 spec status to `code-side implemented and locally verified; isolated MySQL 8.4 test-server review pending; production unchanged`. Add the same three-way row to `docs/release-readiness.md`. Mark completed plan checkboxes and record commit hashes plus RED/GREEN outputs.
 
-- [ ] **Step 5: Commit local closure evidence**
+- [x] **Step 5: Commit local closure evidence**
 
 ```bash
 git add docs/release-readiness.md \
@@ -834,6 +879,17 @@ git add docs/release-readiness.md \
   docs/superpowers/plans/2026-07-28-idempotency-atomicity.md
 git commit -m "docs(idempotency): record local verification"
 ```
+
+Implementation traceability at local closure:
+
+- Task 1: `a0ef4b3`
+- Task 2: `58e697b`
+- Task 3: `d18c760`
+- Task 4: `f218832`
+- accepted F-11 prerequisite merge: `79da573`
+- Task 5: `8d838a6`
+- Task 6: `017600f`, review fix `f1b8a93`
+- final deferred-minor regression: `15f57dd`
 
 ---
 
@@ -853,14 +909,26 @@ git commit -m "docs(idempotency): record local verification"
 ```bash
 IDEMPOTENCY_SOURCE_LIST_ONLY=1 \
   ./deploy/acceptance/idempotency-atomicity-smoke.sh > /tmp/f15-source-list.z
-git ls-files -z > /tmp/f15-committed-files.z
+f15_export_root="$(mktemp -d)"
+IDEMPOTENCY_SOURCE_EXPORT_DIR="$f15_export_root/.idempotency-source" \
+  ./deploy/acceptance/idempotency-atomicity-smoke.sh
+cmp /tmp/f15-source-list.z \
+  "$f15_export_root/.idempotency-source/source-files.z"
+(
+  cd "$f15_export_root/.idempotency-source"
+  sha256sum -c package-sha256.txt
+)
+sha256sum "$f15_export_root/.idempotency-source/package-sha256.txt"
 ```
 
-Prove every source-list item is committed, count files, and compute a sorted SHA-256 manifest without reading protected content.
+Prove every source-list item exists as `HEAD:<path>`, count files, reject every
+forbidden path name, require the three package checksum lines to pass, and
+record the final package-manifest digest out of band without reading protected
+content.
 
 - [ ] **Step 2: Obtain one consolidated authorization if not already covered**
 
-The authorization must name `/home/yu/services/secondhand-idempotency-acceptance-20260728`, the fixed Compose project `secondhand-idempotency-acceptance`, transfer of only the committed source-list output, remote-only generated secrets, one isolated MySQL 8.4 run, retained sanitized evidence/resources, and only the three fixed production container snapshots. It must preserve every existing prohibition.
+The authorization must name `/home/yu/services/secondhand-idempotency-acceptance-20260728`, the fixed Compose project `secondhand-idempotency-acceptance`, transfer of only the immutable `HEAD` whitelist package (`source-files.z`, `source-sha256.txt`, `source.tar`, and `package-sha256.txt`), remote-only generated secrets, one isolated MySQL 8.4 run, retained sanitized evidence/resources, and only the three fixed production container snapshots. It must preserve every existing prohibition, including no `.git` transfer.
 
 - [ ] **Step 3: Run one bounded SSH probe before transfer**
 
@@ -873,7 +941,12 @@ Expected: exit 0 before any remote action. Banner timeout means stop remote work
 
 - [ ] **Step 4: Transfer, verify hashes, generate remote secrets, and run once**
 
-Only after authorization and successful SSH: create the exact directory with mode `0700`, transfer only the whitelist, compare local/remote SHA-256 manifests, generate remote `.env` and secrets, then invoke the guarded Make target once for the fixed project.
+Only after authorization and successful SSH: create the exact directory with
+mode `0700`, transfer only `.idempotency-source`, compare the out-of-band
+package-manifest digest before extraction, verify `package-sha256.txt`, extract
+`source.tar`, generate remote `.env` and secrets, then invoke the guarded Make
+target exactly once with the authorized digest in
+`IDEMPOTENCY_SOURCE_PACKAGE_MANIFEST_SHA256`.
 
 - [ ] **Step 5: Audit sanitized evidence and update server status**
 

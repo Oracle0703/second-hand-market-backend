@@ -4,14 +4,14 @@
 
 **Branch:** `codex/f15-idempotency-atomicity`
 
-**Status:** Written specification approved on 2026-07-28; Tasks 1-3 complete;
-Task 4 SQLite concurrency-fixture revision approved on 2026-07-28
+**Status:** Code-side implemented and locally verified on 2026-07-28;
+isolated MySQL 8.4 test-server review pending; production unchanged
 
-**Finding:** The current idempotency wrapper reads before the business action,
-runs the action in a separate transaction, inserts the replay record afterward,
-and ignores insertion errors. Concurrent requests can therefore execute the same
-side effect more than once, and a successful response can be returned without a
-durable replay record.
+**Original finding:** The pre-fix idempotency wrapper read before the business
+action, ran the action in a separate transaction, inserted the replay record
+afterward, and ignored insertion errors. Concurrent requests could therefore
+execute the same side effect more than once, and a successful response could be
+returned without a durable replay record.
 
 ## 1. Goal
 
@@ -372,6 +372,31 @@ verify source manifests, retain sanitized evidence, and compare only the allowed
 production container name/ID/state/restart-count snapshots. It must not run
 production SQL or inspect production logs, environment, mounts, or data.
 
+### 10.4 Metadata-free acceptance package and failure evidence
+
+The reviewed local commit is the only source authority. Source-list mode uses
+`git ls-tree HEAD`, and export mode obtains the listed bytes with
+`git archive HEAD`; neither the index nor working-tree contents can add or
+replace transferable source. The exporter writes a NUL path list, a per-file
+SHA-256 manifest, the source archive, and a checksum manifest. The checksum
+manifest's SHA-256 digest is recorded out of band.
+
+The remote directory intentionally has no `.git`. Before Docker access, normal
+mode requires that recorded digest, verifies all package artifacts, verifies
+each received path is a regular non-symlink file with the expected hash, and
+reconstructs the Docker build context from the verified archive. A staged-only
+path, dirty working-tree byte, missing file, symlink, unexpected path, changed
+archive, or changed manifest fails closed.
+
+After the authorized production-before snapshot, failure handling stops the
+isolated project containers and constructs a separate sanitized evidence set.
+Only validated classified checkpoints, complete authorized snapshots already
+captured, a fixed failure stage, leak-scan status, and hashes may be copied.
+Raw test, migration, race, vet, and Docker output remains under the temporary
+runtime directory and is deleted. If checkpoint/snapshot validation or the leak
+scan cannot be proven, only hardcoded sanitization-failure classifications and
+their hashes are retained.
+
 ## 11. Documentation And Evidence
 
 The implementation plan, RED/GREEN commands, commit range, local full/race/vet
@@ -412,3 +437,28 @@ deployment authorization is executed and verified.
   before test-server status is marked approved.
 - No production data, SQL, service, container, deployment, or idempotency row is
   modified during implementation and isolated acceptance.
+
+## 13. Local Verification Record
+
+Code-side commits through `15f57dd` passed the focused idempotency/buyer/order
+selection, a fresh serial `go test ./... -count=1`,
+`go test -race ./internal/app ./tests -count=1`, and `go vet ./...` on
+2026-07-28. The final race run of the `tests` package completed in 368.402
+seconds. Shell syntax, gofmt, diff checks, metadata-free package behavior, and a
+127-path `HEAD` export audit also passed with zero forbidden paths.
+
+An initial full run executed concurrently with race was not accepted after one
+signal fixture missed its five-second ready-file deadline. The exact fixture
+passed alone in 2.99 seconds, and the subsequent serial full suite passed every
+package, establishing resource contention rather than a code regression.
+
+The second `product_order_inventory` operation-log rollback branch has an
+explicit regression. A temporary, uncommitted mutation that discarded that
+error made the regression fail with HTTP 200/code 0; restoring error
+propagation made both operation-log rollback suites pass. No production source
+mutation remained.
+
+These results close only local code status. The opt-in MySQL 8.4 contention
+matrix, evidence audit, and production snapshot equality remain pending the
+separately authorized test-server run. F-15 has no migration, and no production
+deployment or data change has occurred.
