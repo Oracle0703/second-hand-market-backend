@@ -1,6 +1,6 @@
 # 发布前问题清单（release-readiness）
 
-更新时间：2026-07-27
+更新时间：2026-07-28
 
 ## 1. 当前版本状态
 
@@ -13,8 +13,8 @@
 - 文件元数据表名以 `file_records` 为唯一契约（F-09）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未执行 0005**。`FileRecord.TableName()` 已固定；`0005` preflight/up/postflight 已入库（up 重复形态校验）。
 - 分类唯一性以 `(parent_id,name)` 为唯一契约（F-16）：**本地修复并通过隔离 MySQL 8.4 测试服务器审核；生产未部署**。GORM 模型和两条 seed 路径已对齐历史 SQL migration。
 - F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
-- F-06：0008 HAVING 兼容性跟进已通过本地门禁和独立审阅；隔离 MySQL 8.4 测试服务器仍未审核；生产未执行 0008、未部署、未修改生产数据或文件。
-- F-11 code-side fixed; the authorized isolated run stopped in 0008 before 0009; the 0008 compatibility correction passed local gates; a new isolated MySQL 8.4 rerun is pending; production 0009 not executed.
+- F-06：0008 HAVING 兼容性已在 F-11 的隔离 MySQL 8.4.8 完整迁移链中通过；F-06 专用治理矩阵仍单独跟踪；生产未执行 0008、未部署、未修改生产数据或文件。
+- F-11 已在提交 `6f84cc6` 通过隔离 MySQL 8.4.8 测试服务器审核；生产未执行 0009、未部署。F-12 的 F-11 前置条件已满足，但 F-12 尚未实现或验收。
 
 ### 1.1 首轮问题与后续 schema 修复状态
 
@@ -29,8 +29,8 @@
 | F-09 文件表 schema | 已修复：`file_records` 契约 + `0005` 三段门禁 | **MySQL 8.4.8 完整八态矩阵通过** | `0005` 未在生产执行 |
 | F-16 分类 schema | 已修复：复合索引 + parent-aware seed | **同一矩阵的 AutoMigrate RED→GREEN 通过** | 新后端尚未部署 |
 | F-02 文件绑定授权 | 已修复：商家归属 + PUBLIC 一次性 capability + 商品/执照事务校验 | **MySQL 8.4.8 回填/失败门禁/API/并发/AutoMigrate 矩阵通过** | `0006` 未执行，frontend/backend 未部署 |
-| F-06 匿名上传资源治理 / D-03 大小契约 | 0008 HAVING 兼容性跟进已通过本地门禁和独立审阅 | 隔离 MySQL 8.4 测试服务器仍未审核 | 生产未执行 0008、未部署、未修改生产数据或文件 |
-| F-11 买家意向 open 唯一性 | F-11 code-side fixed; the 0008 compatibility correction passed local gates | the authorized isolated run stopped in 0008 before 0009; a new isolated MySQL 8.4 rerun is pending | production 0009 not executed |
+| F-06 匿名上传资源治理 / D-03 大小契约 | 0008 HAVING 兼容性跟进已关闭 | F-11 隔离矩阵已证明 0008 preflight/up/postflight 可在 MySQL 8.4.8 运行；F-06 专用治理矩阵仍单独跟踪 | 生产未执行 0008、未部署、未修改生产数据或文件 |
+| F-11 买家意向 open 唯一性 | 代码侧修复并固定接受提交 `6f84cc6` | **MySQL 8.4.8 完整 0008/0009、API、AutoMigrate、full/race/vet 矩阵通过** | 生产未执行 0009、未部署；F-12 前置已满足但尚未实现 |
 | F-14 session access 吊销 | 代码侧已修复 | 未审核；专用 Compose 项目尚未获授权运行 | 未部署，未修改生产数据或 session |
 
 F-09/F-16 脱敏证据与 SHA-256 见
@@ -57,6 +57,7 @@ make acceptance-anonymous-upload-governance-smoke
 - F-09/F-16：专用测试服务器 MySQL 8.4.8 完整矩阵退出 0；修复前同一 AutoMigrate 测试因 `uk_parent_name` 1061 失败，修复后通过。
 - F-02：专用项目 `secondhand-file-binding-acceptance` 完整矩阵退出 0；六类脏引用均以 SQLSTATE 45000 在 DDL 前失败，干净回填、PUBLIC/MERCHANT 未绑定文件、注册认领、商品绑定、并发单赢家及 AutoMigrate 兼容均通过。资源与脱敏证据保留在独立测试目录，生产容器 ID/状态/重启计数前后一致。
 - F-06：在代码提交 `c598f38` 上执行 `make test`，全部 Go 包通过；`go vet ./...` 通过；frontend Vitest 为 12 files / 25 tests 全量通过，`npm run build` 成功；`anonymous-upload-governance-smoke.sh` 通过 `bash -n`。本地没有 Docker，因此这些结果不替代 MySQL 8.4 并发、迁移引擎和 Nginx 入口验收。
+- F-11：提交 `6f84cc6` 的 120 文件 committed whitelist 在专用 Compose 项目中完整退出 0。MySQL 8.4.8、0008/0009 成功与拒绝矩阵、最终/API schema、AutoMigrate false/true、full/race/vet 均通过；`forbidden_matches=0`，26 个 evidence hash 全部校验通过，三个生产容器固定字段快照前后字节相同。脱敏报告见 `docs/superpowers/reviews/2026-07-27-buyer-intent-open-uniqueness-isolated-acceptance.md`。
 
 生产数据克隆隔离验收已通过：MySQL 8.4.8 迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全以及桌面/移动浏览器验收均已完成。生产迁移、部署、管理员轮换和真实生产写验证仍未执行。三条 smoke 会创建测试业务数据，本轮没有在生产执行。
 
@@ -91,6 +92,9 @@ recoverable backup evidence
 -> 0008 anonymous upload governance preflight
 -> 0008 anonymous upload governance up migration exactly once
 -> 0008 anonymous upload governance postflight
+-> 0009 buyer intent open uniqueness preflight
+-> 0009 buyer intent open uniqueness up migration exactly once
+-> 0009 buyer intent open uniqueness postflight
 -> deploy API and admin frontend together
 -> health/auth/read checks
 -> controlled dedicated test product create/close/complete
@@ -137,7 +141,7 @@ F-09 设计见 [file-record-schema-alignment-design](./superpowers/specs/2026-07
 
 这些事项阻断多库存版本正式上线。F-12、F-13、license governance、miniapp ordering、MySQL root rotation 均在本次发布范围外，不得借此扩大生产窗口。
 
-frontend Vitest、F-08 logout、F-02、F-06、F-09 与 F-16 已在本地代码侧关闭；F-02/F-09/F-16 也已通过隔离 MySQL 8.4 测试服务器审核。F-06 的专用隔离审核仍待执行，因此只关闭代码侧状态。生产 frontend/backend bundle 与 `0004`/`0005`/`0006`/`0007`/`0008` 仍须在各自批准的维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04 与 F-13 仍按各自台账处理，不因 F-06 代码侧关闭而改变生产状态。
+frontend Vitest、F-08 logout、F-02、F-06、F-09、F-11 与 F-16 已在本地代码侧关闭；F-02/F-09/F-11/F-16 也已通过隔离 MySQL 8.4 测试服务器审核。F-06 专用治理矩阵仍单独跟踪。F-12 的 F-11 前置已经满足，但 F-12 实现和验收仍在本次范围外。生产 frontend/backend bundle 与 `0004`/`0005`/`0006`/`0007`/`0008`/`0009` 仍须在各自批准的维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04 与 F-13 仍按各自台账处理，不因 F-06/F-11 代码或测试服务器状态改变生产状态。
 
 ## 5. 回滚边界
 

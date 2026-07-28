@@ -720,6 +720,11 @@ func prepareBuyerIntentAcceptanceHarness(t *testing.T, dockerStub string) (strin
 	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(dockerStub), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(stubDir, "jq"), []byte(
+		"#!/bin/sh\nexit 0\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return script, []string{
 		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
 		"BUYER_INTENT_ACCEPTANCE_CONFIRM=" + buyerIntentAcceptanceConfirmation,
