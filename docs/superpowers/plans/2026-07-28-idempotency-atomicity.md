@@ -16,6 +16,14 @@ consumes and verifies that package without `.git`. Failed runs retain only
 validated classified checkpoints, authorized production snapshots, leak-scan
 status, and hashes; raw output remains temporary and is deleted.
 
+**Task 8 first-run correction (2026-07-28):** The authorized `ce8787a` package
+passed source and MySQL 8.4 gates, then failed at `test_metadata` because the
+metadata-only tools container wrote the host-owned mode-0700 workspace as root.
+Commit `f46bb3c` adds a behavioral UID:GID/`HOME=/tmp` contract and passed
+independent review plus fresh focused/full/static gates. This does not approve
+the test-server result; a fresh package and a separately authorized rerun are
+required.
+
 **Local status (2026-07-28):** Code-side implemented and locally verified;
 isolated MySQL 8.4 test-server review pending; production unchanged.
 
@@ -904,7 +912,7 @@ Implementation traceability at local closure:
 - Requires a separate exact remote-directory/source-transfer authorization unless an existing authorization explicitly names the F-15 directory and Compose project.
 - Must not proceed while SSH fails before banner exchange.
 
-- [ ] **Step 1: Generate and verify the committed source manifest locally**
+- [x] **Step 1: Generate and verify the committed source manifest locally for the first run**
 
 ```bash
 IDEMPOTENCY_SOURCE_LIST_ONLY=1 \
@@ -926,11 +934,16 @@ forbidden path name, require the three package checksum lines to pass, and
 record the final package-manifest digest out of band without reading protected
 content.
 
-- [ ] **Step 2: Obtain one consolidated authorization if not already covered**
+The first-run package at `ce8787a` contained 127 paths with zero forbidden
+matches. Its out-of-band `package-sha256.txt` digest was
+`c42edc4d72210d5551d7261c93da9b90e6bf28509e7add0b88b17bd1fdfdcbe3`.
+A new package must be generated from the corrective final `HEAD` before rerun.
+
+- [x] **Step 2: Obtain one consolidated authorization for the first run**
 
 The authorization must name `/home/yu/services/secondhand-idempotency-acceptance-20260728`, the fixed Compose project `secondhand-idempotency-acceptance`, transfer of only the immutable `HEAD` whitelist package (`source-files.z`, `source-sha256.txt`, `source.tar`, and `package-sha256.txt`), remote-only generated secrets, one isolated MySQL 8.4 run, retained sanitized evidence/resources, and only the three fixed production container snapshots. It must preserve every existing prohibition, including no `.git` transfer.
 
-- [ ] **Step 3: Run one bounded SSH probe before transfer**
+- [x] **Step 3: Run one bounded SSH probe before the first transfer**
 
 ```bash
 ssh -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 \
@@ -939,7 +952,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 \
 
 Expected: exit 0 before any remote action. Banner timeout means stop remote work and continue other local tasks.
 
-- [ ] **Step 4: Transfer, verify hashes, generate remote secrets, and run once**
+- [x] **Step 4: Transfer, verify hashes, generate remote secrets, and run the authorized first attempt once**
 
 Only after authorization and successful SSH: create the exact directory with
 mode `0700`, transfer only `.idempotency-source`, compare the out-of-band
@@ -947,6 +960,13 @@ package-manifest digest before extraction, verify `package-sha256.txt`, extract
 `source.tar`, generate remote `.env` and secrets, then invoke the guarded Make
 target exactly once with the authorized digest in
 `IDEMPOTENCY_SOURCE_PACKAGE_MANIFEST_SHA256`.
+
+The first attempt reached `test_metadata` and failed before the application
+matrix. It was not rerun. The MySQL 8.4 classification passed, the evidence
+leak scan passed with zero matches, and the authorized production snapshot was
+byte-identical before and after. The retained project resources and root-owned
+runtime are documented in
+`docs/superpowers/reviews/2026-07-28-idempotency-atomicity-isolated-acceptance-failure.md`.
 
 - [ ] **Step 5: Audit sanitized evidence and update server status**
 
@@ -958,6 +978,19 @@ git add docs/release-readiness.md \
   docs/superpowers/plans/2026-07-28-idempotency-atomicity.md
 git commit -m "docs(idempotency): record isolated MySQL acceptance"
 ```
+
+The first run produced valid sanitized failure evidence but did not satisfy
+this approval step. Before retrying:
+
+1. export and verify a fresh immutable package from the corrective final
+   `HEAD`;
+2. obtain exact authorization to remove and recreate only the fixed remote
+   directory and this Compose project's resources, including a separate
+   decision for the root-owned `/tmp/tmp.AJaD782XNx` runtime;
+3. transfer only the four package artifacts, verify the new out-of-band digest,
+   regenerate remote-only secrets, and run the fixed Compose project only once;
+4. mark test-server approval only after the complete classified matrix and
+   evidence hashes pass and the fixed production snapshot is unchanged.
 
 ## Plan Self-Review Traceability
 

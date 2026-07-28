@@ -4,8 +4,10 @@
 
 **Branch:** `codex/f15-idempotency-atomicity`
 
-**Status:** Code-side implemented and locally verified on 2026-07-28;
-isolated MySQL 8.4 test-server review pending; production unchanged
+**Status:** Code-side implemented and locally verified on 2026-07-28. The first
+isolated run failed at the acceptance harness `test_metadata` stage; corrective
+commit `f46bb3c` is locally verified and independently reviewed, but the MySQL
+8.4 test-server status remains pending. Production is unchanged.
 
 **Original finding:** The pre-fix idempotency wrapper read before the business
 action, ran the action in a separate transaction, inserted the replay record
@@ -462,3 +464,28 @@ These results close only local code status. The opt-in MySQL 8.4 contention
 matrix, evidence audit, and production snapshot equality remain pending the
 separately authorized test-server run. F-15 has no migration, and no production
 deployment or data change has occurred.
+
+## 14. First Isolated Run And Harness Correction
+
+The one server run authorized for source commit `ce8787a` verified all 127
+immutable `HEAD` paths, all four transferred package artifacts, zero forbidden
+paths, and MySQL 8.4. It then failed at `test_metadata` before the application
+matrix. The metadata-only tools container used root against the host-owned
+mode-0700 build context, so Git rejected the ownership boundary and root-owned
+temporary metadata prevented host cleanup.
+
+The classified evidence leak scan passed, all evidence hashes verified, and
+the authorized name/ID/state/restart-count snapshot of the three fixed
+production containers was byte-identical before and after the failure. No
+production SQL, log, environment, mount, configuration, service, migration,
+deployment, or data was read or modified. The exact sanitized record is in
+`docs/superpowers/reviews/2026-07-28-idempotency-atomicity-isolated-acceptance-failure.md`.
+
+Commit `f46bb3c` was developed with a behavioral RED/GREEN contract. The script
+now validates the invoking host numeric UID and GID before Docker and passes
+that identity plus `HOME=/tmp` only to the metadata-init Compose run. A scoped
+independent review approved the change with no findings; fresh acceptance
+contracts, full backend tests, Bash syntax, gofmt, and diff checks pass. The
+test-server status remains pending until a newly authorized run from a fresh
+immutable package completes the full MySQL, AutoMigrate, concurrency,
+full/race/vet, leak-scan, hash, and production-snapshot matrix.

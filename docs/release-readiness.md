@@ -15,7 +15,7 @@
 - F-02 code-side closed on branch, pending frontend/backend deployment and `0006` production migration. 文件归属、类型、扫描状态、URL 与一次性 capability 已在事务内强制校验，并通过独立 MySQL 8.4.8 矩阵；本轮未部署、未执行生产迁移。
 - F-06：0008 HAVING 兼容性已在 F-11 的隔离 MySQL 8.4.8 完整迁移链中通过；F-06 专用治理矩阵仍单独跟踪；生产未执行 0008、未部署、未修改生产数据或文件。
 - F-11 已在提交 `6f84cc6` 通过隔离 MySQL 8.4.8 测试服务器审核；生产未执行 0009、未部署。F-12 的 F-11 前置条件已满足，但 F-12 尚未实现或验收。
-- F-15 原子幂等已在代码侧实现并通过本地 focused/full/race/vet 与无 `.git` 源包门禁；隔离 MySQL 8.4 测试服务器审核待单独授权，生产未部署、未修改线上数据。
+- F-15 原子幂等已在代码侧实现并通过本地 focused/full/race/vet 与无 `.git` 源包门禁。首次隔离 MySQL 8.4 运行在 harness `test_metadata` 阶段因 metadata 容器 UID/GID 边界失败；`f46bb3c` 已按 TDD 修复并通过独立复审，测试服务器仍未批准，生产未部署、未修改线上数据。
 
 ### 1.1 首轮问题与后续 schema 修复状态
 
@@ -33,7 +33,7 @@
 | F-06 匿名上传资源治理 / D-03 大小契约 | 0008 HAVING 兼容性跟进已关闭 | F-11 隔离矩阵已证明 0008 preflight/up/postflight 可在 MySQL 8.4.8 运行；F-06 专用治理矩阵仍单独跟踪 | 生产未执行 0008、未部署、未修改生产数据或文件 |
 | F-11 买家意向 open 唯一性 | 代码侧修复并固定接受提交 `6f84cc6` | **MySQL 8.4.8 完整 0008/0009、API、AutoMigrate、full/race/vet 矩阵通过** | 生产未执行 0009、未部署；F-12 前置已满足但尚未实现 |
 | F-14 session access 吊销 | 代码侧已修复 | 未审核；专用 Compose 项目尚未获授权运行 | 未部署，未修改生产数据或 session |
-| F-15 原子幂等与失败回滚 | 代码侧已修复并本地验证；成功结果与业务写同事务提交，失败不留 claim | 待审核；专用 `secondhand-idempotency-acceptance` MySQL 8.4 项目尚未运行 | 无迁移；未部署、未修改生产数据或幂等记录 |
+| F-15 原子幂等与失败回滚 | 代码侧已修复并本地验证；成功结果与业务写同事务提交，失败不留 claim；`f46bb3c` 修复验收 metadata UID/GID 边界 | **未通过审核**；首次运行 MySQL 8.4 门禁通过，但在 `test_metadata` 失败，完整矩阵未运行；修复后重跑待重新授权 | 无迁移；未部署、未修改生产数据或幂等记录；固定生产容器快照前后一致 |
 
 F-09/F-16 脱敏证据与 SHA-256 见
 `docs/superpowers/reviews/2026-07-26-file-category-schema-isolated-acceptance.md`。
@@ -60,7 +60,7 @@ make acceptance-anonymous-upload-governance-smoke
 - F-02：专用项目 `secondhand-file-binding-acceptance` 完整矩阵退出 0；六类脏引用均以 SQLSTATE 45000 在 DDL 前失败，干净回填、PUBLIC/MERCHANT 未绑定文件、注册认领、商品绑定、并发单赢家及 AutoMigrate 兼容均通过。资源与脱敏证据保留在独立测试目录，生产容器 ID/状态/重启计数前后一致。
 - F-06：在代码提交 `c598f38` 上执行 `make test`，全部 Go 包通过；`go vet ./...` 通过；frontend Vitest 为 12 files / 25 tests 全量通过，`npm run build` 成功；`anonymous-upload-governance-smoke.sh` 通过 `bash -n`。本地没有 Docker，因此这些结果不替代 MySQL 8.4 并发、迁移引擎和 Nginx 入口验收。
 - F-11：提交 `6f84cc6` 的 120 文件 committed whitelist 在专用 Compose 项目中完整退出 0。MySQL 8.4.8、0008/0009 成功与拒绝矩阵、最终/API schema、AutoMigrate false/true、full/race/vet 均通过；`forbidden_matches=0`，26 个 evidence hash 全部校验通过，三个生产容器固定字段快照前后字节相同。脱敏报告见 `docs/superpowers/reviews/2026-07-27-buyer-intent-open-uniqueness-isolated-acceptance.md`。
-- F-15：代码提交至 `15f57dd` 后，focused idempotency/buyer/order 套件、串行 `go test ./... -count=1`、`go test -race ./internal/app ./tests -count=1`、`go vet ./...`、shell/gofmt/diff 门禁均通过；最终 race 的 `tests` 包耗时 368.402 秒。首次与 race 并行的 full 因一个信号 fixture 五秒 ready-file 超时未被接受；该 fixture 单独 2.99 秒通过，随后串行 full 全绿。127 个 `HEAD` 白名单路径禁入项为 0，metadata-free package 校验通过。以上不替代隔离 MySQL 8.4 验收。
+- F-15：代码提交至 `15f57dd` 后，focused idempotency/buyer/order 套件、串行 `go test ./... -count=1`、`go test -race ./internal/app ./tests -count=1`、`go vet ./...`、shell/gofmt/diff 门禁均通过；最终 race 的 `tests` 包耗时 368.402 秒。首次与 race 并行的 full 因一个信号 fixture 五秒 ready-file 超时未被接受；该 fixture 单独 2.99 秒通过，随后串行 full 全绿。提交 `ce8787a` 的 127 个 `HEAD` 白名单路径禁入项为 0，metadata-free package 校验通过。唯一一次已授权服务器运行通过源码与 MySQL 8.4 门禁，但在 `test_metadata` 因 root 容器写宿主目录而失败；生产固定字段快照前后一致，脱敏失败报告见 `docs/superpowers/reviews/2026-07-28-idempotency-atomicity-isolated-acceptance-failure.md`。`f46bb3c` 已加入宿主 UID:GID/`HOME=/tmp` 契约，独立复审无问题，fresh focused/full/shell/gofmt/diff 门禁通过；以上仍不构成测试服务器批准。
 
 生产数据克隆隔离验收已通过：MySQL 8.4.8 迁移、索引、CHECK、AutoMigrate 兼容性、并发、管理员安全以及桌面/移动浏览器验收均已完成。生产迁移、部署、管理员轮换和真实生产写验证仍未执行。三条 smoke 会创建测试业务数据，本轮没有在生产执行。
 
@@ -144,7 +144,7 @@ F-09 设计见 [file-record-schema-alignment-design](./superpowers/specs/2026-07
 
 这些事项阻断多库存版本正式上线。F-12、F-13、license governance、miniapp ordering、MySQL root rotation 均在本次发布范围外，不得借此扩大生产窗口。
 
-frontend Vitest、F-08 logout、F-02、F-06、F-09、F-11、F-15 与 F-16 已在本地代码侧关闭；F-02/F-09/F-11/F-16 也已通过隔离 MySQL 8.4 测试服务器审核，F-15 测试服务器审核仍待单独授权。F-06 专用治理矩阵仍单独跟踪。F-12 的 F-11 前置已经满足，但 F-12 实现和验收仍在本次范围外。生产 frontend/backend bundle 与 `0004`/`0005`/`0006`/`0007`/`0008`/`0009` 仍须在各自批准的维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04 与 F-13 仍按各自台账处理，不因 F-06/F-11/F-15 代码或测试服务器状态改变生产状态。
+frontend Vitest、F-08 logout、F-02、F-06、F-09、F-11、F-15 与 F-16 已在本地代码侧关闭；F-02/F-09/F-11/F-16 也已通过隔离 MySQL 8.4 测试服务器审核。F-15 首次运行因验收 harness 所有权边界失败，修复后的第二次运行待重新授权，因此测试服务器状态仍是未批准。F-06 专用治理矩阵仍单独跟踪。F-12 的 F-11 前置已经满足，但 F-12 实现和验收仍在本次范围外。生产 frontend/backend bundle 与 `0004`/`0005`/`0006`/`0007`/`0008`/`0009` 仍须在各自批准的维护窗部署/执行后才对线上生效，不能据此标记为生产已完成。F-04 与 F-13 仍按各自台账处理，不因 F-06/F-11/F-15 代码或测试服务器状态改变生产状态。
 
 ## 5. 回滚边界
 
