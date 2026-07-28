@@ -35,7 +35,7 @@
 - `backend/internal/app/buyer_handlers.go`: rate limits, product lock, open-intent check, and insert run only for first execution using the wrapper transaction.
 - `backend/tests/idempotency_handlers_test.go`: HTTP-level rollback/replay compatibility across all five call sites.
 - `backend/tests/idempotency_mysql_test.go`: opt-in MySQL 8.4 contention, failure, retry, and engine evidence.
-- `backend/tests/idempotency_acceptance_contract_test.go`: static safety contract for the isolated acceptance script.
+- `backend/tests/idempotency_acceptance_contract_test.go`: controlled behavioral tests for source-list and fail-before-Docker safety.
 - `deploy/acceptance/idempotency-atomicity-smoke.sh`: isolated Compose run, committed-source manifest, sanitized evidence, and production snapshot equality.
 - `Makefile`: guarded F-15 acceptance target.
 - `deploy/acceptance/README.md`: exact local and server-side isolated execution contract.
@@ -642,7 +642,7 @@ git commit -m "test(idempotency): cover MySQL transaction contention"
 
 ---
 
-### Task 6: Build The Isolated Acceptance Project And Safety Contract
+### Task 6: Build The Isolated Acceptance Project And Behavioral Safety Contract
 
 **Files:**
 - Create: `deploy/acceptance/idempotency-atomicity-smoke.sh`
@@ -658,14 +658,19 @@ git commit -m "test(idempotency): cover MySQL transaction contention"
 - Source-list mode: `IDEMPOTENCY_SOURCE_LIST_ONLY=1` emits only the NUL-delimited committed whitelist and performs no Docker or remote action.
 - Planned remote directory, subject to exact authorization: `/home/yu/services/secondhand-idempotency-acceptance-20260728`.
 
-- [ ] **Step 1: Write the static contract RED test**
+- [ ] **Step 1: Write behavioral safety RED tests**
 
-Require the script and Makefile to contain exact project/confirmation/source-list values, fixed production container names, MySQL 8.4 check, migration chain through `0009`, `AUTO_MIGRATE=false` and `true` focused runs, full test/race/vet gates, snapshot comparison, leak scan, evidence hashes, and retained-resource marker. Reject `docker compose down`, wildcard production inspection, `.env` in the source list, production SQL, and evidence reuse.
+Run the real script and Make target with controlled inputs. Do not assert that source files contain particular strings:
 
 ```go
-func TestIdempotencyAcceptanceScriptSafetyContract(t *testing.T)
-func TestIdempotencyAcceptanceMakeTargetContract(t *testing.T)
+func TestIdempotencyAcceptanceSourceListContainsOnlyCommittedWhitelist(t *testing.T)
+func TestIdempotencyAcceptanceRefusesBeforeDockerWithoutConfirmation(t *testing.T)
+func TestIdempotencyAcceptanceMakeTargetRefusesBeforeDockerWithoutConfirmation(t *testing.T)
 ```
+
+The source-list test runs the script with only `IDEMPOTENCY_SOURCE_LIST_ONLY=1`, parses its NUL-delimited stdout, and asserts literal required paths are present, every entry succeeds with `git ls-files --error-unmatch`, and no entry is `.env`, a secret, database, upload, evidence, backup, `.git`, cache, `node_modules`, `backend/app.db`, `.tmp`, or a protected review document.
+
+The two refusal tests prepend a temporary fake `docker` executable that writes a marker if invoked. Run the real script or Make target with confirmation variables absent; assert a nonzero exit, the stable missing-confirmation message, and absence of the Docker marker. This proves the guard executes before Docker rather than merely checking source text.
 
 - [ ] **Step 2: Run RED**
 
@@ -675,7 +680,7 @@ GOMODCACHE="$(pwd)/.cache/go/mod" GOCACHE="$(pwd)/.cache/go/build" \
   go test ./tests -run '^TestIdempotencyAcceptance' -count=1 -v
 ```
 
-Expected: missing script/target assertions fail.
+Expected: the source-list test fails because the script does not exist, and the refusal tests fail because the Make target/script behavior is absent.
 
 - [ ] **Step 3: Implement the guarded source manifest and one-shot smoke**
 
@@ -683,7 +688,7 @@ The script must:
 
 1. Exit before Docker access unless both confirmation values and the exact project name match.
 2. Refuse any existing project container, volume, network, or evidence directory.
-3. Produce the whitelist with `git ls-files -z` from `Makefile`, `backend/Dockerfile`, `backend/go.mod`, `backend/go.sum`, all committed `.go` files under `backend/`, committed migrations, and committed acceptance files, excluding every protected path. Do not use `find` to discover source files.
+3. Produce the whitelist with `git ls-files -z` from `Makefile`, `backend/Dockerfile`, `backend/go.mod`, `backend/go.sum`, all committed `.go` files under `backend/`, committed migrations, and committed acceptance files, excluding every protected path. Do not use filesystem discovery to add untracked source files.
 4. In `IDEMPOTENCY_SOURCE_LIST_ONLY=1` mode, print only that list and exit.
 5. Snapshot only `secondhand-market-api`, `secondhand-market-web`, and `secondhand-market-mysql` as `name|ID|state|restart-count`.
 6. Build from a temporary tar context made from the whitelist, never from untracked workspace files.
