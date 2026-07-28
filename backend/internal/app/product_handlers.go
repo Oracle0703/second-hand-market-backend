@@ -516,7 +516,7 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 		return
 	}
 	payload := gin.H{"id": id, "to_status": toStatus}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
 		err := s.DB.Transaction(func(tx *gorm.DB) error {
 			product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)

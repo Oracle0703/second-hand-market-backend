@@ -987,7 +987,7 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 	}
 
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
 		found, err := findOpenBuyerIntent(s.DB, actor.UserID, req.ProductID)
 		if err != nil {
 			return nil, err

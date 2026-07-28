@@ -171,7 +171,7 @@ func (s *Server) handleMerchantIntentContacted(c *gin.Context) {
 	}
 
 	payload := gin.H{"id": id, "to_status": model.IntentContacted}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
 		result := map[string]interface{}{}
 		err := s.DB.Transaction(func(tx *gorm.DB) error {
 			intent, err := s.loadOwnedIntent(tx, id, actor.MerchantID)
@@ -251,7 +251,7 @@ func (s *Server) handleMerchantIntentClose(c *gin.Context) {
 	}
 
 	payload := gin.H{"id": id, "to_status": model.IntentClosed, "reason": req.Reason, "merchant_note": req.MerchantNote}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
 		result := map[string]interface{}{}
 		err := s.DB.Transaction(func(tx *gorm.DB) error {
 			intent, err := s.loadOwnedIntent(tx, id, actor.MerchantID)
