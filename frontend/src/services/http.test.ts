@@ -47,6 +47,20 @@ describe('http blob responses', () => {
     ).rejects.toThrow('无权限访问')
   })
 
+  it('maps upload quota exhaustion to a stable user-facing message', async () => {
+    await expect(
+      http.post('/files/presign', {}, {
+        adapter: async (config) =>
+          adapterResponse(config, {
+            code: 10013,
+            message: 'upload quota exceeded',
+            request_id: 'req-upload-quota',
+            data: null
+          }, 409)
+      })
+    ).rejects.toThrow('上传配额已用尽，请稍后重试')
+  })
+
   it('refreshes concurrent blob 401 responses once and replays both with the new token', async () => {
     vi.resetModules()
     const actualAxios = await vi.importActual<typeof import('axios')>('axios')
