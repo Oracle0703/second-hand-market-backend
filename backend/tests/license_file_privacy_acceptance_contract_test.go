@@ -692,11 +692,20 @@ esac
 exit 0
 `)
 	writeLicensePrivacyFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
-case "$1" in *.publish.lock) exit 73;; esac
+case "$1" in
+  *.publish.lock)
+    target=${1%.publish.lock}
+    [ -d "$target" ] || exit 92
+    : >"$0.called"
+    exit 73 ;;
+esac
 exec /bin/rmdir "$@"
 `, 0o700)
 	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
 		t.Fatalf("lock-release failure unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(stubDir, "rmdir.called")); err != nil {
+		t.Fatalf("publication lock release was not attempted after rename: %v", err)
 	}
 	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
 	tripwire := filepath.Join(t.TempDir(), "docker-called")

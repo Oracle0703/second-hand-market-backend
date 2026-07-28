@@ -703,13 +703,22 @@ func TestSessionRevocationAcceptancePreservesPublicationLockReleaseFailure(t *te
 	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
 	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
 	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
-case "$1" in *.session-access-revocation.publish.lock) exit 73;; esac
+case "$1" in
+  *.session-access-revocation.publish.lock)
+    target="$(dirname "$1")/session-access-revocation"
+    [ -d "$target" ] || exit 92
+    : >"$0.called"
+    exit 73 ;;
+esac
 exec /bin/rmdir "$@"
 `, 0o700)
 	output, err := runMetadataFreeSessionRevocationAcceptance(t,
 		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
 	if err == nil {
 		t.Fatalf("lock-release failure unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(stubDir, "rmdir.called")); err != nil {
+		t.Fatalf("publication lock release was not attempted after rename: %v", err)
 	}
 	assertSessionRevocationAmbiguousPublicationPreserved(t, remoteRepo, output)
 	tripwire := filepath.Join(t.TempDir(), "docker-called")
