@@ -230,11 +230,13 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 	t.Run("missing explicit package directory refuses before node or npm", func(t *testing.T) {
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
 		cmd := exec.Command("/bin/bash", remoteScript)
 		cmd.Dir = remoteRepo
 		cmd.Env = []string{
 			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
 			"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256=" + miniappAuthRefreshPackageDigest(t, packageDir),
+			"NODE_CALLED=" + nodeMarker,
 			"NPM_CALLED=" + marker,
 			"NPM_COMMAND_LOG=" + commandLog,
 			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
@@ -243,6 +245,9 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		output, err := cmd.CombinedOutput()
 		if err == nil || !errors.Is(func() error { _, statErr := os.Stat(marker); return statErr }(), os.ErrNotExist) {
 			t.Fatalf("missing explicit package directory reached node or npm: %v: %q", err, output)
+		}
+		if _, err := os.Stat(nodeMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing explicit package directory reached node: %v: %q", err, output)
 		}
 	})
 
@@ -418,6 +423,9 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("%s reached npm before refusing; output = %q", tc.name, output)
 			}
+			if _, err := os.Stat(miniappAuthRefreshNodeMarker(stubDir)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s reached node before refusing; output = %q", tc.name, output)
+			}
 		})
 	}
 }
@@ -490,12 +498,16 @@ func TestMiniappAuthRefreshAcceptanceRefusesExistingEvidenceBeforeNPM(t *testing
 		t.Fatalf("create retained evidence fixture: %v", err)
 	}
 	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+	nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
 	output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker)
 	if err == nil || !strings.Contains(string(output), "refusing to overwrite existing miniapp auth refresh evidence") {
 		t.Fatalf("existing evidence did not produce a stable refusal: %v: %q", err, output)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("existing retained evidence reached node or npm")
+		t.Fatal("existing retained evidence reached npm")
+	}
+	if _, err := os.Stat(nodeMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("existing retained evidence reached node")
 	}
 }
 
@@ -514,6 +526,7 @@ func TestMiniappAuthRefreshAcceptanceUsesTemporaryVerifiedTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read npm command log: %v", err)
 	}
+	var runtimeDir string
 	for _, line := range strings.Split(strings.TrimSpace(string(rawLog)), "\n") {
 		parts := strings.SplitN(line, "|", 2)
 		if len(parts) != 2 || !strings.HasSuffix(parts[0], "/build-context/miniapp") {
@@ -522,6 +535,23 @@ func TestMiniappAuthRefreshAcceptanceUsesTemporaryVerifiedTree(t *testing.T) {
 		if strings.HasPrefix(parts[0], filepath.Join(remoteRepo, "miniapp")) {
 			t.Fatalf("npm ran inside the received source tree: %q", line)
 		}
+		candidateRuntimeDir := filepath.Dir(filepath.Dir(parts[0]))
+		if runtimeDir == "" {
+			runtimeDir = candidateRuntimeDir
+		} else if runtimeDir != candidateRuntimeDir {
+			t.Fatalf("npm commands used multiple runtime directories: %q and %q", runtimeDir, candidateRuntimeDir)
+		}
+	}
+	if runtimeDir == "" {
+		t.Fatal("npm command log did not identify a temporary runtime directory")
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(runtimeDir); err != nil {
+			t.Errorf("clean temporary runtime fixture %q: %v", runtimeDir, err)
+		}
+	})
+	if _, err := os.Lstat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("controlled failure retained temporary runtime directory %q: %v", runtimeDir, err)
 	}
 	after := miniappAuthRefreshDirectoryDigest(t, filepath.Join(remoteRepo, "miniapp"))
 	if after != before {
@@ -604,6 +634,7 @@ func TestMiniappAuthRefreshAcceptancePreservesCommandMatrix(t *testing.T) {
 		t.Fatalf("read npm command log: %v", err)
 	}
 	var commands []string
+	var runtimeDir string
 	for _, line := range strings.Split(strings.TrimSpace(string(rawLog)), "\n") {
 		parts := strings.SplitN(line, "|", 3)
 		if len(parts) != 3 {
@@ -611,6 +642,12 @@ func TestMiniappAuthRefreshAcceptancePreservesCommandMatrix(t *testing.T) {
 		}
 		if parts[2] != "https://example.invalid/api/v1" {
 			t.Fatalf("npm command did not receive isolated example.invalid API URL: %q", line)
+		}
+		candidateRuntimeDir := filepath.Dir(filepath.Dir(parts[0]))
+		if runtimeDir == "" {
+			runtimeDir = candidateRuntimeDir
+		} else if runtimeDir != candidateRuntimeDir {
+			t.Fatalf("npm commands used multiple runtime directories: %q and %q", runtimeDir, candidateRuntimeDir)
 		}
 		commands = append(commands, parts[1])
 	}
@@ -623,6 +660,17 @@ func TestMiniappAuthRefreshAcceptancePreservesCommandMatrix(t *testing.T) {
 	}
 	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("npm command matrix = %q, want %q", commands, want)
+	}
+	if runtimeDir == "" {
+		t.Fatal("successful npm command log did not identify a temporary runtime directory")
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(runtimeDir); err != nil {
+			t.Errorf("clean temporary runtime fixture %q: %v", runtimeDir, err)
+		}
+	})
+	if _, err := os.Lstat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful run retained temporary runtime directory %q: %v", runtimeDir, err)
 	}
 }
 
@@ -948,6 +996,7 @@ func writeMiniappAuthRefreshRuntimeStubs(t *testing.T, mode string) (string, str
 	marker := filepath.Join(stubDir, "npm-called")
 	commandLog := filepath.Join(stubDir, "npm-commands")
 	node := `#!/bin/sh
+: >"$NODE_CALLED"
 case "${1:-}" in
   --version) printf 'v22.22.2\n' ;;
   *) exit 91 ;;
@@ -981,6 +1030,10 @@ exit 0
 	return stubDir, marker, commandLog
 }
 
+func miniappAuthRefreshNodeMarker(stubDir string) string {
+	return filepath.Join(stubDir, "node-called")
+}
+
 func runMetadataFreeMiniappAuthRefresh(
 	t *testing.T,
 	remoteRepo, packageDir, remoteScript, stubDir, marker string,
@@ -1003,6 +1056,7 @@ func runMetadataFreeMiniappAuthRefreshWithDigest(
 		"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
 		"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR=" + packageDir,
 		"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256=" + manifestDigest,
+		"NODE_CALLED=" + miniappAuthRefreshNodeMarker(stubDir),
 		"NPM_CALLED=" + marker,
 		"NPM_COMMAND_LOG=" + commandLog,
 		"NPM_STUB_MODE_FILE=" + stubMode,

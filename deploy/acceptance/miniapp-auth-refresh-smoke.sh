@@ -4,7 +4,6 @@ set -euo pipefail
 
 base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$base_dir/../.." && pwd)"
-miniapp_dir="$repo_dir/miniapp"
 evidence_dir="$base_dir/evidence/miniapp-auth-refresh"
 expected_node="v22.22.2"
 expected_npm="10.9.7"
