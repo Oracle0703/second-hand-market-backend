@@ -1,0 +1,319 @@
+package tests
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"reflect"
+	"strings"
+	"testing"
+
+	"gorm.io/gorm"
+
+	"second-hand-market-backend/backend/internal/app"
+	"second-hand-market-backend/backend/internal/common"
+	"second-hand-market-backend/backend/internal/model"
+)
+
+type idempotencyTransitionFixture struct {
+	srv       *app.Server
+	token     string
+	path      string
+	body      map[string]interface{}
+	productID uint64
+	intentID  uint64
+	orderID   uint64
+}
+
+type idempotencyTransitionSnapshot struct {
+	product            model.Product
+	intent             model.BuyerIntent
+	order              model.Order
+	orderEventCount    int64
+	operationLogCount  int64
+	idempotencyRecords int64
+}
+
+func TestIdempotentMerchantAndOrderTransitionsRollbackWhenTerminalWriteFails(t *testing.T) {
+	for _, transition := range idempotencyTransitionCases() {
+		t.Run(transition.name, func(t *testing.T) {
+			fixture := transition.newFixture(t)
+			before := snapshotIdempotencyTransition(t, fixture)
+			failGORMTableOperation(t, fixture.srv.DB, "update", "idempotency_records", errors.New("forced terminal write failure"))
+
+			failed := requestIdempotencyTransition(t, fixture, "terminal-write-key")
+			if failed.HTTPStatus != http.StatusInternalServerError || failed.Code != common.CodeInternal {
+				t.Fatalf("terminal write failure response = status %d, code %d", failed.HTTPStatus, failed.Code)
+			}
+			assertIdempotencyTransitionSnapshot(t, fixture, before)
+
+			removeGORMTableOperation(t, fixture.srv.DB, "update", "idempotency_records")
+			retry := requestIdempotencyTransition(t, fixture, "terminal-write-key")
+			assertSuccessfulIdempotencyTransition(t, transition, fixture, retry, false)
+			assertSingleTerminalRecord(t, fixture, "terminal-write-key")
+		})
+	}
+}
+
+func TestIdempotentMerchantAndOrderTransitionsRollbackWhenOperationLogFails(t *testing.T) {
+	for _, transition := range idempotencyTransitionCases() {
+		t.Run(transition.name, func(t *testing.T) {
+			fixture := transition.newFixture(t)
+			before := snapshotIdempotencyTransition(t, fixture)
+			failGORMTableOperation(t, fixture.srv.DB, "create", "operation_logs", errors.New("forced operation log failure"))
+
+			failed := requestIdempotencyTransition(t, fixture, "operation-log-key")
+			if failed.HTTPStatus != http.StatusInternalServerError || failed.Code != common.CodeInternal {
+				t.Fatalf("operation log failure response = status %d, code %d", failed.HTTPStatus, failed.Code)
+			}
+			assertIdempotencyTransitionSnapshot(t, fixture, before)
+
+			removeGORMTableOperation(t, fixture.srv.DB, "create", "operation_logs")
+			retry := requestIdempotencyTransition(t, fixture, "operation-log-key")
+			assertSuccessfulIdempotencyTransition(t, transition, fixture, retry, false)
+			assertSingleTerminalRecord(t, fixture, "operation-log-key")
+		})
+	}
+}
+
+func TestIdempotentMerchantAndOrderTransitionsPreserveSuccessPayloads(t *testing.T) {
+	for _, transition := range idempotencyTransitionCases() {
+		t.Run(transition.name, func(t *testing.T) {
+			fixture := transition.newFixture(t)
+			first := requestIdempotencyTransition(t, fixture, "success-payload-key")
+			assertSuccessfulIdempotencyTransition(t, transition, fixture, first, false)
+
+			replay := requestIdempotencyTransition(t, fixture, "success-payload-key")
+			assertSuccessfulIdempotencyTransition(t, transition, fixture, replay, true)
+			assertSingleTerminalRecord(t, fixture, "success-payload-key")
+		})
+	}
+}
+
+type idempotencyTransitionCase struct {
+	name       string
+	newFixture func(*testing.T) idempotencyTransitionFixture
+	assertData func(*testing.T, idempotencyTransitionFixture, apiResp)
+}
+
+func idempotencyTransitionCases() []idempotencyTransitionCase {
+	return []idempotencyTransitionCase{
+		{
+			name:       "merchant intent new to contacted",
+			newFixture: newContactedIntentFixture,
+			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
+				t.Helper()
+				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentNew || str(response.Data["to_status"]) != model.IntentContacted {
+					t.Fatalf("contacted payload changed")
+				}
+			},
+		},
+		{
+			name:       "merchant intent contacted to closed",
+			newFixture: newClosedIntentFixture,
+			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
+				t.Helper()
+				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentContacted || str(response.Data["to_status"]) != model.IntentClosed {
+					t.Fatalf("closed intent payload changed")
+				}
+			},
+		},
+		{
+			name:       "product draft to on shelf",
+			newFixture: newOnShelfProductFixture,
+			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
+				t.Helper()
+				if numToUint64(response.Data["product_id"]) != fixture.productID || str(response.Data["from_status"]) != model.ProductDraft || str(response.Data["to_status"]) != model.ProductOnShelf {
+					t.Fatalf("on-shelf payload changed")
+				}
+			},
+		},
+		{
+			name:       "order created to completed",
+			newFixture: newCompletedOrderFixture,
+			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
+				t.Helper()
+				if numToUint64(response.Data["order_id"]) != fixture.orderID || str(response.Data["from_status"]) != model.OrderCreated || str(response.Data["to_status"]) != model.OrderCompleted || str(response.Data["product_status"]) != model.ProductSold || numToUint64(response.Data["stock"]) != 0 || numToUint64(response.Data["reserved_stock"]) != 0 || numToUint64(response.Data["available_stock"]) != 0 {
+					t.Fatalf("completed order payload changed")
+				}
+			},
+		},
+	}
+}
+
+func newContactedIntentFixture(t *testing.T) idempotencyTransitionFixture {
+	t.Helper()
+	fixture := newIntentTransitionFixture(t)
+	fixture.path = fmt.Sprintf("/api/v1/merchant/intents/%d/contacted", fixture.intentID)
+	fixture.body = map[string]interface{}{}
+	return fixture
+}
+
+func newClosedIntentFixture(t *testing.T) idempotencyTransitionFixture {
+	t.Helper()
+	fixture := newContactedIntentFixture(t)
+	contacted := requestJSON(t, fixture.srv.Router, http.MethodPost, fixture.path, fixture.body, map[string]string{"Authorization": "Bearer " + fixture.token})
+	if contacted.Code != common.CodeOK {
+		t.Fatalf("prepare contacted intent: code %d", contacted.Code)
+	}
+	fixture.path = fmt.Sprintf("/api/v1/merchant/intents/%d/close", fixture.intentID)
+	fixture.body = map[string]interface{}{"reason": "NO_RESPONSE", "merchant_note": "closed"}
+	return fixture
+}
+
+func newIntentTransitionFixture(t *testing.T) idempotencyTransitionFixture {
+	t.Helper()
+	fixture := newMerchantTransitionFixture(t)
+	fixture.productID = createAndOnShelfProduct(t, fixture.srv, fixture.token)
+	buyer := buyerLogin(t, serverAdapter{h: fixture.srv.Router}, "idempotency-intent", "intent-device")
+	if buyer.Code != common.CodeOK {
+		t.Fatalf("buyer login: code %d", buyer.Code)
+	}
+	created := requestJSON(t, fixture.srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{"product_id": fixture.productID, "contact_wechat": "contact", "message": "request"}, map[string]string{"Authorization": "Bearer " + str(buyer.Data["access_token"]), "X-Device-Id": "intent-device"})
+	if created.Code != common.CodeOK {
+		t.Fatalf("create intent: code %d", created.Code)
+	}
+	fixture.intentID = numToUint64(created.Data["intent_id"])
+	return fixture
+}
+
+func newOnShelfProductFixture(t *testing.T) idempotencyTransitionFixture {
+	t.Helper()
+	fixture := newMerchantTransitionFixture(t)
+	fixture.productID = createDraftProduct(t, fixture.srv, fixture.token)
+	fixture.path = fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", fixture.productID)
+	fixture.body = map[string]interface{}{}
+	return fixture
+}
+
+func newCompletedOrderFixture(t *testing.T) idempotencyTransitionFixture {
+	t.Helper()
+	fixture := newMerchantTransitionFixture(t)
+	fixture.productID = createAndOnShelfProduct(t, fixture.srv, fixture.token)
+	created := createMerchantOrder(t, fixture.token, fixture.productID, 1, 1000, fixture.srv.Router)
+	if created.Code != common.CodeOK {
+		t.Fatalf("create order: code %d", created.Code)
+	}
+	fixture.orderID = numToUint64(created.Data["order_id"])
+	fixture.path = fmt.Sprintf("/api/v1/merchant/orders/%d/complete", fixture.orderID)
+	fixture.body = map[string]interface{}{"note": "complete"}
+	return fixture
+}
+
+func newMerchantTransitionFixture(t *testing.T) idempotencyTransitionFixture {
+	t.Helper()
+	srv := newTestServer(t)
+	merchantID, username, password := registerMerchant(t, srv, "idempotency_transition")
+	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != common.CodeOK {
+		t.Fatalf("merchant login: code %d", login.Code)
+	}
+	return idempotencyTransitionFixture{srv: srv, token: str(login.Data["access_token"])}
+}
+
+func requestIdempotencyTransition(t *testing.T, fixture idempotencyTransitionFixture, key string) apiResp {
+	t.Helper()
+	return requestJSON(t, fixture.srv.Router, http.MethodPost, fixture.path, fixture.body, map[string]string{"Authorization": "Bearer " + fixture.token, "Idempotency-Key": key})
+}
+
+func snapshotIdempotencyTransition(t *testing.T, fixture idempotencyTransitionFixture) idempotencyTransitionSnapshot {
+	t.Helper()
+	var snapshot idempotencyTransitionSnapshot
+	if fixture.productID != 0 {
+		if err := fixture.srv.DB.First(&snapshot.product, fixture.productID).Error; err != nil {
+			t.Fatalf("load product snapshot: %v", err)
+		}
+	}
+	if fixture.intentID != 0 {
+		if err := fixture.srv.DB.First(&snapshot.intent, fixture.intentID).Error; err != nil {
+			t.Fatalf("load intent snapshot: %v", err)
+		}
+	}
+	if fixture.orderID != 0 {
+		if err := fixture.srv.DB.First(&snapshot.order, fixture.orderID).Error; err != nil {
+			t.Fatalf("load order snapshot: %v", err)
+		}
+	}
+	for _, count := range []struct {
+		model interface{}
+		dest  *int64
+	}{
+		{&model.OrderEvent{}, &snapshot.orderEventCount},
+		{&model.OperationLog{}, &snapshot.operationLogCount},
+		{&model.IdempotencyRecord{}, &snapshot.idempotencyRecords},
+	} {
+		if err := fixture.srv.DB.Model(count.model).Count(count.dest).Error; err != nil {
+			t.Fatalf("count transition snapshot: %v", err)
+		}
+	}
+	return snapshot
+}
+
+func assertIdempotencyTransitionSnapshot(t *testing.T, fixture idempotencyTransitionFixture, want idempotencyTransitionSnapshot) {
+	t.Helper()
+	if got := snapshotIdempotencyTransition(t, fixture); !reflect.DeepEqual(got, want) {
+		t.Fatal("failed idempotent transition changed persisted state")
+	}
+}
+
+func assertSuccessfulIdempotencyTransition(t *testing.T, transition idempotencyTransitionCase, fixture idempotencyTransitionFixture, response apiResp, replay bool) {
+	t.Helper()
+	if response.HTTPStatus != http.StatusOK || response.Code != common.CodeOK {
+		t.Fatalf("successful idempotent transition response = status %d, code %d", response.HTTPStatus, response.Code)
+	}
+	transition.assertData(t, fixture, response)
+	if got, ok := response.Data["idempotent"].(bool); !ok || got != replay {
+		t.Fatalf("idempotent flag = %v, want %t", response.Data["idempotent"], replay)
+	}
+}
+
+func assertSingleTerminalRecord(t *testing.T, fixture idempotencyTransitionFixture, key string) {
+	t.Helper()
+	var count int64
+	if err := fixture.srv.DB.Model(&model.IdempotencyRecord{}).Where("idem_key = ?", key).Count(&count).Error; err != nil {
+		t.Fatalf("count terminal records: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("terminal record count = %d", count)
+	}
+}
+
+func failGORMTableOperation(t *testing.T, db *gorm.DB, operation string, table string, forced error) {
+	t.Helper()
+	name := gormTableOperationCallbackName(t, operation, table)
+	callback := func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Table == table {
+			tx.AddError(forced)
+		}
+	}
+	var err error
+	switch operation {
+	case "create":
+		err = db.Callback().Create().Before("gorm:create").Register(name, callback)
+	case "update":
+		err = db.Callback().Update().Before("gorm:update").Register(name, callback)
+	default:
+		t.Fatalf("unsupported GORM operation %q", operation)
+	}
+	if err != nil {
+		t.Fatalf("register %s callback for %s: %v", operation, table, err)
+	}
+	t.Cleanup(func() { removeGORMTableOperation(t, db, operation, table) })
+}
+
+func removeGORMTableOperation(t *testing.T, db *gorm.DB, operation string, table string) {
+	t.Helper()
+	switch operation {
+	case "create":
+		_ = db.Callback().Create().Remove(gormTableOperationCallbackName(t, operation, table))
+	case "update":
+		_ = db.Callback().Update().Remove(gormTableOperationCallbackName(t, operation, table))
+	default:
+		t.Fatalf("unsupported GORM operation %q", operation)
+	}
+}
+
+func gormTableOperationCallbackName(t *testing.T, operation string, table string) string {
+	return "idempotency-handlers:" + strings.ReplaceAll(t.Name(), "/", "-") + ":" + operation + ":" + table
+}

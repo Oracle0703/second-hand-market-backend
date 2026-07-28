@@ -171,57 +171,53 @@ func (s *Server) handleMerchantIntentContacted(c *gin.Context) {
 	}
 
 	payload := gin.H{"id": id, "to_status": model.IntentContacted}
-	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]interface{}, error) {
 		result := map[string]interface{}{}
-		err := s.DB.Transaction(func(tx *gorm.DB) error {
-			intent, err := s.loadOwnedIntent(tx, id, actor.MerchantID)
-			if err != nil {
-				return err
-			}
-			if intent.Status == model.IntentContacted {
-				result["intent_id"] = intent.ID
-				result["from_status"] = intent.Status
-				result["to_status"] = intent.Status
-				result["idempotent"] = true
-				return nil
-			}
-			if intent.Status != model.IntentNew {
-				return common.ErrInvalidTransition
-			}
-			now := time.Now()
-			current, won, err := compareAndSetBuyerIntentTransition(tx, intent, map[string]interface{}{
-				"status":     model.IntentContacted,
-				"handled_by": actor.UserID,
-				"handled_at": &now,
-			})
-			if err != nil {
-				return err
-			}
-			if !won {
-				if current.MerchantID != actor.MerchantID {
-					return common.ErrForbidden
-				}
-				if current.Status == model.IntentContacted {
-					result["intent_id"] = current.ID
-					result["from_status"] = current.Status
-					result["to_status"] = current.Status
-					result["idempotent"] = true
-					return nil
-				}
-				return common.ErrInvalidTransition
-			}
-			from, to := intent.Status, model.IntentContacted
-			s.writeOperationLog(c, tx, "intent", intent.ID, "merchant_intent_contacted", &from, &to, common.CodeOK, &actor.MerchantID, nil)
+		intent, err := s.loadOwnedIntent(tx, id, actor.MerchantID)
+		if err != nil {
+			return nil, err
+		}
+		if intent.Status == model.IntentContacted {
 			result["intent_id"] = intent.ID
 			result["from_status"] = intent.Status
-			result["to_status"] = model.IntentContacted
-			result["idempotent"] = false
-			result["handled_at"] = now.Format(time.RFC3339)
-			return nil
+			result["to_status"] = intent.Status
+			result["idempotent"] = true
+			return result, nil
+		}
+		if intent.Status != model.IntentNew {
+			return nil, common.ErrInvalidTransition
+		}
+		now := time.Now()
+		current, won, err := compareAndSetBuyerIntentTransition(tx, intent, map[string]interface{}{
+			"status":     model.IntentContacted,
+			"handled_by": actor.UserID,
+			"handled_at": &now,
 		})
 		if err != nil {
 			return nil, err
 		}
+		if !won {
+			if current.MerchantID != actor.MerchantID {
+				return nil, common.ErrForbidden
+			}
+			if current.Status == model.IntentContacted {
+				result["intent_id"] = current.ID
+				result["from_status"] = current.Status
+				result["to_status"] = current.Status
+				result["idempotent"] = true
+				return result, nil
+			}
+			return nil, common.ErrInvalidTransition
+		}
+		from, to := intent.Status, model.IntentContacted
+		if err := s.writeOperationLog(c, tx, "intent", intent.ID, "merchant_intent_contacted", &from, &to, common.CodeOK, &actor.MerchantID, nil); err != nil {
+			return nil, err
+		}
+		result["intent_id"] = intent.ID
+		result["from_status"] = intent.Status
+		result["to_status"] = model.IntentContacted
+		result["idempotent"] = false
+		result["handled_at"] = now.Format(time.RFC3339)
 		return result, nil
 	})
 	if err != nil {
@@ -251,58 +247,54 @@ func (s *Server) handleMerchantIntentClose(c *gin.Context) {
 	}
 
 	payload := gin.H{"id": id, "to_status": model.IntentClosed, "reason": req.Reason, "merchant_note": req.MerchantNote}
-	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]interface{}, error) {
 		result := map[string]interface{}{}
-		err := s.DB.Transaction(func(tx *gorm.DB) error {
-			intent, err := s.loadOwnedIntent(tx, id, actor.MerchantID)
-			if err != nil {
-				return err
-			}
-			for {
-				if intent.Status == model.IntentClosed {
-					result["intent_id"] = intent.ID
-					result["from_status"] = intent.Status
-					result["to_status"] = intent.Status
-					result["idempotent"] = true
-					return nil
-				}
-				if intent.Status != model.IntentNew && intent.Status != model.IntentContacted {
-					return common.ErrInvalidTransition
-				}
-				now := time.Now()
-				current, won, err := compareAndSetBuyerIntentTransition(tx, intent, map[string]interface{}{
-					"status":        model.IntentClosed,
-					"is_open":       false,
-					"handled_by":    actor.UserID,
-					"handled_at":    &now,
-					"closed_at":     &now,
-					"close_reason":  req.Reason,
-					"merchant_note": req.MerchantNote,
-				})
-				if err != nil {
-					return err
-				}
-				if !won {
-					if current.MerchantID != actor.MerchantID {
-						return common.ErrForbidden
-					}
-					intent = current
-					continue
-				}
-				from, to := intent.Status, model.IntentClosed
-				s.writeOperationLog(c, tx, "intent", intent.ID, "merchant_intent_close", &from, &to, common.CodeOK, &actor.MerchantID, nil)
-				result["intent_id"] = intent.ID
-				result["from_status"] = intent.Status
-				result["to_status"] = model.IntentClosed
-				result["idempotent"] = false
-				result["closed_at"] = now.Format(time.RFC3339)
-				return nil
-			}
-		})
+		intent, err := s.loadOwnedIntent(tx, id, actor.MerchantID)
 		if err != nil {
 			return nil, err
 		}
-		return result, nil
+		for {
+			if intent.Status == model.IntentClosed {
+				result["intent_id"] = intent.ID
+				result["from_status"] = intent.Status
+				result["to_status"] = intent.Status
+				result["idempotent"] = true
+				return result, nil
+			}
+			if intent.Status != model.IntentNew && intent.Status != model.IntentContacted {
+				return nil, common.ErrInvalidTransition
+			}
+			now := time.Now()
+			current, won, err := compareAndSetBuyerIntentTransition(tx, intent, map[string]interface{}{
+				"status":        model.IntentClosed,
+				"is_open":       false,
+				"handled_by":    actor.UserID,
+				"handled_at":    &now,
+				"closed_at":     &now,
+				"close_reason":  req.Reason,
+				"merchant_note": req.MerchantNote,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if !won {
+				if current.MerchantID != actor.MerchantID {
+					return nil, common.ErrForbidden
+				}
+				intent = current
+				continue
+			}
+			from, to := intent.Status, model.IntentClosed
+			if err := s.writeOperationLog(c, tx, "intent", intent.ID, "merchant_intent_close", &from, &to, common.CodeOK, &actor.MerchantID, nil); err != nil {
+				return nil, err
+			}
+			result["intent_id"] = intent.ID
+			result["from_status"] = intent.Status
+			result["to_status"] = model.IntentClosed
+			result["idempotent"] = false
+			result["closed_at"] = now.Format(time.RFC3339)
+			return result, nil
+		}
 	})
 	if err != nil {
 		common.Fail(c, err)

@@ -516,68 +516,64 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 		return
 	}
 	payload := gin.H{"id": id, "to_status": toStatus}
-	data, err := s.runWithLegacyIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
-		err := s.DB.Transaction(func(tx *gorm.DB) error {
-			product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)
-			if err != nil {
-				return err
-			}
-			fromStatus := product.Status
-			if product.Status == toStatus {
-				resp["product_id"] = product.ID
-				resp["from_status"] = product.Status
-				resp["to_status"] = product.Status
-				resp["changed_at"] = time.Now().Format(time.RFC3339)
-				resp["idempotent"] = true
-				return nil
-			}
-			if !stateflow.CanTransitionProduct(product.Status, toStatus) {
-				return common.ErrInvalidTransition
-			}
-			if toStatus == model.ProductOnShelf {
-				if err := s.checkProductReadyForOnShelf(tx, product.ID); err != nil {
-					return err
-				}
-				now := time.Now()
-				product.ShelfAt = &now
-			}
-			if toStatus == model.ProductOffShelf {
-				now := time.Now()
-				product.OffShelfAt = &now
-			}
-			if toStatus == model.ProductClosed {
-				if product.ReservedStock != 0 {
-					return common.ErrInvalidTransition
-				}
-				var activeOrderCount int64
-				if err := tx.Model(&model.Order{}).Where("product_id = ? AND is_active = ?", product.ID, true).Count(&activeOrderCount).Error; err != nil {
-					return err
-				}
-				if activeOrderCount > 0 {
-					return common.ErrInvalidTransition
-				}
-				now := time.Now()
-				product.ClosedAt = &now
-			}
-			product.Status = toStatus
-			product.UpdatedBy = actor.UserID
-			product.Version++
-			if err := tx.Save(&product).Error; err != nil {
-				return err
-			}
-			from, to := fromStatus, toStatus
-			s.writeOperationLog(c, tx, "product", product.ID, action, &from, &to, common.CodeOK, &actor.MerchantID, nil)
-			resp["product_id"] = product.ID
-			resp["from_status"] = fromStatus
-			resp["to_status"] = toStatus
-			resp["changed_at"] = time.Now().Format(time.RFC3339)
-			resp["idempotent"] = false
-			return nil
-		})
+		product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)
 		if err != nil {
 			return nil, err
 		}
+		fromStatus := product.Status
+		if product.Status == toStatus {
+			resp["product_id"] = product.ID
+			resp["from_status"] = product.Status
+			resp["to_status"] = product.Status
+			resp["changed_at"] = time.Now().Format(time.RFC3339)
+			resp["idempotent"] = true
+			return resp, nil
+		}
+		if !stateflow.CanTransitionProduct(product.Status, toStatus) {
+			return nil, common.ErrInvalidTransition
+		}
+		if toStatus == model.ProductOnShelf {
+			if err := s.checkProductReadyForOnShelf(tx, product.ID); err != nil {
+				return nil, err
+			}
+			now := time.Now()
+			product.ShelfAt = &now
+		}
+		if toStatus == model.ProductOffShelf {
+			now := time.Now()
+			product.OffShelfAt = &now
+		}
+		if toStatus == model.ProductClosed {
+			if product.ReservedStock != 0 {
+				return nil, common.ErrInvalidTransition
+			}
+			var activeOrderCount int64
+			if err := tx.Model(&model.Order{}).Where("product_id = ? AND is_active = ?", product.ID, true).Count(&activeOrderCount).Error; err != nil {
+				return nil, err
+			}
+			if activeOrderCount > 0 {
+				return nil, common.ErrInvalidTransition
+			}
+			now := time.Now()
+			product.ClosedAt = &now
+		}
+		product.Status = toStatus
+		product.UpdatedBy = actor.UserID
+		product.Version++
+		if err := tx.Save(&product).Error; err != nil {
+			return nil, err
+		}
+		from, to := fromStatus, toStatus
+		if err := s.writeOperationLog(c, tx, "product", product.ID, action, &from, &to, common.CodeOK, &actor.MerchantID, nil); err != nil {
+			return nil, err
+		}
+		resp["product_id"] = product.ID
+		resp["from_status"] = fromStatus
+		resp["to_status"] = toStatus
+		resp["changed_at"] = time.Now().Format(time.RFC3339)
+		resp["idempotent"] = false
 		return resp, nil
 	})
 	if err != nil {

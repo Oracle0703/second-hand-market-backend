@@ -452,9 +452,9 @@ func (s *Server) dbError(err error) error {
 	return err
 }
 
-func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) {
+func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) error {
 	logItem := s.buildOperationLog(c, resourceType, resourceID, action, fromStatus, toStatus, code, merchantID, detail)
-	_ = s.insertOperationLog(tx, &logItem)
+	return s.insertOperationLog(tx, &logItem)
 }
 
 func (s *Server) buildOperationLog(c *gin.Context, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) model.OperationLog {
