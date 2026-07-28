@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -43,10 +45,6 @@ func TestLicenseFilePrivacyAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 		}
 	}
 	for _, path := range licensePrivacyRequiredPaths() {
-		if path == "backend/tests/license_file_privacy_acceptance_contract_test.go" {
-			// This uncommitted contract is asserted in the committed fixture below.
-			continue
-		}
 		if !present[path] {
 			t.Errorf("source-list mode omitted required committed path %q", path)
 		}
@@ -58,6 +56,11 @@ func TestLicenseFilePrivacyAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 	runLicensePrivacyGit(t, fixtureRepo, "commit", "-q", "-m", "committed source")
 	writeLicensePrivacyFixtureFile(t, fixtureRepo, "backend/committed.go", "package backend\nconst FromHEAD = false\n", 0o600)
 	writeLicensePrivacyFixtureFile(t, fixtureRepo, "backend/untracked.go", "package backend\n", 0o600)
+	writeLicensePrivacyFixtureFile(t, fixtureRepo, "backend/control\nname.go", "package backend\n", 0o600)
+	writeLicensePrivacyFixtureFile(t, fixtureRepo, "backend/back\\slash.go", "package backend\n", 0o600)
+	writeLicensePrivacyFixtureFile(t, fixtureRepo, "backend/nonportable-\u2603.go", "package backend\n", 0o600)
+	runLicensePrivacyGit(t, fixtureRepo, "add", "--", "backend/control\nname.go", "backend/back\\slash.go", "backend/nonportable-\u2603.go")
+	runLicensePrivacyGit(t, fixtureRepo, "commit", "-q", "-m", "nonportable source names")
 	writeLicensePrivacyFixtureFile(t, fixtureRepo, "backend/staged_only.go", "package backend\n", 0o600)
 	runLicensePrivacyGit(t, fixtureRepo, "add", "--", "backend/staged_only.go")
 	cmd = exec.Command("/bin/bash", fixtureScript)
@@ -68,7 +71,9 @@ func TestLicenseFilePrivacyAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 		t.Fatalf("run fixture source-list mode: %v", err)
 	}
 	paths := strings.Join(licensePrivacySplitNULPaths(t, output), "\n")
-	if !strings.Contains(paths, "backend/committed.go") || strings.Contains(paths, "backend/untracked.go") || strings.Contains(paths, "backend/staged_only.go") {
+	if !strings.Contains(paths, "backend/committed.go") || strings.Contains(paths, "backend/untracked.go") ||
+		strings.Contains(paths, "backend/staged_only.go") || strings.Contains(paths, "control\nname.go") ||
+		strings.Contains(paths, "back\\slash.go") || strings.Contains(paths, "nonportable-") {
 		t.Fatalf("fixture source list did not bind HEAD only: %q", paths)
 	}
 	for _, path := range licensePrivacyRequiredPaths() {
@@ -158,6 +163,29 @@ func TestLicenseFilePrivacyAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 	if err := cmd.Run(); err == nil {
 		t.Fatal("combined source modes unexpectedly succeeded")
 	}
+
+	t.Run("final chmod failure removes incomplete export", func(t *testing.T) {
+		stubDir := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case " $* " in
+  *"source-files.z "*) exit 73;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "interrupted-package")
+		command := exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixtureRepo
+		command.Env = []string{
+			"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + destination,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export unexpectedly survived final chmod failure: %s", output)
+		}
+		if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed export destination was retained: %v", err)
+		}
+	})
 }
 
 func TestLicenseFilePrivacyAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T) {
@@ -174,6 +202,17 @@ func TestLicenseFilePrivacyAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		mutate func(t *testing.T, remote, packageDir string)
 	}{
 		{"wrong authorization digest", func(t *testing.T, _, _ string) {}},
+		{"extra package file", func(t *testing.T, _, packageDir string) {
+			writeLicensePrivacyFixtureFile(t, packageDir, "unexpected.txt", "unexpected\n", 0o600)
+		}},
+		{"extra package directory", func(t *testing.T, _, packageDir string) {
+			if err := os.Mkdir(filepath.Join(packageDir, "unexpected"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"noncanonical package manifest whitespace", func(t *testing.T, _, packageDir string) {
+			licensePrivacyWritePackageManifest(t, packageDir, " ")
+		}},
 		{"changed package artifact", func(t *testing.T, _, packageDir string) {
 			writeLicensePrivacyFixtureFile(t, packageDir, "source.tar", "tampered", 0o600)
 		}},
@@ -192,6 +231,68 @@ func TestLicenseFilePrivacyAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			if err := os.Symlink("source-files.z", filepath.Join(packageDir, "source.tar")); err != nil {
 				t.Fatal(err)
 			}
+		}},
+		{"received source symlink", func(t *testing.T, remote, _ string) {
+			if err := os.Remove(filepath.Join(remote, "Makefile")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("backend/go.mod", filepath.Join(remote, "Makefile")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"archive extra file", func(t *testing.T, _, packageDir string) {
+			licensePrivacyRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "", "backend/archive-extra.go", "")
+			licensePrivacyWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive missing file", func(t *testing.T, _, packageDir string) {
+			licensePrivacyRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "Makefile", "", "")
+			licensePrivacyWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"archive symlink entry", func(t *testing.T, _, packageDir string) {
+			licensePrivacyRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "", "", "Makefile")
+			licensePrivacyWritePackageManifest(t, packageDir, "  ")
+		}},
+		{"unsorted source list", func(t *testing.T, _, packageDir string) {
+			paths := licensePrivacyReadSourcePaths(t, packageDir)
+			paths[0], paths[1] = paths[1], paths[0]
+			licensePrivacyWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"duplicate source list", func(t *testing.T, _, packageDir string) {
+			paths := licensePrivacyReadSourcePaths(t, packageDir)
+			paths = append(paths, paths[0])
+			sort.Strings(paths)
+			licensePrivacyWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"forbidden source list", func(t *testing.T, _, packageDir string) {
+			paths := append(licensePrivacyReadSourcePaths(t, packageDir), "backend/.env")
+			sort.Strings(paths)
+			licensePrivacyWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"nonportable source list", func(t *testing.T, _, packageDir string) {
+			paths := append(licensePrivacyReadSourcePaths(t, packageDir), "backend/control\nname.go")
+			sort.Strings(paths)
+			licensePrivacyWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"dot component source list", func(t *testing.T, _, packageDir string) {
+			paths := append(licensePrivacyReadSourcePaths(t, packageDir), "backend/./dot.go")
+			sort.Strings(paths)
+			licensePrivacyWriteSourcePaths(t, packageDir, paths)
+		}},
+		{"missing required source list", func(t *testing.T, _, packageDir string) {
+			paths := licensePrivacyReadSourcePaths(t, packageDir)
+			licensePrivacyWriteSourcePaths(t, packageDir, paths[1:])
+		}},
+		{"mismatched per-file hash", func(t *testing.T, _, packageDir string) {
+			manifestPath := filepath.Join(packageDir, "source-sha256.txt")
+			raw, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			copy(raw[:64], strings.Repeat("0", 64))
+			if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			licensePrivacyWritePackageManifest(t, packageDir, "  ")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -255,6 +356,11 @@ exit 0
 	if runErr == nil {
 		t.Fatal("controlled Docker failure unexpectedly succeeded")
 	}
+	for _, forbidden := range []string{"Authorization", "Bearer", "license-privacy-secret"} {
+		if bytes.Contains(output, []byte(forbidden)) {
+			t.Fatalf("controlled raw failure leaked %q to caller output: %q", forbidden, output)
+		}
+	}
 	evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
 	entries, err := os.ReadDir(evidence)
 	if err != nil {
@@ -275,26 +381,154 @@ exit 0
 	if strings.Contains(retained.String(), "license-privacy-secret") || strings.Contains(retained.String(), "missing-file-records") {
 		t.Fatalf("retained evidence leaked raw output: %q", retained.String())
 	}
+	results, err := os.ReadFile(filepath.Join(evidence, "acceptance-results.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultLines := strings.Split(strings.TrimSuffix(string(results), "\n"), "\n")
+	if len(resultLines) != 2 || !strings.HasPrefix(resultLines[0], "classification=source_package|result=PASS|count=") ||
+		resultLines[1] != "classification=acceptance_failure|result=FAIL|stage=mysql_start|count=1" {
+		t.Fatalf("retained failure classifications are not fixed and ordered: %q", results)
+	}
+	if scan, err := os.ReadFile(filepath.Join(evidence, "evidence-leak-scan.txt")); err != nil || string(scan) != "classification=evidence_scan|result=PASS|count=0\n" {
+		t.Fatalf("evidence scan result = %q, %v", scan, err)
+	}
 	check := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
 	check.Dir = evidence
 	if output, err := check.CombinedOutput(); err != nil {
 		t.Fatalf("verify evidence hashes: %v: %s", err, output)
 	}
+
+	t.Run("unsafe snapshot uses hardcoded fallback", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		stateDir := filepath.Join(t.TempDir(), "docker-state")
+		stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+args=" $* "
+mkdir -p "$DOCKER_STATE"
+case "$args" in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" container ls "*"name=^/secondhand-market-"*)
+    count=0
+    [ ! -f "$DOCKER_STATE/lookups" ] || count="$(cat "$DOCKER_STATE/lookups")"
+    count=$((count + 1)); printf '%s\n' "$count" >"$DOCKER_STATE/lookups"
+    [ "$count" -ne 4 ] || printf 'secondhand-market-api\n'
+    exit 0
+    ;;
+  *" inspect "*) printf '/secondhand-market-api|Authorization|unsafe|0\n'; exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) printf 'Bearer fallback-secret\n' >&2; exit 42;;
+esac
+exit 0
+`)
+		output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir,
+			filepath.Join(t.TempDir(), "docker-called"), "", []string{"DOCKER_STATE=" + stateDir})
+		if err == nil {
+			t.Fatal("unsafe controlled failure unexpectedly succeeded")
+		}
+		if bytes.Contains(output, []byte("fallback-secret")) {
+			t.Fatalf("fallback raw output leaked to caller: %q", output)
+		}
+		evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+		entries, err := os.ReadDir(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 3 {
+			t.Fatalf("fallback evidence entries = %v, want exactly three", entries)
+		}
+		results, err := os.ReadFile(filepath.Join(evidence, "acceptance-results.txt"))
+		if err != nil || string(results) != "classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n" {
+			t.Fatalf("fallback classification = %q, %v", results, err)
+		}
+		check := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
+		check.Dir = evidence
+		if output, err := check.CombinedOutput(); err != nil {
+			t.Fatalf("verify fallback evidence hashes: %v: %s", err, output)
+		}
+	})
 }
 
 func TestLicenseFilePrivacyAcceptancePreservesBehaviorMatrix(t *testing.T) {
-	script, err := os.ReadFile(filepath.Join(licensePrivacyAcceptanceRepoDir(t), "deploy/acceptance/license-file-privacy-smoke.sh"))
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	logPath := filepath.Join(t.TempDir(), "docker-sequence")
+	stubDir := licensePrivacyBehaviorDockerStub(t)
+	output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, "", []string{
+		"DOCKER_SEQUENCE=" + logPath,
+		"DOCKER_STATE=" + filepath.Join(t.TempDir(), "docker-state"),
+	})
+	if err != nil {
+		t.Fatalf("complete behavior matrix failed against deterministic Docker boundary: %v: %s", err, output)
+	}
+	raw, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{
-		"expect_preflight_failure missing-file-records", "expect_preflight_failure both-file-tables", "missing-column-$column", "missing-index-owner", "empty-license-object-key", "merchant-uploader-mismatch",
-		"0007_license_file_privacy.preflight.sql", "0008_anonymous_upload_governance.preflight.sql", "0009_buyer_intent_open_uniqueness.preflight.sql", "AUTO_MIGRATE=false", "AUTO_MIGRATE=true", "production-before", "production-after",
-	} {
-		if !bytes.Contains(script, []byte(marker)) {
-			t.Errorf("license privacy behavior matrix omitted %q", marker)
-		}
+	got := strings.Fields(string(raw))
+	want := []string{
+		"production-before",
+		"dirty-preflight-01", "dirty-preflight-02", "dirty-preflight-03", "dirty-preflight-04",
+		"dirty-preflight-05", "dirty-preflight-06", "dirty-preflight-07", "dirty-preflight-08",
+		"dirty-preflight-09", "dirty-preflight-10", "dirty-preflight-11", "dirty-preflight-12",
+		"dirty-preflight-13", "dirty-preflight-14",
+		"clean-0007-preflight", "clean-0007-up", "clean-0007-postflight",
+		"clean-0008-preflight", "clean-0008-up", "clean-0008-postflight",
+		"clean-0009-preflight", "clean-0009-up", "clean-0009-postflight",
+		"focused-auto-migrate-false", "focused-auto-migrate-true", "production-after",
 	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("executed behavior matrix sequence =\n%s\nwant =\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+	results, err := os.ReadFile(filepath.Join(evidence, "acceptance-results.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(results), "\n"), "\n")
+	if len(lines) != 7 || !strings.HasPrefix(lines[0], "classification=source_package|result=PASS|count=") ||
+		lines[1] != "classification=mysql_version|result=PASS|count=1" ||
+		lines[2] != "classification=license_preflight_failures|result=PASS|count=14" ||
+		lines[3] != "classification=clean_migration|result=PASS|count=1" ||
+		lines[4] != "classification=api_auto_migrate_false|result=PASS|count=1" ||
+		lines[5] != "classification=api_auto_migrate_true|result=PASS|count=1" ||
+		lines[6] != "classification=production_snapshot|result=PASS|count=3" {
+		t.Fatalf("success classifications are not exact and ordered: %q", results)
+	}
+
+	t.Run("publication failure leaves no partial evidence", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+		writeLicensePrivacyFixtureFile(t, stubDir, "tar", `#!/bin/sh
+if [ "$*" = "-cf - ." ]; then exit 74; fi
+exec /usr/bin/tar "$@"
+`, 0o700)
+		output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+		if err == nil {
+			t.Fatalf("forced publication failure unexpectedly succeeded: %s", output)
+		}
+		retained := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+		if _, err := os.Lstat(retained); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("partial retained evidence survived publication failure: %v", err)
+		}
+		parent := filepath.Dir(retained)
+		entries, err := os.ReadDir(parent)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") {
+				t.Fatalf("partial sibling publication directory survived: %q", entry.Name())
+			}
+		}
+	})
 }
 
 func prepareMetadataFreeLicensePrivacyAcceptance(t *testing.T) (string, string, string) {
@@ -318,6 +552,11 @@ func prepareMetadataFreeLicensePrivacyAcceptance(t *testing.T) (string, string, 
 
 func runLicensePrivacyAcceptance(t *testing.T, remote, packageDir, script, stubDir, marker, digest string) ([]byte, error) {
 	t.Helper()
+	return runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, digest, nil)
+}
+
+func runLicensePrivacyAcceptanceWithEnv(t *testing.T, remote, packageDir, script, stubDir, marker, digest string, extraEnv []string) ([]byte, error) {
+	t.Helper()
 	manifest, err := os.ReadFile(filepath.Join(packageDir, "package-sha256.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -328,9 +567,9 @@ func runLicensePrivacyAcceptance(t *testing.T, remote, packageDir, script, stubD
 	}
 	command := exec.Command("/bin/bash", script)
 	command.Dir = remote
-	command.Env = []string{
+	command.Env = append([]string{
 		"LICENSE_FILE_PRIVACY_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_LICENSE_PRIVACY_DATA", "ACCEPTANCE_DB_ENGINE=mysql8.4", "COMPOSE_PROJECT_NAME=secondhand-license-privacy-acceptance", "LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_DIR=" + packageDir, "LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_MANIFEST_SHA256=" + digest, "DOCKER_CALLED=" + marker, "PATH=" + stubDir + ":" + os.Getenv("PATH"),
-	}
+	}, extraEnv...)
 	return command.CombinedOutput()
 }
 
@@ -341,6 +580,182 @@ func licensePrivacyDockerStub(t *testing.T, contents string) string {
 	return root
 }
 func licensePrivacyFileExists(path string) bool { _, err := os.Stat(path); return err == nil }
+
+func licensePrivacyReadSourcePaths(t *testing.T, packageDir string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(packageDir, "source-files.z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return licensePrivacySplitNULPaths(t, raw)
+}
+
+func licensePrivacyWriteSourcePaths(t *testing.T, packageDir string, paths []string) {
+	t.Helper()
+	var raw bytes.Buffer
+	for _, path := range paths {
+		raw.WriteString(path)
+		raw.WriteByte(0)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "source-files.z"), raw.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	licensePrivacyWritePackageManifest(t, packageDir, "  ")
+}
+
+func licensePrivacyWritePackageManifest(t *testing.T, packageDir, separator string) {
+	t.Helper()
+	var manifest strings.Builder
+	for _, name := range []string{"source-files.z", "source-sha256.txt", "source.tar"} {
+		raw, err := os.ReadFile(filepath.Join(packageDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(raw)
+		fmt.Fprintf(&manifest, "%s%s%s\n", hex.EncodeToString(digest[:]), separator, name)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package-sha256.txt"), []byte(manifest.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func licensePrivacyRewriteArchive(t *testing.T, archivePath, omit, extra, symlink string) {
+	t.Helper()
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(bytes.NewReader(raw))
+	var rewritten bytes.Buffer
+	writer := tar.NewWriter(&rewritten)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == omit {
+			continue
+		}
+		cloned := *header
+		if header.Name == symlink {
+			cloned.Typeflag = tar.TypeSymlink
+			cloned.Linkname = "backend/go.mod"
+			cloned.Size = 0
+			if err := writer.WriteHeader(&cloned); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := writer.WriteHeader(&cloned); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if extra != "" {
+		contents := []byte("package tests\n")
+		if err := writer.WriteHeader(&tar.Header{Name: extra, Mode: 0o600, Size: int64(len(contents)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, rewritten.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func licensePrivacyBehaviorDockerStub(t *testing.T) string {
+	t.Helper()
+	return licensePrivacyDockerStub(t, `#!/bin/sh
+args=" $* "
+state="$DOCKER_STATE"
+mkdir -p "$state"
+log() { printf '%s\n' "$1" >>"$DOCKER_SEQUENCE"; }
+increment() {
+  file="$state/$1"
+  value=0
+  [ ! -f "$file" ] || value="$(cat "$file")"
+  value=$((value + 1))
+  printf '%s\n' "$value" >"$file"
+  printf '%s\n' "$value"
+}
+case "$args" in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0;;
+esac
+case "$args" in
+  *" container ls "*"name=^/secondhand-market-"*)
+    count="$(increment production_lookup)"
+    [ "$count" -ne 1 ] || log production-before
+    [ "$count" -ne 4 ] || log production-after
+    exit 0
+    ;;
+  *" inspect "*) exit 0;;
+  *" compose "*" stop "*|*" compose "*" up "*|*" compose "*" build "*) exit 0;;
+  *"SELECT VERSION()"*) printf '8.4.0\n'; exit 0;;
+  *"table_name='file_records'"*) printf '1\n'; exit 0;;
+  *"table_name='files'"*) printf '0\n'; exit 0;;
+  *"SELECT CONCAT("*) printf 'rows=2|licenses=1|digest=fixture\n'; exit 0;;
+  *"SELECT url FROM file_records WHERE id=302"*) printf '/uploads/product.jpg\n'; exit 0;;
+  *"SELECT url FROM file_records WHERE id=301"*)
+    count="$(increment license_url)"
+    [ "$count" -ne 1 ] || printf '/uploads/license.jpg\n'
+    exit 0
+    ;;
+  *"SELECT COUNT(*) FROM file_records WHERE biz_type='MERCHANT_LICENSE'"*) printf '1\n'; exit 0;;
+  *"SELECT COUNT(*) FROM file_records"*) printf '2\n'; exit 0;;
+  *"/acceptance/migrations/0007_license_file_privacy.preflight.sql"*)
+    count="$(increment privacy_preflight)"
+    if [ "$count" -le 14 ]; then
+      printf 'dirty-preflight-%02d\n' "$count" >>"$DOCKER_SEQUENCE"
+      printf '%s\n' 'ERROR 1644 (45000)' \
+        'license privacy preflight: canonical file_records table is required' \
+        'license privacy preflight: legacy files table must not exist' \
+        'license privacy preflight: owner_merchant_id is missing or drifted' \
+        'license privacy preflight: capability_token_hash is missing or drifted' \
+        'license privacy preflight: capability_expires_at is missing or drifted' \
+        'license privacy preflight: owner/biz/scan index is missing or drifted' \
+        'license privacy preflight: capability token index is missing or drifted' \
+        'license privacy preflight: capability expiry index is missing or drifted' \
+        'license privacy preflight: invalid merchant license record' \
+        'license privacy preflight: invalid bound merchant license' >&2
+      exit 1
+    fi
+    log clean-0007-preflight
+    printf 'license_file_privacy_preflight_passed\n'
+    exit 0
+    ;;
+  *"/acceptance/migrations/0007_license_file_privacy.up.sql"*) log clean-0007-up; exit 0;;
+  *"/acceptance/migrations/0007_license_file_privacy.postflight.sql"*)
+    count="$(increment privacy_postflight)"
+    [ "$count" -ne 1 ] || log clean-0007-postflight
+    printf 'license_file_privacy_postflight_passed\n'
+    exit 0
+    ;;
+  *"/acceptance/migrations/0008_anonymous_upload_governance.preflight.sql"*) log clean-0008-preflight; exit 0;;
+  *"/acceptance/migrations/0008_anonymous_upload_governance.up.sql"*) log clean-0008-up; exit 0;;
+  *"/acceptance/migrations/0008_anonymous_upload_governance.postflight.sql"*) log clean-0008-postflight; exit 0;;
+  *"/acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql"*) log clean-0009-preflight; exit 0;;
+  *"/acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql"*) log clean-0009-up; exit 0;;
+  *"/acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql"*) log clean-0009-postflight; exit 0;;
+  *" AUTO_MIGRATE=false "*) log focused-auto-migrate-false; printf '%s\n' '--- PASS: TestLicenseFilePrivacyWithMigrationOnlyMySQL'; exit 0;;
+  *" AUTO_MIGRATE=true "*) log focused-auto-migrate-true; printf '%s\n' '--- PASS: TestLicenseFilePrivacyWithMigrationOnlyMySQL'; exit 0;;
+esac
+exit 0
+`)
+}
 
 func licensePrivacyRequiredPaths() []string {
 	return []string{

@@ -12,6 +12,12 @@ project_touched=0
 evidence_eligible=0
 success=0
 current_stage="preflight"
+sanitization_failed=0
+evidence_publish_tmp=""
+source_export_dir=""
+source_export_runtime=""
+source_export_complete=0
+evidence_forbidden_pattern='Authorization|Bearer[[:space:]]|access_token|refresh_token|token["=:]|password["=:]|DB_DSN=|MYSQL_(DATABASE|USER|PASSWORD|ROOT_PASSWORD)=|JWT_(ACCESS|REFRESH)_SECRET=|license-privacy-secret|TestLicenseFilePrivacy|000[0-9]_[[:alnum:]_-]+\.(preflight|up|postflight)\.sql|missing-file-records'
 compose=(docker compose --project-name "$project_name" --env-file "$base_dir/.env" --file "$base_dir/docker-compose.yml")
 production_containers=(secondhand-market-api secondhand-market-web secondhand-market-mysql)
 
@@ -54,11 +60,23 @@ source_path_is_allowed() {
   return 1
 }
 
+source_path_is_portable() {
+  local path="$1" component
+  local -a components=()
+  [[ -n "$path" && "$path" != /* && "$path" != *//* &&
+    "$path" != *[!A-Za-z0-9_./-]* ]] || return 1
+  IFS=/ read -r -a components <<<"$path"
+  for component in "${components[@]}"; do
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+  done
+}
+
 write_source_file_list() {
   (
     cd "$repo_dir"
     git ls-tree -r --name-only -z HEAD -- Makefile backend deploy/acceptance |
       while IFS= read -r -d '' path; do
+        source_path_is_portable "$path" || continue
         source_path_is_forbidden "$path" && continue
         source_path_is_allowed "$path" && printf '%s\0' "$path"
       done | LC_ALL=C sort -zu
@@ -76,7 +94,7 @@ validate_source_list() {
   LC_ALL=C sort -zu "$source_list" >"$sorted_list"
   cmp -s "$source_list" "$sorted_list" || return 1
   while IFS= read -r -d '' path; do
-    [[ -n "$path" && "$path" != /* && "$path" != */*/*/../* && "$path" != ../* && "$path" != */../* && "$path" != *//* ]] || return 1
+    source_path_is_portable "$path" || return 1
     source_path_is_forbidden "$path" && return 1
     source_path_is_allowed "$path" || return 1
     count=$((count + 1))
@@ -101,15 +119,42 @@ write_directory_manifest() {
 }
 
 validate_package_checksums() {
-  local package_dir="$1" expected_hash expected_name actual_hash line_count=0
+  local package_dir="$1" expected_name actual_hash line line_count=0
   local -a names=(source-files.z source-sha256.txt source.tar)
-  while read -r expected_hash expected_name; do
-    [[ "$line_count" -lt 3 && "$expected_name" == "${names[$line_count]}" && "${#expected_hash}" -eq 64 && "$expected_hash" != *[!0-9a-f]* ]] || return 1
+  exec 3<"$package_dir/package-sha256.txt"
+  while [[ "$line_count" -lt 3 ]]; do
+    expected_name="${names[$line_count]}"
+    IFS= read -r line <&3 || { exec 3<&-; return 1; }
     actual_hash="$(sha256sum "$package_dir/$expected_name" | cut -d ' ' -f1)"
-    [[ "$actual_hash" == "$expected_hash" ]] || return 1
+    [[ "$line" == "$actual_hash  $expected_name" ]] || { exec 3<&-; return 1; }
     line_count=$((line_count + 1))
-  done <"$package_dir/package-sha256.txt"
-  [[ "$line_count" -eq 3 ]]
+  done
+  if IFS= read -r line <&3; then exec 3<&-; return 1; fi
+  exec 3<&-
+}
+
+validate_package_artifact_list() {
+  local package_dir="$1" path count=0
+  local -a names=(package-sha256.txt source-files.z source-sha256.txt source.tar)
+  while IFS= read -r -d '' path; do
+    [[ "$count" -lt 4 && "$path" == "./${names[$count]}" ]] || return 1
+    count=$((count + 1))
+  done < <(cd "$package_dir" && find . -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  [[ "$count" -eq 4 ]]
+}
+
+source_export_on_exit() {
+  local status="${1:-$?}"
+  trap - EXIT INT TERM
+  set +e
+  if [[ "$source_export_complete" -ne 1 && -n "$source_export_dir" &&
+    "$source_export_dir" == /* && "$source_export_dir" != / && -e "$source_export_dir" ]]; then
+    rm -r -- "$source_export_dir"
+  fi
+  if [[ -n "$source_export_runtime" && -d "$source_export_runtime" ]]; then
+    rm -r -- "$source_export_runtime"
+  fi
+  exit "$status"
 }
 
 export_head_source() {
@@ -117,24 +162,74 @@ export_head_source() {
   local -a archive_paths=()
   [[ "$export_dir" == /* && "$export_dir" != / && ! -e "$export_dir" ]] || { echo "LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2; return 1; }
   for command in git sha256sum sort mktemp tar chmod mkdir rm tr cmp find xargs; do command -v "$command" >/dev/null || { echo "required source export command is unavailable: $command" >&2; return 1; }; done
-  export_runtime="$(mktemp -d)"; extracted="$export_runtime/extracted"
-  if ! mkdir -p "$export_dir" "$extracted" || ! chmod 700 "$export_dir" "$export_runtime" "$extracted"; then rm -rf -- "$export_dir" "$export_runtime"; return 1; fi
-  if ! write_source_file_list >"$export_dir/source-files.z" || ! validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z"; then rm -rf -- "$export_dir" "$export_runtime"; return 1; fi
+  source_export_dir="$export_dir"
+  source_export_complete=0
+  trap source_export_on_exit EXIT
+  trap 'source_export_on_exit 130' INT
+  trap 'source_export_on_exit 143' TERM
+  export_runtime="$(mktemp -d)"; source_export_runtime="$export_runtime"; extracted="$export_runtime/extracted"
+  mkdir -p "$export_dir" "$extracted"
+  chmod 700 "$export_dir" "$export_runtime" "$extracted"
+  write_source_file_list >"$export_dir/source-files.z"
+  validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z" || { echo "committed HEAD source list is invalid" >&2; return 1; }
   while IFS= read -r -d '' path; do archive_paths+=("$path"); done <"$export_dir/source-files.z"
-  if [[ "${#archive_paths[@]}" -eq 0 ]] || ! ( cd "$repo_dir"; git archive --format=tar --output="$export_dir/source.tar" HEAD -- "${archive_paths[@]}" ) || ! tar -C "$extracted" -xf "$export_dir/source.tar" || ! validate_received_source_files "$extracted" "$export_dir/source-files.z" || ! write_context_file_list "$extracted" >"$export_runtime/archive-files.z" || ! cmp -s "$export_dir/source-files.z" "$export_runtime/archive-files.z" || ! write_directory_manifest "$extracted" "$export_dir/source-files.z" "$export_dir/source-sha256.txt"; then rm -rf -- "$export_dir" "$export_runtime"; return 1; fi
-  ( cd "$export_dir"; sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt ) || { rm -rf -- "$export_dir" "$export_runtime"; return 1; }
+  [[ "${#archive_paths[@]}" -gt 0 ]] || { echo "committed HEAD source whitelist is empty" >&2; return 1; }
+  ( cd "$repo_dir"; git archive --format=tar --output="$export_dir/source.tar" HEAD -- "${archive_paths[@]}" )
+  tar -C "$extracted" -xf "$export_dir/source.tar"
+  validate_received_source_files "$extracted" "$export_dir/source-files.z" || return 1
+  write_context_file_list "$extracted" >"$export_runtime/archive-files.z"
+  cmp -s "$export_dir/source-files.z" "$export_runtime/archive-files.z" || return 1
+  write_directory_manifest "$extracted" "$export_dir/source-files.z" "$export_dir/source-sha256.txt"
+  ( cd "$export_dir"; sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt )
   chmod 600 "$export_dir/source-files.z" "$export_dir/source-sha256.txt" "$export_dir/source.tar" "$export_dir/package-sha256.txt"
-  rm -rf -- "$export_runtime"
+  validate_package_artifact_list "$export_dir"
+  validate_package_checksums "$export_dir"
+  rm -r -- "$export_runtime"
+  source_export_runtime=""
+  source_export_complete=1
+  trap - EXIT INT TERM
+}
+
+checkpoint_pass_line_is_safe() {
+  local index="$1" line="$2"
+  case "$index" in
+    0) [[ "$line" =~ ^classification=source_package\|result=PASS\|count=[1-9][0-9]*\|sha256=[0-9a-f]{64}$ ]];;
+    1) [[ "$line" == 'classification=mysql_version|result=PASS|count=1' ]];;
+    2) [[ "$line" == 'classification=license_preflight_failures|result=PASS|count=14' ]];;
+    3) [[ "$line" == 'classification=clean_migration|result=PASS|count=1' ]];;
+    4) [[ "$line" == 'classification=api_auto_migrate_false|result=PASS|count=1' ]];;
+    5) [[ "$line" == 'classification=api_auto_migrate_true|result=PASS|count=1' ]];;
+    6) [[ "$line" == 'classification=production_snapshot|result=PASS|count=3' ]];;
+    *) return 1;;
+  esac
+}
+
+failure_stage_is_safe() {
+  case "$1" in
+    production_before|mysql_start|mysql_version|license_preflight_failures|clean_migration|build_test_image|api_auto_migrate_false|api_auto_migrate_true|production_after|evidence_scan|evidence_publish) return 0;;
+  esac
+  return 1
 }
 
 checkpoint_file_is_safe() {
-  local file="$1" line count=0
+  local file="$1" mode="$2" line stage pass_count=0 failure_count=0
   [[ -s "$file" && -f "$file" && ! -L "$file" ]] || return 1
   while IFS= read -r line; do
-    printf '%s\n' "$line" | grep -Eq '^classification=[a-z0-9_]+\|result=PASS\|count=[0-9]+(\|sha256=[0-9a-f]{64})?$' || return 1
-    count=$((count + 1))
+    if [[ "$line" == classification=acceptance_failure\|result=FAIL\|stage=*\|count=1 ]]; then
+      [[ "$mode" == failure && "$failure_count" -eq 0 ]] || return 1
+      stage="${line#classification=acceptance_failure|result=FAIL|stage=}"
+      stage="${stage%|count=1}"
+      failure_stage_is_safe "$stage" || return 1
+      failure_count=1
+      continue
+    fi
+    [[ "$failure_count" -eq 0 ]] || return 1
+    checkpoint_pass_line_is_safe "$pass_count" "$line" || return 1
+    pass_count=$((pass_count + 1))
   done <"$file"
-  [[ "$count" -gt 0 ]]
+  if [[ "$mode" == success ]]; then [[ "$pass_count" -eq 7 && "$failure_count" -eq 0 ]]
+  else [[ "$pass_count" -ge 1 && "$pass_count" -lt 7 && "$failure_count" -eq 1 ]]
+  fi
 }
 
 snapshot_file_is_safe() {
@@ -157,20 +252,52 @@ hash_evidence_directory() {
 }
 
 publish_evidence_directory() {
-  local directory="$1"
-  mkdir -p "$retained_evidence_dir"
-  chmod 700 "$retained_evidence_dir"
-  ( cd "$directory"; tar -cf - . ) | tar -C "$retained_evidence_dir" -xf -
+  local directory="$1" parent="${retained_evidence_dir%/*}"
+  [[ ! -e "$retained_evidence_dir" ]] || return 1
+  mkdir -p "$parent" || return 1
+  evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")" || return 1
+  chmod 700 "$evidence_publish_tmp" || return 1
+  if ! ( cd "$directory" && tar -cf - . ) | tar -C "$evidence_publish_tmp" -xf -; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    return 1
+  fi
+  if ! mv -- "$evidence_publish_tmp" "$retained_evidence_dir"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    return 1
+  fi
+  evidence_publish_tmp=""
+}
+
+scan_evidence_directory() {
+  local directory="$1" scan_output="$2" scan_status=0
+  grep -ERn --binary-files=text "$evidence_forbidden_pattern" "$directory" >"$scan_output" || scan_status=$?
+  [[ "$scan_status" -eq 1 ]]
+}
+
+publish_sanitization_failure() {
+  local fallback_dir="$runtime_dir/safe-sanitization-failure"
+  [[ ! -e "$fallback_dir" ]] || rm -r -- "$fallback_dir"
+  mkdir -p "$fallback_dir"; chmod 700 "$fallback_dir"
+  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' >"$fallback_dir/acceptance-results.txt"
+  printf 'classification=evidence_scan|result=FAIL|count=1\n' >"$fallback_dir/evidence-leak-scan.txt"
+  hash_evidence_directory "$fallback_dir"
+  publish_evidence_directory "$fallback_dir"
 }
 
 retain_failure_evidence() {
   local safe_dir="$runtime_dir/safe-failure-evidence" snapshot
   mkdir -p "$safe_dir"; chmod 700 "$safe_dir"
-  checkpoint_file_is_safe "$evidence_dir/acceptance-results.txt" || return 1
+  [[ "$sanitization_failed" -eq 0 ]] || { publish_sanitization_failure; return; }
+  failure_stage_is_safe "$current_stage" || { publish_sanitization_failure; return; }
   cp "$evidence_dir/acceptance-results.txt" "$safe_dir/acceptance-results.txt"
+  printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' "$current_stage" >>"$safe_dir/acceptance-results.txt"
+  checkpoint_file_is_safe "$safe_dir/acceptance-results.txt" failure || { publish_sanitization_failure; return; }
   for snapshot in production-before.txt production-after.txt; do
-    if [[ -e "$evidence_dir/$snapshot" ]]; then snapshot_file_is_safe "$evidence_dir/$snapshot" || return 1; cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot"; fi
+    if [[ -e "$evidence_dir/$snapshot" ]]; then snapshot_file_is_safe "$evidence_dir/$snapshot" || { publish_sanitization_failure; return; }; cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot"; fi
   done
+  scan_evidence_directory "$safe_dir" "$runtime_dir/failure-evidence-leaks.raw" || { sanitization_failed=1; publish_sanitization_failure; return; }
   printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt"
   hash_evidence_directory "$safe_dir"
   publish_evidence_directory "$safe_dir"
@@ -179,9 +306,10 @@ retain_failure_evidence() {
 publish_success_evidence() {
   local safe_dir="$runtime_dir/safe-success-evidence" snapshot
   mkdir -p "$safe_dir"; chmod 700 "$safe_dir"
-  checkpoint_file_is_safe "$evidence_dir/acceptance-results.txt" || return 1
+  checkpoint_file_is_safe "$evidence_dir/acceptance-results.txt" success || { publish_sanitization_failure; return 1; }
   cp "$evidence_dir/acceptance-results.txt" "$safe_dir/acceptance-results.txt"
-  for snapshot in production-before.txt production-after.txt; do snapshot_file_is_safe "$evidence_dir/$snapshot" || return 1; cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot"; done
+  for snapshot in production-before.txt production-after.txt; do snapshot_file_is_safe "$evidence_dir/$snapshot" || { publish_sanitization_failure; return 1; }; cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot"; done
+  scan_evidence_directory "$safe_dir" "$runtime_dir/success-evidence-leaks.raw" || { sanitization_failed=1; publish_sanitization_failure; return 1; }
   printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt"
   hash_evidence_directory "$safe_dir"
   publish_evidence_directory "$safe_dir"
@@ -189,7 +317,15 @@ publish_success_evidence() {
 
 record_pass() {
   local classification="$1" count="$2" sha="${3:-}"
-  [[ "$classification" != *[!a-z0-9_]* && "$count" != *[!0-9]* ]] || { echo "refusing unsafe evidence classification" >&2; exit 1; }
+  if [[ "$classification" == source_package ]]; then
+    [[ "$count" =~ ^[1-9][0-9]*$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || { sanitization_failed=1; echo "refusing unsafe source evidence classification" >&2; exit 1; }
+  else
+    [[ -z "$sha" ]] || { sanitization_failed=1; echo "refusing unexpected evidence digest" >&2; exit 1; }
+    case "$classification|$count" in
+      mysql_version\|1|license_preflight_failures\|14|clean_migration\|1|api_auto_migrate_false\|1|api_auto_migrate_true\|1|production_snapshot\|3) ;;
+      *) sanitization_failed=1; echo "refusing unsafe evidence classification" >&2; exit 1;;
+    esac
+  fi
   if [[ -n "$sha" ]]; then printf 'classification=%s|result=PASS|count=%s|sha256=%s\n' "$classification" "$count" "$sha" >>"$evidence_dir/acceptance-results.txt"
   else printf 'classification=%s|result=PASS|count=%s\n' "$classification" "$count" >>"$evidence_dir/acceptance-results.txt"; fi
 }
@@ -198,12 +334,15 @@ on_exit() {
   local status="${1:-$?}"
   trap - EXIT INT TERM
   set +e
-  if [[ "$project_touched" -eq 1 ]]; then "${compose[@]}" stop >/dev/null 2>&1 || true; fi
   if [[ "$success" -ne 1 && "$evidence_eligible" -eq 1 && ! -e "$retained_evidence_dir" ]]; then
     if [[ "$project_touched" -eq 1 && ! -e "$evidence_dir/production-after.txt" ]]; then snapshot_production "$evidence_dir/production-after.txt" || true; fi
+  fi
+  if [[ "$project_touched" -eq 1 ]]; then "${compose[@]}" stop >"$runtime_dir/isolated-stop.raw" 2>&1 || true; fi
+  if [[ "$success" -ne 1 && "$evidence_eligible" -eq 1 && ! -e "$retained_evidence_dir" ]]; then
     retain_failure_evidence || true
   fi
-  [[ -z "$runtime_dir" || ! -d "$runtime_dir" ]] || rm -rf -- "$runtime_dir"
+  if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then rm -r -- "$evidence_publish_tmp"; fi
+  [[ -z "$runtime_dir" || ! -d "$runtime_dir" ]] || rm -r -- "$runtime_dir"
   exit "$status"
 }
 
@@ -221,20 +360,24 @@ if [[ -n "${LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR:-}" ]]; then export_head_sour
   echo "ACCEPTANCE_DB_ENGINE must be mysql8.4" >&2
   exit 1
 }
-[[ -z "${COMPOSE_PROJECT_NAME:-}" || "$COMPOSE_PROJECT_NAME" == "$project_name" ]] || {
-  echo "COMPOSE_PROJECT_NAME must be $project_name when set" >&2
+[[ "${COMPOSE_PROJECT_NAME:-}" == "$project_name" ]] || {
+  echo "COMPOSE_PROJECT_NAME must be $project_name" >&2
   exit 1
 }
 [[ "$project_name" == "secondhand-license-privacy-acceptance" ]] || {
   echo "unexpected license privacy Compose project" >&2
   exit 1
 }
-for command in sha256sum sort xargs mktemp grep cmp tar chmod mkdir rm find wc tr cut; do
+for command in sha256sum sort xargs mktemp grep cmp tar chmod mkdir rm find wc tr cut cp mv; do
   command -v "$command" >/dev/null || { echo "required provenance command is unavailable: $command" >&2; exit 1; }
 done
 source_package_dir="${LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_DIR:-}"
 [[ "$source_package_dir" == /* && -d "$source_package_dir" && ! -L "$source_package_dir" ]] || {
   echo "LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_DIR must identify the transferred source package" >&2
+  exit 1
+}
+validate_package_artifact_list "$source_package_dir" || {
+  echo "transferred license privacy source package must contain exactly four artifacts" >&2
   exit 1
 }
 for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
@@ -256,6 +399,7 @@ build_context="$runtime_dir/build-context"
 evidence_dir="$runtime_dir/evidence"
 mkdir -p "$build_context" "$evidence_dir"
 chmod 700 "$runtime_dir" "$build_context" "$evidence_dir"
+: >"$evidence_dir/acceptance-results.txt"
 source_files="$source_package_dir/source-files.z"
 source_manifest="$source_package_dir/source-sha256.txt"
 validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" || { echo "transferred license privacy source list is invalid" >&2; exit 1; }
@@ -277,9 +421,9 @@ source_manifest_sha256="$(sha256sum "$source_manifest" | cut -d ' ' -f1)"
   exit 1
 }
 
-existing_containers="$(docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q)"
-existing_volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project_name" -q)"
-existing_networks="$(docker network ls --filter "label=com.docker.compose.project=$project_name" -q)"
+existing_containers="$(docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q 2>>"$runtime_dir/project-collision.raw")"
+existing_volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project_name" -q 2>>"$runtime_dir/project-collision.raw")"
+existing_networks="$(docker network ls --filter "label=com.docker.compose.project=$project_name" -q 2>>"$runtime_dir/project-collision.raw")"
 [[ -z "$existing_containers" && -z "$existing_volumes" && -z "$existing_networks" ]] || {
   echo "refusing to reuse existing $project_name resources" >&2
   exit 1
@@ -304,23 +448,25 @@ snapshot_production() {
   local output="$1" container matches
   : >"$output"
   for container in "${production_containers[@]}"; do
-    matches="$(docker container ls -a --filter "name=^/$container$" --format '{{.Names}}')" || return 1
+    matches="$(docker container ls -a --filter "name=^/$container$" --format '{{.Names}}' 2>>"$runtime_dir/production-snapshot.raw")" || return 1
     if [[ -z "$matches" ]]; then printf '/%s|absent|absent|absent\n' "$container" >>"$output"; continue; fi
     [[ "$matches" == "$container" ]] || return 1
-    docker inspect --type container --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' "$container" >>"$output" || return 1
+    docker inspect --type container --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' "$container" >>"$output" 2>>"$runtime_dir/production-snapshot.raw" || return 1
   done
 }
 
-snapshot_production "$evidence_dir/production-before.txt"
-evidence_eligible=1
 record_pass source_package "$source_count" "$source_manifest_sha256"
+current_stage="production_before"
+snapshot_production "$evidence_dir/production-before.txt"
+snapshot_file_is_safe "$evidence_dir/production-before.txt" || { echo "production-before snapshot is invalid" >&2; exit 1; }
+evidence_eligible=1
 
 mysql_sql() {
   local sql="$1"
   "${compose[@]}" exec -T mysql sh -ec '
     MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --protocol=TCP -h 127.0.0.1 \
       -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch --skip-column-names --execute="$1"
-  ' sh "$sql"
+  ' sh "$sql" 2>>"$runtime_dir/mysql-sql.raw"
 }
 
 mysql_file() {
@@ -395,41 +541,43 @@ expect_preflight_failure() {
   local name="$1"
   local expected_message="$2"
   local fixture_sql="$3"
-  apply_chain_0001_0006
-  mysql_sql "$valid_fixture_sql $fixture_sql"
-  capture_file_state >"$evidence_dir/$name-before.txt"
-  if mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql >"$evidence_dir/$name.txt" 2>&1; then
+  apply_chain_0001_0006 >"$runtime_dir/$name-setup.raw" 2>&1
+  mysql_sql "$valid_fixture_sql $fixture_sql" >>"$runtime_dir/$name-setup.raw" 2>&1
+  capture_file_state >"$runtime_dir/$name-before.raw"
+  if mysql_file /acceptance/migrations/0007_license_file_privacy.preflight.sql >"$runtime_dir/$name-preflight.raw" 2>&1; then
     echo "expected license privacy preflight failure for $name" >&2
     exit 1
   fi
-  grep -Eq -- 'ERROR 1644 \(45000\)' "$evidence_dir/$name.txt" || {
+  grep -Eq -- 'ERROR 1644 \(45000\)' "$runtime_dir/$name-preflight.raw" || {
     echo "license privacy preflight $name did not fail with SQLSTATE 45000" >&2
     exit 1
   }
-  grep -Fq -- "$expected_message" "$evidence_dir/$name.txt" || {
+  grep -Fq -- "$expected_message" "$runtime_dir/$name-preflight.raw" || {
     echo "license privacy preflight $name failed for an unexpected reason" >&2
     exit 1
   }
-  grep -Fq -- 'license_file_privacy_preflight_passed' "$evidence_dir/$name.txt" && {
+  grep -Fq -- 'license_file_privacy_preflight_passed' "$runtime_dir/$name-preflight.raw" && {
     echo "license privacy preflight $name emitted a success marker" >&2
     exit 1
   }
-  capture_file_state >"$evidence_dir/$name-after.txt"
-  cmp -s "$evidence_dir/$name-before.txt" "$evidence_dir/$name-after.txt" || {
+  capture_file_state >"$runtime_dir/$name-after.raw"
+  cmp -s "$runtime_dir/$name-before.raw" "$runtime_dir/$name-after.raw" || {
     echo "license privacy preflight $name changed file rows or license URLs" >&2
     exit 1
   }
 }
 
+current_stage="mysql_start"
 project_touched=1
-"${compose[@]}" up -d --wait mysql
+"${compose[@]}" up -d --wait mysql >"$runtime_dir/mysql-start.raw" 2>&1
+current_stage="mysql_version"
 mysql_version="$(mysql_sql 'SELECT VERSION()')"
-printf '%s\n' "$mysql_version" | tee "$evidence_dir/mysql-version.txt"
 [[ "$mysql_version" == 8.4.* ]] || {
   echo "isolated license file privacy acceptance requires MySQL 8.4.x, got $mysql_version" >&2
   exit 1
 }
 record_pass mysql_version 1
+current_stage="license_preflight_failures"
 
 expect_preflight_failure missing-file-records \
   'license privacy preflight: canonical file_records table is required' \
@@ -477,8 +625,13 @@ expect_preflight_failure merchant-uploader-mismatch \
    UPDATE file_records SET uploader_id=22 WHERE id=301;"
 record_pass license_preflight_failures 14
 
+prepare_clean_fixture() {
 apply_chain_0001_0006
 mysql_sql "$valid_fixture_sql"
+}
+
+current_stage="clean_migration"
+prepare_clean_fixture >"$runtime_dir/clean-setup.raw" 2>&1
 product_url_before="$(mysql_sql "SELECT url FROM file_records WHERE id=302")"
 license_url_before="$(mysql_sql "SELECT url FROM file_records WHERE id=301")"
 file_count_before="$(mysql_sql 'SELECT COUNT(*) FROM file_records')"
@@ -498,48 +651,56 @@ license_count_before="$(mysql_sql "SELECT COUNT(*) FROM file_records WHERE biz_t
   mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql
   mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql
   mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql
-} | tee "$evidence_dir/clean-migration.txt"
+} >"$runtime_dir/clean-migration.raw" 2>&1
 
 [[ "$(mysql_sql "SELECT url FROM file_records WHERE id=302")" == "$product_url_before" ]]
 [[ -z "$(mysql_sql "SELECT url FROM file_records WHERE id=301")" ]]
 [[ "$(mysql_sql 'SELECT COUNT(*) FROM file_records')" == "$file_count_before" ]]
 [[ "$(mysql_sql "SELECT COUNT(*) FROM file_records WHERE biz_type='MERCHANT_LICENSE'")" == "$license_count_before" ]]
-grep -q license_file_privacy_preflight_passed "$evidence_dir/clean-migration.txt"
-grep -q license_file_privacy_postflight_passed "$evidence_dir/clean-migration.txt"
+grep -q license_file_privacy_preflight_passed "$runtime_dir/clean-migration.raw"
+grep -q license_file_privacy_postflight_passed "$runtime_dir/clean-migration.raw"
 record_pass clean_migration 1
 
-"${compose[@]}" --profile tools build bootstrap-admin
+current_stage="build_test_image"
+"${compose[@]}" --profile tools build bootstrap-admin >"$runtime_dir/build-test-image.raw" 2>&1
+current_stage="api_auto_migrate_false"
 "${compose[@]}" --profile tools run --rm \
   -e FILE_SCHEMA_MYSQL_TEST=1 \
   -e AUTO_MIGRATE=false \
   -e FILE_UPLOAD_LOCAL_DIR=/tmp/license-file-privacy-uploads \
   bootstrap-admin go test ./tests -run '^TestLicenseFilePrivacyWithMigrationOnlyMySQL$' -count=1 -v \
-  | tee "$evidence_dir/api-auto-migrate-false.txt"
-grep -q -- '--- PASS: TestLicenseFilePrivacyWithMigrationOnlyMySQL' "$evidence_dir/api-auto-migrate-false.txt"
+  >"$runtime_dir/api-auto-migrate-false.raw" 2>&1
+grep -q -- '--- PASS: TestLicenseFilePrivacyWithMigrationOnlyMySQL' "$runtime_dir/api-auto-migrate-false.raw"
 mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql \
-  | tee "$evidence_dir/post-api-auto-migrate-false.txt"
+  >"$runtime_dir/post-api-auto-migrate-false.raw" 2>&1
 record_pass api_auto_migrate_false 1
 
+current_stage="api_auto_migrate_true"
 "${compose[@]}" --profile tools run --rm \
   -e FILE_SCHEMA_MYSQL_TEST=1 \
   -e AUTO_MIGRATE=true \
   -e FILE_UPLOAD_LOCAL_DIR=/tmp/license-file-privacy-uploads \
   bootstrap-admin go test ./tests -run '^TestLicenseFilePrivacyWithMigrationOnlyMySQL$' -count=1 -v \
-  | tee "$evidence_dir/api-auto-migrate-true.txt"
-grep -q -- '--- PASS: TestLicenseFilePrivacyWithMigrationOnlyMySQL' "$evidence_dir/api-auto-migrate-true.txt"
+  >"$runtime_dir/api-auto-migrate-true.raw" 2>&1
+grep -q -- '--- PASS: TestLicenseFilePrivacyWithMigrationOnlyMySQL' "$runtime_dir/api-auto-migrate-true.raw"
 mysql_file /acceptance/migrations/0007_license_file_privacy.postflight.sql \
-  | tee "$evidence_dir/post-api-auto-migrate-true.txt"
+  >"$runtime_dir/post-api-auto-migrate-true.raw" 2>&1
 record_pass api_auto_migrate_true 1
 
+current_stage="production_after"
 snapshot_production "$evidence_dir/production-after.txt"
+snapshot_file_is_safe "$evidence_dir/production-after.txt" || { echo "production-after snapshot is invalid" >&2; exit 1; }
 cmp -s "$evidence_dir/production-before.txt" "$evidence_dir/production-after.txt" || {
   echo "production container identity, state, or restart count changed" >&2
   exit 1
 }
 record_pass production_snapshot 3
+current_stage="evidence_scan"
+checkpoint_file_is_safe "$evidence_dir/acceptance-results.txt" success || { sanitization_failed=1; echo "acceptance checkpoint validation failed" >&2; exit 1; }
+current_stage="evidence_publish"
 publish_success_evidence
 success=1
 
 echo "isolated license file privacy acceptance passed"
 echo "mysql version: $mysql_version"
-echo "resources retained for inspection under Compose project: $project_name"
+echo "isolated Compose project stopped: $project_name"
