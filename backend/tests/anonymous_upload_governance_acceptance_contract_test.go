@@ -135,6 +135,75 @@ exec /bin/chmod "$@"
 			t.Fatalf("failed export destination was retained: %v", err)
 		}
 	})
+
+	t.Run("one resolved commit binds list and archive across ref movement", func(t *testing.T) {
+		movingRepo, movingScript := newAnonymousUploadGovernanceFixtureRepo(t)
+		originalOID := anonymousUploadGovernanceGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		writeAnonymousUploadGovernanceFixtureFile(t, movingRepo, "Makefile", "fixture:\n\t@second\n", 0o600)
+		runAnonymousUploadGovernanceGit(t, movingRepo, "add", "--", "Makefile")
+		runAnonymousUploadGovernanceGit(t, movingRepo, "commit", "-q", "-m", "move ref target")
+		movedOID := anonymousUploadGovernanceGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		runAnonymousUploadGovernanceGit(t, movingRepo, "update-ref", "HEAD", originalOID)
+		stubDir := t.TempDir()
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "git", `#!/bin/sh
+if [ "${1:-}" = ls-tree ]; then
+  "$REAL_GIT" "$@" || exit $?
+  "$REAL_GIT" -C "$MOVE_REPO" update-ref HEAD "$MOVE_TO_OID" || exit $?
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "moved-ref-package")
+		command := exec.Command("/bin/bash", movingScript)
+		command.Dir = movingRepo
+		command.Env = []string{
+			"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + destination,
+			"MOVE_REPO=" + movingRepo,
+			"MOVE_TO_OID=" + movedOID,
+			"REAL_GIT=" + anonymousUploadGovernanceCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export while HEAD moves: %v: %s", err, output)
+		}
+		extracted := t.TempDir()
+		extractAnonymousUploadGovernanceTar(t, filepath.Join(destination, "source.tar"), extracted)
+		makefile, err := os.ReadFile(filepath.Join(extracted, "Makefile"))
+		if err != nil || string(makefile) != "fixture:\n\t@true\n" {
+			t.Fatalf("ref movement changed exported bytes: %q, %v", makefile, err)
+		}
+	})
+
+	t.Run("concurrent destination creator remains owner", func(t *testing.T) {
+		raceRepo, raceScript := newAnonymousUploadGovernanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "raced-package")
+		stubDir := t.TempDir()
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+case " $* " in
+  *" $RACE_DESTINATION "*)
+    if [ ! -e "$RACE_DESTINATION" ]; then
+      /bin/mkdir "$RACE_DESTINATION" || exit $?
+      printf 'concurrent-owner\n' >"$RACE_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", raceScript)
+		command.Dir = raceRepo
+		command.Env = []string{
+			"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + destination,
+			"RACE_DESTINATION=" + destination,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export acquired a concurrently created destination: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "concurrent-owner\n" {
+			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func TestAnonymousUploadGovernanceAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T) {
@@ -383,6 +452,182 @@ exec /usr/bin/tar "$@"
 	}
 }
 
+func TestAnonymousUploadGovernanceAcceptanceRejectsMutableAndUnsafeBoundaries(t *testing.T) {
+	t.Run("post-check package replacement cannot become authoritative", func(t *testing.T) {
+		fixture, fixtureScript := newAnonymousUploadGovernanceFixtureRepo(t)
+		packageA := filepath.Join(t.TempDir(), "package-a")
+		command := exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + packageA, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package A: %v: %s", err, output)
+		}
+		writeAnonymousUploadGovernanceFixtureFile(t, fixture, "Makefile", "fixture:\n\t@replacement\n", 0o600)
+		runAnonymousUploadGovernanceGit(t, fixture, "add", "--", "Makefile")
+		runAnonymousUploadGovernanceGit(t, fixture, "commit", "-q", "-m", "replacement package")
+		packageB := filepath.Join(t.TempDir(), "package-b")
+		command = exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + packageB, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package B: %v: %s", err, output)
+		}
+		remote := t.TempDir()
+		extractAnonymousUploadGovernanceTar(t, filepath.Join(packageB, "source.tar"), remote)
+		writeAnonymousUploadGovernanceFixtureFile(t, remote, "deploy/acceptance/.env", "MYSQL_DATABASE=fixture\n", 0o600)
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+"$REAL_SHA256SUM" "$@"
+status=$?
+case " $* " in
+  *"source.tar"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER"
+      /bin/cp "$ALTERNATE_PACKAGE/source-files.z" "$CALLER_PACKAGE/source-files.z"
+      /bin/cp "$ALTERNATE_PACKAGE/source-sha256.txt" "$CALLER_PACKAGE/source-sha256.txt"
+      /bin/cp "$ALTERNATE_PACKAGE/source.tar" "$CALLER_PACKAGE/source.tar"
+      /bin/cp "$ALTERNATE_PACKAGE/package-sha256.txt" "$CALLER_PACKAGE/package-sha256.txt"
+    fi
+    ;;
+esac
+exit "$status"
+`, 0o700)
+		swapMarker := filepath.Join(t.TempDir(), "package-swapped")
+		output, err := runAnonymousUploadGovernanceAcceptanceWithEnv(t, remote, packageA,
+			filepath.Join(remote, "deploy/acceptance/anonymous-upload-governance-smoke.sh"), stubDir, marker,
+			anonymousUploadGovernancePackageDigest(t, packageA), []string{
+				"CALLER_PACKAGE=" + packageA,
+				"ALTERNATE_PACKAGE=" + packageB,
+				"SWAP_MARKER=" + swapMarker,
+				"REAL_SHA256SUM=" + anonymousUploadGovernanceCommandPath(t, "sha256sum"),
+			})
+		if err == nil {
+			t.Fatalf("post-check package replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("package replacement mutation did not run: %v", err)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("post-check package replacement reached Docker: %s", output)
+		}
+	})
+
+	t.Run("private archive fails before received source hashing", func(t *testing.T) {
+		remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		writeAnonymousUploadGovernanceFixtureFile(t, packageDir, "source.tar", "malformed archive\n", 0o600)
+		anonymousUploadGovernanceWritePackageManifest(t, packageDir, "  ")
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		hashMarker := filepath.Join(t.TempDir(), "received-hashed")
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+[ "$PWD" != "$RECEIVED_ROOT" ] || : >"$RECEIVED_HASHED"
+exec "$REAL_SHA256SUM" "$@"
+`, 0o700)
+		output, err := runAnonymousUploadGovernanceAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker,
+			anonymousUploadGovernancePackageDigest(t, packageDir), []string{
+				"RECEIVED_ROOT=" + remote,
+				"RECEIVED_HASHED=" + hashMarker,
+				"REAL_SHA256SUM=" + anonymousUploadGovernanceCommandPath(t, "sha256sum"),
+			})
+		if err == nil {
+			t.Fatalf("malformed private archive unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(hashMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("received source was hashed before private archive validation")
+		}
+	})
+
+	t.Run("Docker collision diagnostics stay private", func(t *testing.T) {
+		remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+: >"$DOCKER_CALLED"
+printf 'Authorization: Bearer upload-collision-secret\n' >&2
+exit 64
+`)
+		output, err := runAnonymousUploadGovernanceAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+		if err == nil {
+			t.Fatalf("Docker diagnostic failure unexpectedly succeeded: %s", output)
+		}
+		for _, secret := range []string{"Authorization", "Bearer", "upload-collision-secret"} {
+			if bytes.Contains(output, []byte(secret)) {
+				t.Fatalf("Docker diagnostic leaked %q to caller output: %q", secret, output)
+			}
+		}
+	})
+
+	t.Run("linked env refuses before Docker", func(t *testing.T) {
+		remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		envPath := filepath.Join(remote, "deploy", "acceptance", ".env")
+		if err := os.Remove(envPath); err != nil {
+			t.Fatal(err)
+		}
+		externalEnv := filepath.Join(t.TempDir(), "acceptance-env")
+		if err := os.WriteFile(externalEnv, []byte("MYSQL_DATABASE=fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(externalEnv, envPath); err != nil {
+			t.Fatal(err)
+		}
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		output, err := runAnonymousUploadGovernanceAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+		if err == nil {
+			t.Fatalf("linked env unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked env reached Docker")
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		signal string
+		status int
+	}{
+		{name: "interrupt exits 130", signal: "INT", status: 130},
+		{name: "terminate exits 143", signal: "TERM", status: 143},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+			marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, fmt.Sprintf(`#!/bin/sh
+: >"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" container ls "*"name=^/secondhand-market-"*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*" up "*) kill -%s "$PPID"; exit 0;;
+esac
+exit 0
+`, tc.signal))
+			output, err := runAnonymousUploadGovernanceAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.status {
+				t.Fatalf("%s exit = %v, want status %d; output=%q", tc.signal, err, tc.status, output)
+			}
+		})
+	}
+
+	t.Run("build context is mode 0700 before extraction", func(t *testing.T) {
+		remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		modeFile := filepath.Join(t.TempDir(), "build-context-mode")
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "tar", `#!/bin/sh
+previous=
+destination=
+for argument in "$@"; do
+  [ "$previous" != -C ] || destination=$argument
+  previous=$argument
+done
+case " $* " in *" -xf "*"source.tar"*) /usr/bin/stat -f '%Lp' "$destination" >"$BUILD_CONTEXT_MODE";; esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+		_, _ = runAnonymousUploadGovernanceAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker,
+			anonymousUploadGovernancePackageDigest(t, packageDir), []string{"BUILD_CONTEXT_MODE=" + modeFile})
+		mode, err := os.ReadFile(modeFile)
+		if err != nil || strings.TrimSpace(string(mode)) != "700" {
+			t.Fatalf("build context mode = %q, %v; want 700", mode, err)
+		}
+	})
+}
+
 func TestAnonymousUploadGovernanceAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -452,6 +697,43 @@ func TestAnonymousUploadGovernanceAcceptanceRefusesEvidenceAndProjectReuse(t *te
 			}
 		})
 	}
+
+	t.Run("linked evidence parent refuses before Docker", func(t *testing.T) {
+		remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		evidenceParent := filepath.Join(remote, "deploy", "acceptance", "evidence")
+		external := t.TempDir()
+		if err := os.Symlink(external, evidenceParent); err != nil {
+			t.Fatal(err)
+		}
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		output, err := runAnonymousUploadGovernanceAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+		if err == nil {
+			t.Fatalf("linked evidence parent unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked evidence parent reached Docker")
+		}
+		entries, err := os.ReadDir(external)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("linked evidence parent target was modified: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("evidence collision precedes env and tool checks", func(t *testing.T) {
+		remote, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+		if err := os.Remove(filepath.Join(remote, "deploy", "acceptance", ".env")); err != nil {
+			t.Fatal(err)
+		}
+		evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "anonymous-upload-governance")
+		if err := os.MkdirAll(evidence, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		output, err := runAnonymousUploadGovernanceAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+		if err == nil || !strings.Contains(string(output), "refusing to overwrite existing anonymous upload governance evidence") {
+			t.Fatalf("evidence collision did not win preflight ordering: %v: %q", err, output)
+		}
+	})
 }
 
 func TestAnonymousUploadGovernanceAcceptanceRetainsSanitizedFailureEvidence(t *testing.T) {
@@ -884,6 +1166,37 @@ exec /bin/rmdir "$@"
 	}
 }
 
+func TestAnonymousUploadGovernanceAcceptancePreservesNestedMoveRemovalAmbiguity(t *testing.T) {
+	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+: >>"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" compose "*" stop "*) exit 0 ;;
+  *" compose "*) exit 42 ;;
+esac
+exit 0
+`)
+	writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "mv", `#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+[ -d "${target}.publish.lock" ] || exit 91
+/bin/mkdir "$target" || exit $?
+exec /bin/mv "$source" "$target/"
+`, 0o700)
+	writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "rm", `#!/bin/sh
+case " $* " in
+  *"/anonymous-upload-governance/"*"anonymous-upload-governance.publish."*) exit 73;;
+esac
+exec /bin/rm "$@"
+`, 0o700)
+	if output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("nested move removal failure unexpectedly succeeded: %s", output)
+	}
+	assertAnonymousUploadGovernanceAmbiguousPublicationPreserved(t, remoteRepo)
+}
+
 func TestAnonymousUploadGovernanceAcceptancePreservesUploadBoundaryMatrix(t *testing.T) {
 	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
 	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, anonymousUploadGovernanceHappyDockerStub)
@@ -1144,6 +1457,36 @@ func runAnonymousUploadGovernanceGit(t *testing.T, dir string, args ...string) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
+}
+
+func anonymousUploadGovernanceGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func anonymousUploadGovernanceCommandPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func anonymousUploadGovernancePackageDigest(t *testing.T, packageDir string) string {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(packageDir, "package-sha256.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(manifest)
+	return hex.EncodeToString(digest[:])
 }
 
 func splitAnonymousUploadGovernanceNULPaths(t *testing.T, raw []byte) []string {
@@ -1485,6 +1828,12 @@ func anonymousUploadGovernanceDockerTripwire(t *testing.T, content string) (stri
 func runAnonymousUploadGovernanceAcceptance(
 	t *testing.T, remoteRepo, packageDir, script, stubDir, marker, expectedDigest string,
 ) ([]byte, error) {
+	return runAnonymousUploadGovernanceAcceptanceWithEnv(t, remoteRepo, packageDir, script, stubDir, marker, expectedDigest, nil)
+}
+
+func runAnonymousUploadGovernanceAcceptanceWithEnv(
+	t *testing.T, remoteRepo, packageDir, script, stubDir, marker, expectedDigest string, extraEnv []string,
+) ([]byte, error) {
 	t.Helper()
 	if expectedDigest == "" {
 		manifest, err := os.ReadFile(filepath.Join(packageDir, "package-sha256.txt"))
@@ -1496,7 +1845,7 @@ func runAnonymousUploadGovernanceAcceptance(
 	}
 	cmd := exec.Command("/bin/bash", script)
 	cmd.Dir = remoteRepo
-	cmd.Env = []string{
+	cmd.Env = append([]string{
 		"ANONYMOUS_UPLOAD_GOVERNANCE_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_UPLOAD_GOVERNANCE_DATA",
 		"ACCEPTANCE_DB_ENGINE=mysql8.4",
 		"COMPOSE_PROJECT_NAME=secondhand-upload-governance-acceptance",
@@ -1506,6 +1855,6 @@ func runAnonymousUploadGovernanceAcceptance(
 		"DOCKER_STATE=" + filepath.Join(stubDir, "state"),
 		"DOCKER_SEQUENCE=" + filepath.Join(stubDir, "sequence"),
 		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
-	}
+	}, extraEnv...)
 	return cmd.CombinedOutput()
 }

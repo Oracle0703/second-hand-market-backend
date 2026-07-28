@@ -224,6 +224,75 @@ exec /bin/chmod "$@"
 			t.Fatalf("failed source export retained incomplete destination: %v", err)
 		}
 	})
+
+	t.Run("one resolved commit binds list and archive across ref movement", func(t *testing.T) {
+		movingRepo, movingScript := newMiniappAuthRefreshFixtureRepo(t)
+		originalOID := miniappAuthRefreshGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		writeMiniappAuthRefreshFixtureFile(t, movingRepo, "miniapp/package.json", "{\"name\":\"moved\"}\n", 0o600)
+		runMiniappAuthRefreshGit(t, movingRepo, "add", "--", "miniapp/package.json")
+		runMiniappAuthRefreshGit(t, movingRepo, "commit", "-q", "-m", "move ref target")
+		movedOID := miniappAuthRefreshGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		runMiniappAuthRefreshGit(t, movingRepo, "update-ref", "HEAD", originalOID)
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "git", `#!/bin/sh
+if [ "${1:-}" = ls-tree ]; then
+  "$REAL_GIT" "$@" || exit $?
+  "$REAL_GIT" -C "$MOVE_REPO" update-ref HEAD "$MOVE_TO_OID" || exit $?
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "moved-ref-package")
+		command := exec.Command("/bin/bash", movingScript)
+		command.Dir = movingRepo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			"MOVE_REPO=" + movingRepo,
+			"MOVE_TO_OID=" + movedOID,
+			"REAL_GIT=" + miniappAuthRefreshCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export while HEAD moves: %v: %s", err, output)
+		}
+		extracted := t.TempDir()
+		extractMiniappAuthRefreshTar(t, filepath.Join(destination, "source.tar"), extracted)
+		packageJSON, err := os.ReadFile(filepath.Join(extracted, "miniapp/package.json"))
+		if err != nil || string(packageJSON) != "{\"name\":\"fixture-miniapp\"}\n" {
+			t.Fatalf("ref movement changed exported bytes: %q, %v", packageJSON, err)
+		}
+	})
+
+	t.Run("concurrent destination creator remains owner", func(t *testing.T) {
+		raceRepo, raceScript := newMiniappAuthRefreshFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "raced-package")
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+case " $* " in
+  *" $RACE_DESTINATION "*)
+    if [ ! -e "$RACE_DESTINATION" ]; then
+      /bin/mkdir "$RACE_DESTINATION" || exit $?
+      printf 'concurrent-owner\n' >"$RACE_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", raceScript)
+		command.Dir = raceRepo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			"RACE_DESTINATION=" + destination,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export acquired a concurrently created destination: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "concurrent-owner\n" {
+			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBeforeNPM(t *testing.T) {
@@ -454,6 +523,131 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 	}
 }
 
+func TestMiniappAuthRefreshAcceptanceRejectsMutableAndUnsafeSourceBoundaries(t *testing.T) {
+	t.Run("post-check package replacement cannot become authoritative", func(t *testing.T) {
+		fixture, fixtureScript := newMiniappAuthRefreshFixtureRepo(t)
+		packageA := filepath.Join(t.TempDir(), "package-a")
+		command := exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + packageA, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package A: %v: %s", err, output)
+		}
+		writeMiniappAuthRefreshFixtureFile(t, fixture, "miniapp/package.json", "{\"name\":\"replacement\"}\n", 0o600)
+		runMiniappAuthRefreshGit(t, fixture, "add", "--", "miniapp/package.json")
+		runMiniappAuthRefreshGit(t, fixture, "commit", "-q", "-m", "replacement package")
+		packageB := filepath.Join(t.TempDir(), "package-b")
+		command = exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + packageB, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package B: %v: %s", err, output)
+		}
+		remote := t.TempDir()
+		extractMiniappAuthRefreshTar(t, filepath.Join(packageB, "source.tar"), remote)
+		stubDir, npmMarker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+"$REAL_SHA256SUM" "$@"
+status=$?
+case " $* " in
+  *"source.tar"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER"
+      /bin/cp "$ALTERNATE_PACKAGE/source-files.z" "$CALLER_PACKAGE/source-files.z"
+      /bin/cp "$ALTERNATE_PACKAGE/source-sha256.txt" "$CALLER_PACKAGE/source-sha256.txt"
+      /bin/cp "$ALTERNATE_PACKAGE/source.tar" "$CALLER_PACKAGE/source.tar"
+      /bin/cp "$ALTERNATE_PACKAGE/package-sha256.txt" "$CALLER_PACKAGE/package-sha256.txt"
+    fi
+    ;;
+esac
+exit "$status"
+`, 0o700)
+		swapMarker := filepath.Join(t.TempDir(), "package-swapped")
+		output, err := runMetadataFreeMiniappAuthRefreshWithEnv(t, remote, packageA,
+			filepath.Join(remote, "deploy/acceptance/miniapp-auth-refresh-smoke.sh"), stubDir, npmMarker,
+			miniappAuthRefreshPackageDigest(t, packageA), []string{
+				"CALLER_PACKAGE=" + packageA,
+				"ALTERNATE_PACKAGE=" + packageB,
+				"SWAP_MARKER=" + swapMarker,
+				"REAL_SHA256SUM=" + miniappAuthRefreshCommandPath(t, "sha256sum"),
+			})
+		if err == nil {
+			t.Fatalf("post-check package replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("package replacement mutation did not run: %v", err)
+		}
+		if _, err := os.Stat(npmMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("post-check package replacement reached npm: %s", output)
+		}
+	})
+
+	t.Run("private archive fails before received source hashing", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeMiniappAuthRefresh(t)
+		writeMiniappAuthRefreshFixtureFile(t, packageDir, "source.tar", "malformed archive\n", 0o600)
+		miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
+		stubDir, npmMarker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		hashMarker := filepath.Join(t.TempDir(), "received-hashed")
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+[ "$PWD" != "$RECEIVED_ROOT" ] || : >"$RECEIVED_HASHED"
+exec "$REAL_SHA256SUM" "$@"
+`, 0o700)
+		output, err := runMetadataFreeMiniappAuthRefreshWithEnv(t, remote, packageDir, script, stubDir, npmMarker,
+			miniappAuthRefreshPackageDigest(t, packageDir), []string{
+				"RECEIVED_ROOT=" + remote,
+				"RECEIVED_HASHED=" + hashMarker,
+				"REAL_SHA256SUM=" + miniappAuthRefreshCommandPath(t, "sha256sum"),
+			})
+		if err == nil {
+			t.Fatalf("malformed private archive unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(hashMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("received source was hashed before private archive validation")
+		}
+	})
+
+	t.Run("received source linked ancestor refuses before node", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeMiniappAuthRefresh(t)
+		external := filepath.Join(t.TempDir(), "src")
+		if err := os.Rename(filepath.Join(remote, "miniapp", "src"), external); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, filepath.Join(remote, "miniapp", "src")); err != nil {
+			t.Fatal(err)
+		}
+		stubDir, npmMarker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		output, err := runMetadataFreeMiniappAuthRefresh(t, remote, packageDir, script, stubDir, npmMarker)
+		if err == nil {
+			t.Fatalf("linked received ancestor unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(miniappAuthRefreshNodeMarker(stubDir)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked received ancestor reached node")
+		}
+	})
+
+	t.Run("malformed archive diagnostics stay private", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeMiniappAuthRefresh(t)
+		writeMiniappAuthRefreshFixtureFile(t, packageDir, "source.tar", "malformed archive\n", 0o600)
+		miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
+		stubDir, npmMarker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "tar", `#!/bin/sh
+case " $* " in
+  *" -tvf "*) printf 'Authorization: Bearer miniapp-archive-secret\n' >&2; exit 64;;
+esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+		output, err := runMetadataFreeMiniappAuthRefresh(t, remote, packageDir, script, stubDir, npmMarker)
+		if err == nil {
+			t.Fatalf("malformed archive unexpectedly succeeded: %s", output)
+		}
+		for _, secret := range []string{"Authorization", "Bearer", "miniapp-archive-secret"} {
+			if bytes.Contains(output, []byte(secret)) {
+				t.Fatalf("archive diagnostic leaked %q to caller output: %q", secret, output)
+			}
+		}
+	})
+}
+
 func TestMiniappAuthRefreshAcceptancePublishesEvidenceAtomically(t *testing.T) {
 	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
@@ -576,6 +770,29 @@ exec /bin/rmdir "$@"
 	}
 }
 
+func TestMiniappAuthRefreshAcceptancePreservesNestedMoveRemovalAmbiguity(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "mv", `#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+[ -d "${target}.publish.lock" ] || exit 91
+/bin/mkdir "$target" || exit $?
+exec /bin/mv "$source" "$target/"
+`, 0o700)
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "rm", `#!/bin/sh
+case " $* " in
+  *"/miniapp-auth-refresh/"*"miniapp-auth-refresh.publish."*) exit 73;;
+esac
+exec /bin/rm "$@"
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("nested move removal failure unexpectedly succeeded: %s", output)
+	}
+	assertMiniappAuthRefreshAmbiguousPublicationPreserved(t, remoteRepo)
+}
+
 func TestMiniappAuthRefreshAcceptanceFailsClosedOnMalformedCheckpoint(t *testing.T) {
 	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
@@ -663,6 +880,26 @@ func TestMiniappAuthRefreshAcceptanceRefusesExistingEvidenceBeforeNPM(t *testing
 			}
 		})
 	}
+	t.Run("linked evidence parent", func(t *testing.T) {
+		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+		evidenceParent := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence")
+		external := t.TempDir()
+		if err := os.Symlink(external, evidenceParent); err != nil {
+			t.Fatal(err)
+		}
+		stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker)
+		if err == nil {
+			t.Fatalf("linked evidence parent unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(miniappAuthRefreshNodeMarker(stubDir)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked evidence parent reached node")
+		}
+		entries, err := os.ReadDir(external)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("linked evidence parent target was modified: %v, %v", entries, err)
+		}
+	})
 }
 
 func TestMiniappAuthRefreshAcceptanceUsesTemporaryVerifiedTree(t *testing.T) {
@@ -920,6 +1157,26 @@ func runMiniappAuthRefreshGit(t *testing.T, directory string, args ...string) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
+}
+
+func miniappAuthRefreshGitOutput(t *testing.T, directory string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = directory
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func miniappAuthRefreshCommandPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func splitMiniappAuthRefreshNULPaths(t *testing.T, raw []byte) []string {
@@ -1254,12 +1511,20 @@ func runMetadataFreeMiniappAuthRefreshWithDigest(
 	t *testing.T,
 	remoteRepo, packageDir, remoteScript, stubDir, marker, manifestDigest string,
 ) ([]byte, error) {
+	return runMetadataFreeMiniappAuthRefreshWithEnv(t, remoteRepo, packageDir, remoteScript, stubDir, marker, manifestDigest, nil)
+}
+
+func runMetadataFreeMiniappAuthRefreshWithEnv(
+	t *testing.T,
+	remoteRepo, packageDir, remoteScript, stubDir, marker, manifestDigest string,
+	extraEnv []string,
+) ([]byte, error) {
 	t.Helper()
 	commandLog := filepath.Join(stubDir, "npm-commands")
 	stubMode := filepath.Join(stubDir, "mode")
 	cmd := exec.Command("/bin/bash", remoteScript)
 	cmd.Dir = remoteRepo
-	cmd.Env = []string{
+	cmd.Env = append([]string{
 		"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
 		"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR=" + packageDir,
 		"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256=" + manifestDigest,
@@ -1268,7 +1533,7 @@ func runMetadataFreeMiniappAuthRefreshWithDigest(
 		"NPM_COMMAND_LOG=" + commandLog,
 		"NPM_STUB_MODE_FILE=" + stubMode,
 		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
-	}
+	}, extraEnv...)
 	return cmd.CombinedOutput()
 }
 

@@ -6,6 +6,7 @@ base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$base_dir/../.." && pwd)"
 project_name="secondhand-license-privacy-acceptance"
 retained_evidence_dir="$base_dir/evidence/license-file-privacy"
+evidence_parent="${retained_evidence_dir%/*}"
 runtime_dir=""
 evidence_dir=""
 project_touched=0
@@ -18,6 +19,7 @@ evidence_publish_lock=""
 source_export_dir=""
 source_export_runtime=""
 source_export_complete=0
+source_export_dir_owned=0
 evidence_forbidden_pattern='Authorization|Bearer[[:space:]]|access_token|refresh_token|token["=:]|password["=:]|DB_DSN=|MYSQL_(DATABASE|USER|PASSWORD|ROOT_PASSWORD)=|JWT_(ACCESS|REFRESH)_SECRET=|license-privacy-secret|TestLicenseFilePrivacy|000[0-9]_[[:alnum:]_-]+\.(preflight|up|postflight)\.sql|missing-file-records'
 compose=(docker compose --project-name "$project_name" --env-file "$base_dir/.env" --file "$base_dir/docker-compose.yml")
 production_containers=(secondhand-market-api secondhand-market-web secondhand-market-mysql)
@@ -64,7 +66,7 @@ source_path_is_allowed() {
 source_path_is_portable() {
   local path="$1" component
   local -a components=()
-  [[ -n "$path" && "$path" != /* && "$path" != *//* &&
+  [[ -n "$path" && "$path" != /* && "$path" != -* && "$path" != *//* &&
     "$path" != *[!A-Za-z0-9_./-]* ]] || return 1
   IFS=/ read -r -a components <<<"$path"
   for component in "${components[@]}"; do
@@ -73,9 +75,10 @@ source_path_is_portable() {
 }
 
 write_source_file_list() {
+  local commit="${1:-HEAD}"
   (
     cd "$repo_dir"
-    git ls-tree -r --name-only -z HEAD -- Makefile backend deploy/acceptance |
+    git ls-tree -r --name-only -z "$commit" -- Makefile backend deploy/acceptance 2>/dev/null |
       while IFS= read -r -d '' path; do
         source_path_is_portable "$path" || continue
         source_path_is_forbidden "$path" && continue
@@ -110,8 +113,52 @@ write_context_file_list() {
 }
 
 validate_received_source_files() {
-  local directory="$1" source_list="$2" path
-  while IFS= read -r -d '' path; do [[ -f "$directory/$path" && ! -L "$directory/$path" ]] || return 1; done <"$source_list"
+  local directory="$1" source_list="$2" path current component
+  local -a components=()
+  [[ ! -L "$directory" ]] || return 1
+  while IFS= read -r -d '' path; do
+    current="$directory"
+    IFS=/ read -r -a components <<<"$path"
+    for component in "${components[@]}"; do
+      current="$current/$component"
+      [[ ! -L "$current" ]] || return 1
+    done
+    [[ -f "$current" ]] || return 1
+  done <"$source_list"
+}
+
+validate_archive_list() {
+  local package_dir="$1" source_list="$2" runtime="$3" line path parent type_line expected_type
+  local unsorted_expected="$runtime/expected-archive-paths.unsorted"
+  local expected_paths="$runtime/expected-archive-paths.raw"
+  : >"$runtime/archive-source-files.z"
+  : >"$unsorted_expected"
+  while IFS= read -r -d '' path; do
+    printf '%s\n' "$path" >>"$unsorted_expected"
+    parent="${path%/*}"
+    while [[ "$parent" != "$path" && -n "$parent" ]]; do
+      printf '%s/\n' "$parent" >>"$unsorted_expected"
+      path="$parent"
+      parent="${path%/*}"
+    done
+  done <"$source_list"
+  LC_ALL=C sort -u "$unsorted_expected" >"$expected_paths"
+  tar -tvf "$package_dir/source.tar" >"$runtime/archive-types.raw" 2>"$runtime/archive-types-errors.raw" || return 1
+  tar -tf "$package_dir/source.tar" >"$runtime/archive-paths.raw" 2>"$runtime/archive-paths-errors.raw" || return 1
+  exec 3<"$runtime/archive-types.raw"
+  while IFS= read -r path; do
+    IFS= read -r type_line <&3 || { exec 3<&-; return 1; }
+    source_path_is_portable "${path%/}" || { exec 3<&-; return 1; }
+    if [[ "$path" == */ ]]; then expected_type=d
+    else expected_type=-; printf '%s\0' "$path" >>"$runtime/archive-source-files.z"
+    fi
+    [[ "${type_line:0:1}" == "$expected_type" ]] || { exec 3<&-; return 1; }
+  done <"$runtime/archive-paths.raw"
+  if IFS= read -r line <&3; then exec 3<&-; return 1; fi
+  exec 3<&-
+  cmp -s "$expected_paths" "$runtime/archive-paths.raw" || return 1
+  validate_source_list "$runtime/archive-source-files.z" "$runtime/sorted-archive-source-files.z" || return 1
+  cmp -s "$source_list" "$runtime/archive-source-files.z"
 }
 
 write_directory_manifest() {
@@ -120,13 +167,13 @@ write_directory_manifest() {
 }
 
 validate_package_checksums() {
-  local package_dir="$1" expected_name actual_hash line line_count=0
+  local package_dir="$1" diagnostics="${2:-/dev/null}" expected_name actual_hash line line_count=0
   local -a names=(source-files.z source-sha256.txt source.tar)
   exec 3<"$package_dir/package-sha256.txt"
   while [[ "$line_count" -lt 3 ]]; do
     expected_name="${names[$line_count]}"
     IFS= read -r line <&3 || { exec 3<&-; return 1; }
-    actual_hash="$(sha256sum "$package_dir/$expected_name" | cut -d ' ' -f1)"
+    actual_hash="$(sha256sum "$package_dir/$expected_name" 2>>"$diagnostics" | cut -d ' ' -f1)"
     [[ "$line" == "$actual_hash  $expected_name" ]] || { exec 3<&-; return 1; }
     line_count=$((line_count + 1))
   done
@@ -148,7 +195,7 @@ source_export_on_exit() {
   local status="${1:-$?}"
   trap - EXIT INT TERM
   set +e
-  if [[ "$source_export_complete" -ne 1 && -n "$source_export_dir" &&
+  if [[ "$source_export_complete" -ne 1 && "$source_export_dir_owned" -eq 1 && -n "$source_export_dir" &&
     "$source_export_dir" == /* && "$source_export_dir" != / && -e "$source_export_dir" ]]; then
     rm -r -- "$source_export_dir"
   fi
@@ -159,24 +206,30 @@ source_export_on_exit() {
 }
 
 export_head_source() {
-  local export_dir="$1" export_runtime extracted path
+  local export_dir="$1" export_runtime extracted path head_oid
   local -a archive_paths=()
-  [[ "$export_dir" == /* && "$export_dir" != / && ! -e "$export_dir" ]] || { echo "LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2; return 1; }
+  [[ "$export_dir" == /* && "$export_dir" != / && ! -e "$export_dir" && ! -L "$export_dir" ]] || { echo "LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2; return 1; }
   for command in git sha256sum sort mktemp tar chmod mkdir rm tr cmp find xargs; do command -v "$command" >/dev/null || { echo "required source export command is unavailable: $command" >&2; return 1; }; done
   source_export_dir="$export_dir"
   source_export_complete=0
+  source_export_dir_owned=0
   trap source_export_on_exit EXIT
   trap 'source_export_on_exit 130' INT
   trap 'source_export_on_exit 143' TERM
   export_runtime="$(mktemp -d)"; source_export_runtime="$export_runtime"; extracted="$export_runtime/extracted"
-  mkdir -p "$export_dir" "$extracted"
+  chmod 700 "$export_runtime"
+  head_oid="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}' 2>"$export_runtime/head-resolve.raw")" || { echo "cannot resolve committed HEAD" >&2; return 1; }
+  mkdir "$export_dir" 2>"$export_runtime/export-destination.raw" || { echo "source export destination was concurrently acquired" >&2; return 1; }
+  source_export_dir_owned=1
+  mkdir "$extracted"
   chmod 700 "$export_dir" "$export_runtime" "$extracted"
-  write_source_file_list >"$export_dir/source-files.z"
+  write_source_file_list "$head_oid" >"$export_dir/source-files.z"
   validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z" || { echo "committed HEAD source list is invalid" >&2; return 1; }
   while IFS= read -r -d '' path; do archive_paths+=("$path"); done <"$export_dir/source-files.z"
   [[ "${#archive_paths[@]}" -gt 0 ]] || { echo "committed HEAD source whitelist is empty" >&2; return 1; }
-  ( cd "$repo_dir"; git archive --format=tar --output="$export_dir/source.tar" HEAD -- "${archive_paths[@]}" )
-  tar -C "$extracted" -xf "$export_dir/source.tar"
+  ( cd "$repo_dir"; git archive --format=tar --output="$export_dir/source.tar" "$head_oid" -- "${archive_paths[@]}" ) >"$export_runtime/git-archive.raw" 2>&1 || { echo "committed HEAD archive export failed" >&2; return 1; }
+  validate_archive_list "$export_dir" "$export_dir/source-files.z" "$export_runtime" || { echo "committed HEAD archive preflight failed" >&2; return 1; }
+  tar -C "$extracted" -xf "$export_dir/source.tar" >"$export_runtime/archive-extract.raw" 2>&1 || { echo "committed HEAD archive extraction failed" >&2; return 1; }
   validate_received_source_files "$extracted" "$export_dir/source-files.z" || return 1
   write_context_file_list "$extracted" >"$export_runtime/archive-files.z"
   cmp -s "$export_dir/source-files.z" "$export_runtime/archive-files.z" || return 1
@@ -184,7 +237,7 @@ export_head_source() {
   ( cd "$export_dir"; sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt )
   chmod 600 "$export_dir/source-files.z" "$export_dir/source-sha256.txt" "$export_dir/source.tar" "$export_dir/package-sha256.txt"
   validate_package_artifact_list "$export_dir"
-  validate_package_checksums "$export_dir"
+  validate_package_checksums "$export_dir" "$export_runtime/package-checksums.raw"
   rm -r -- "$export_runtime"
   source_export_runtime=""
   source_export_complete=1
@@ -252,11 +305,25 @@ hash_evidence_directory() {
   ( cd "$directory"; find . -type f ! -name evidence-sha256.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) >"$directory/evidence-sha256.txt"
 }
 
+evidence_parent_is_safe() {
+  [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]]
+}
+
+prepare_evidence_parent() {
+  if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
+    evidence_parent_is_safe
+    return
+  fi
+  mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+  evidence_parent_is_safe
+}
+
 publish_evidence_directory() {
-  local directory="$1" parent="${retained_evidence_dir%/*}" staging_name=""
+  local directory="$1" staging_name=""
+  evidence_parent_is_safe || return 1
   [[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" ]] || return 1
-  mkdir -p "$parent" || return 1
   evidence_publish_lock="${retained_evidence_dir}.publish.lock"
+  evidence_parent_is_safe || { evidence_publish_lock=""; return 1; }
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
     return 1
@@ -266,6 +333,11 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  evidence_parent_is_safe || {
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  }
   if ! evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")"; then
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
@@ -294,6 +366,13 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  if ! evidence_parent_is_safe; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
   if ! mv -n -- "$evidence_publish_tmp" "$retained_evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
     [[ -e "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
@@ -303,8 +382,11 @@ publish_evidence_directory() {
     return 1
   fi
   if [[ -d "$retained_evidence_dir/$staging_name" ]]; then
-    rm -r -- "$retained_evidence_dir/$staging_name" || return 1
     evidence_publish_tmp=""
+    if ! rm -r -- "$retained_evidence_dir/$staging_name"; then
+      evidence_publish_lock=""
+      return 1
+    fi
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
     return 1
@@ -459,7 +541,24 @@ source_package_dir="${LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_DIR:-}"
   echo "LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_DIR must identify the transferred source package" >&2
   exit 1
 }
-validate_package_artifact_list "$source_package_dir" || {
+runtime_dir="$(mktemp -d 2>/dev/null)" || { echo "cannot create private license privacy runtime" >&2; exit 1; }
+trap on_exit EXIT
+trap 'on_exit 130' INT
+trap 'on_exit 143' TERM
+chmod 700 "$runtime_dir" 2>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure private license privacy runtime" >&2; exit 1; }
+build_context="$runtime_dir/build-context"
+evidence_dir="$runtime_dir/evidence"
+source_package_snapshot="$runtime_dir/source-package"
+mkdir "$build_context" "$evidence_dir" "$source_package_snapshot" 2>"$runtime_dir/runtime-directories.raw" || {
+  echo "cannot create private license privacy runtime state" >&2
+  exit 1
+}
+chmod 700 "$build_context" "$evidence_dir" "$source_package_snapshot" 2>>"$runtime_dir/runtime-mode.raw" || {
+  echo "cannot secure private license privacy runtime state" >&2
+  exit 1
+}
+: >"$evidence_dir/acceptance-results.txt"
+validate_package_artifact_list "$source_package_dir" 2>"$runtime_dir/caller-package-list.raw" || {
   echo "transferred license privacy source package must contain exactly four artifacts" >&2
   exit 1
 }
@@ -468,43 +567,52 @@ for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; 
     echo "transferred license privacy source package is incomplete" >&2; exit 1
   }
 done
+cp -- "$source_package_dir/source-files.z" "$source_package_dir/source-sha256.txt" \
+  "$source_package_dir/source.tar" "$source_package_dir/package-sha256.txt" \
+  "$source_package_snapshot/" >"$runtime_dir/package-snapshot.raw" 2>&1 || {
+  echo "cannot snapshot transferred license privacy source package" >&2
+  exit 1
+}
+chmod 600 "$source_package_snapshot/source-files.z" "$source_package_snapshot/source-sha256.txt" \
+  "$source_package_snapshot/source.tar" "$source_package_snapshot/package-sha256.txt" \
+  2>>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure source package snapshot" >&2; exit 1; }
+validate_package_artifact_list "$source_package_snapshot" 2>"$runtime_dir/package-snapshot-list.raw" || {
+  echo "private license privacy source package snapshot is invalid" >&2
+  exit 1
+}
+for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
+  [[ -f "$source_package_snapshot/$artifact" && ! -L "$source_package_snapshot/$artifact" ]] || {
+    echo "private license privacy source package snapshot is incomplete" >&2; exit 1
+  }
+done
 authorized_package_manifest_sha256="${LICENSE_FILE_PRIVACY_SOURCE_PACKAGE_MANIFEST_SHA256:-}"
-actual_package_manifest_sha256="$(sha256sum "$source_package_dir/package-sha256.txt" | cut -d ' ' -f1)"
+actual_package_manifest_sha256="$(sha256sum "$source_package_snapshot/package-sha256.txt" 2>>"$runtime_dir/package-manifest.raw" | cut -d ' ' -f1)"
 [[ "${#authorized_package_manifest_sha256}" -eq 64 && "$authorized_package_manifest_sha256" != *[!0-9a-f]* && "$actual_package_manifest_sha256" == "$authorized_package_manifest_sha256" ]] || {
   echo "source package manifest digest does not match authorization" >&2; exit 1
 }
-validate_package_checksums "$source_package_dir" || { echo "transferred license privacy source package checksum failed" >&2; exit 1; }
-runtime_dir="$(mktemp -d)"
-trap on_exit EXIT
-trap 'on_exit 130' INT
-trap 'on_exit 143' TERM
-build_context="$runtime_dir/build-context"
-evidence_dir="$runtime_dir/evidence"
-mkdir -p "$build_context" "$evidence_dir"
-chmod 700 "$runtime_dir" "$build_context" "$evidence_dir"
-: >"$evidence_dir/acceptance-results.txt"
-source_files="$source_package_dir/source-files.z"
-source_manifest="$source_package_dir/source-sha256.txt"
-validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" || { echo "transferred license privacy source list is invalid" >&2; exit 1; }
-validate_received_source_files "$repo_dir" "$source_files" || { echo "received license privacy source contains a missing or unsafe file" >&2; exit 1; }
-write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt" || { echo "received license privacy source does not match package manifest" >&2; exit 1; }
-cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || { echo "received license privacy source does not match package manifest" >&2; exit 1; }
-if ! tar -tvf "$source_package_dir/source.tar" >"$runtime_dir/source-archive-validation.raw" 2>&1; then
+validate_package_checksums "$source_package_snapshot" "$runtime_dir/package-checksums.raw" || { echo "transferred license privacy source package checksum failed" >&2; exit 1; }
+source_files="$source_package_snapshot/source-files.z"
+source_manifest="$source_package_snapshot/source-sha256.txt"
+validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" 2>>"$runtime_dir/source-list.raw" || { echo "transferred license privacy source list is invalid" >&2; exit 1; }
+validate_archive_list "$source_package_snapshot" "$source_files" "$runtime_dir" || {
   echo "transferred license privacy source archive is invalid" >&2
   exit 1
-fi
-grep -Eq '^[lh]' "$runtime_dir/source-archive-validation.raw" && { echo "source archive contains a link" >&2; exit 1; }
-if ! tar -C "$build_context" -xf "$source_package_dir/source.tar" >"$runtime_dir/source-archive-extract.raw" 2>&1; then
+}
+if ! tar -C "$build_context" -xf "$source_package_snapshot/source.tar" >"$runtime_dir/source-archive-extract.raw" 2>&1; then
   echo "transferred license privacy source archive extraction failed" >&2
   exit 1
 fi
-[[ -z "$(find "$build_context" -type l -print -quit)" ]] || { echo "source archive contains a symlink" >&2; exit 1; }
-write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z"
+validate_received_source_files "$build_context" "$source_files" 2>>"$runtime_dir/build-context-validation.raw" || { echo "source archive contains a missing or unsafe file" >&2; exit 1; }
+write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z" 2>>"$runtime_dir/build-context-validation.raw"
 cmp -s "$source_files" "$runtime_dir/build-context-files.z" || { echo "source archive contents do not match the committed source list" >&2; exit 1; }
-write_directory_manifest "$build_context" "$source_files" "$runtime_dir/build-context-sha256.txt"
+write_directory_manifest "$build_context" "$source_files" "$runtime_dir/build-context-sha256.txt" 2>>"$runtime_dir/build-context-validation.raw"
 cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || { echo "temporary build context does not match the committed source manifest" >&2; exit 1; }
+validate_received_source_files "$repo_dir" "$source_files" 2>>"$runtime_dir/received-source-validation.raw" || { echo "received license privacy source contains a missing or unsafe file" >&2; exit 1; }
+write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt" 2>>"$runtime_dir/received-source-validation.raw" || { echo "received license privacy source does not match package manifest" >&2; exit 1; }
+cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || { echo "received license privacy source does not match package manifest" >&2; exit 1; }
 source_count="$(tr -cd '\0' <"$source_files" | wc -c | tr -d ' ')"
-source_manifest_sha256="$(sha256sum "$source_manifest" | cut -d ' ' -f1)"
+source_manifest_sha256="$(sha256sum "$source_manifest" 2>>"$runtime_dir/source-manifest.raw" | cut -d ' ' -f1)"
+prepare_evidence_parent || { echo "license privacy evidence parent is unsafe" >&2; exit 1; }
 [[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" &&
   ! -e "${retained_evidence_dir}.publish.lock" && ! -L "${retained_evidence_dir}.publish.lock" ]] || {
   echo "refusing to overwrite existing license privacy evidence" >&2
@@ -550,10 +658,10 @@ snapshot_production() {
 }
 
 record_pass source_package "$source_count" "$source_manifest_sha256"
+evidence_eligible=1
 current_stage="production_before"
 snapshot_production "$evidence_dir/production-before.txt"
 snapshot_file_is_safe "$evidence_dir/production-before.txt" || { echo "production-before snapshot is invalid" >&2; exit 1; }
-evidence_eligible=1
 
 mysql_sql() {
   local sql="$1"

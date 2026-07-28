@@ -70,11 +70,24 @@ source_path_is_allowed() {
   return 1
 }
 
+source_path_is_portable() {
+  local path="$1" component
+  local -a components=()
+  [[ -n "$path" && "$path" != /* && "$path" != -* && "$path" != *//* &&
+    "$path" != *[!A-Za-z0-9._/-]* ]] || return 1
+  IFS=/ read -r -a components <<<"$path"
+  for component in "${components[@]}"; do
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+  done
+}
+
 write_source_file_list() {
+  local commit="${1:-HEAD}"
   (
     cd "$repo_dir"
-    git ls-tree -r --name-only -z HEAD -- Makefile backend deploy/acceptance |
+    git ls-tree -r --name-only -z "$commit" -- Makefile backend deploy/acceptance 2>/dev/null |
       while IFS= read -r -d '' path; do
+        source_path_is_portable "$path" || continue
         source_path_is_forbidden "$path" && continue
         source_path_is_allowed "$path" && printf '%s\0' "$path"
       done | LC_ALL=C sort -zu
@@ -111,10 +124,7 @@ validate_source_list() {
   LC_ALL=C sort -zu "$source_list" >"$sorted_list"
   cmp -s "$source_list" "$sorted_list" || return 1
   while IFS= read -r -d '' path; do
-    [[ -n "$path" && "$path" != /* && "$path" != -* &&
-      "$path" != ../* && "$path" != */../* && "$path" != */.. &&
-      "$path" != ./* && "$path" != */./* && "$path" != *//* &&
-      "$path" != *[!A-Za-z0-9._/-]* ]] || return 1
+    source_path_is_portable "$path" || return 1
     source_path_is_forbidden "$path" && return 1
     source_path_is_allowed "$path" || return 1
     count=$((count + 1))
@@ -147,12 +157,55 @@ write_context_file_list() {
 }
 
 validate_received_source_files() {
-  local directory="$1"
-  local source_list="$2"
-  local path
+  local directory="$1" source_list="$2" path current component
+  local -a components=()
+  [[ ! -L "$directory" ]] || return 1
   while IFS= read -r -d '' path; do
-    [[ -f "$directory/$path" && ! -L "$directory/$path" ]] || return 1
+    current="$directory"
+    IFS=/ read -r -a components <<<"$path"
+    for component in "${components[@]}"; do
+      current="$current/$component"
+      [[ ! -L "$current" ]] || return 1
+    done
+    [[ -f "$current" ]] || return 1
   done <"$source_list"
+}
+
+validate_archive_list() {
+  local package_dir="$1" source_list="$2" runtime="$3" line path parent type_line expected_type
+  local unsorted_expected="$runtime/expected-archive-paths.unsorted"
+  local expected_paths="$runtime/expected-archive-paths.raw"
+  : >"$runtime/archive-source-files.z"
+  : >"$unsorted_expected"
+  while IFS= read -r -d '' path; do
+    printf '%s\n' "$path" >>"$unsorted_expected"
+    parent="${path%/*}"
+    while [[ "$parent" != "$path" && -n "$parent" ]]; do
+      printf '%s/\n' "$parent" >>"$unsorted_expected"
+      path="$parent"
+      parent="${path%/*}"
+    done
+  done <"$source_list"
+  LC_ALL=C sort -u "$unsorted_expected" >"$expected_paths"
+  tar -tvf "$package_dir/source.tar" >"$runtime/archive-types.raw" 2>"$runtime/archive-types-errors.raw" || return 1
+  tar -tf "$package_dir/source.tar" >"$runtime/archive-paths.raw" 2>"$runtime/archive-paths-errors.raw" || return 1
+  exec 3<"$runtime/archive-types.raw"
+  while IFS= read -r path; do
+    IFS= read -r type_line <&3 || { exec 3<&-; return 1; }
+    source_path_is_portable "${path%/}" || { exec 3<&-; return 1; }
+    if [[ "$path" == */ ]]; then
+      expected_type=d
+    else
+      expected_type=-
+      printf '%s\0' "$path" >>"$runtime/archive-source-files.z"
+    fi
+    [[ "${type_line:0:1}" == "$expected_type" ]] || { exec 3<&-; return 1; }
+  done <"$runtime/archive-paths.raw"
+  if IFS= read -r line <&3; then exec 3<&-; return 1; fi
+  exec 3<&-
+  cmp -s "$expected_paths" "$runtime/archive-paths.raw" || return 1
+  validate_source_list "$runtime/archive-source-files.z" "$runtime/sorted-archive-source-files.z" || return 1
+  cmp -s "$source_list" "$runtime/archive-source-files.z"
 }
 
 export_head_source() (
@@ -161,23 +214,27 @@ export_head_source() (
   local export_runtime=""
   local extracted=""
   local completed=0
+  local export_dir_owned=0
   local path
+  local head_oid
   local -a archive_paths=()
 
   cleanup_source_export() {
-    local status=$?
+    local status="${1:-$?}"
     trap - EXIT INT TERM
     if [[ -n "$export_runtime" && -d "$export_runtime" ]]; then
       rm -r -- "$export_runtime"
     fi
-    if [[ "$completed" -ne 1 && -d "$export_dir" ]]; then
+    if [[ "$completed" -ne 1 && "$export_dir_owned" -eq 1 && -d "$export_dir" ]]; then
       rm -r -- "$export_dir"
     fi
     exit "$status"
   }
-  trap cleanup_source_export EXIT INT TERM
+  trap cleanup_source_export EXIT
+  trap 'cleanup_source_export 130' INT
+  trap 'cleanup_source_export 143' TERM
 
-  [[ "$export_dir" == /* && "$export_dir" != "/" && ! -e "$export_dir" ]] || {
+  [[ "$export_dir" == /* && "$export_dir" != "/" && ! -e "$export_dir" && ! -L "$export_dir" ]] || {
     echo "SESSION_REVOCATION_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2
     return 1
   }
@@ -190,9 +247,19 @@ export_head_source() (
 
   export_runtime="$(mktemp -d)"
   extracted="$export_runtime/extracted"
-  mkdir -p "$export_dir" "$extracted"
-  chmod 700 "$export_dir" "$export_runtime" "$extracted"
-  write_source_file_list >"$export_dir/source-files.z"
+  chmod 700 "$export_runtime"
+  head_oid="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}' 2>"$export_runtime/head-resolve.raw")" || {
+    echo "cannot resolve committed HEAD" >&2
+    return 1
+  }
+  mkdir "$export_dir" 2>"$export_runtime/export-destination.raw" || {
+    echo "source export destination was concurrently acquired" >&2
+    return 1
+  }
+  export_dir_owned=1
+  mkdir "$extracted"
+  chmod 700 "$export_dir" "$extracted"
+  write_source_file_list "$head_oid" >"$export_dir/source-files.z"
   validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z" || {
     echo "committed HEAD session revocation source list is invalid" >&2
     return 1
@@ -206,9 +273,19 @@ export_head_source() (
   }
   (
     cd "$repo_dir"
-    git archive --format=tar --output="$export_dir/source.tar" HEAD -- "${archive_paths[@]}"
-  )
-  tar -C "$extracted" -xf "$export_dir/source.tar"
+    git archive --format=tar --output="$export_dir/source.tar" "$head_oid" -- "${archive_paths[@]}"
+  ) >"$export_runtime/git-archive.raw" 2>&1 || {
+    echo "committed HEAD session revocation archive export failed" >&2
+    return 1
+  }
+  validate_archive_list "$export_dir" "$export_dir/source-files.z" "$export_runtime" || {
+    echo "committed HEAD session revocation archive preflight failed" >&2
+    return 1
+  }
+  tar -C "$extracted" -xf "$export_dir/source.tar" >"$export_runtime/archive-extract.raw" 2>&1 || {
+    echo "committed HEAD session revocation archive extraction failed" >&2
+    return 1
+  }
   validate_received_source_files "$extracted" "$export_dir/source-files.z" || {
     echo "committed HEAD session revocation archive contains a missing or unsafe file" >&2
     return 1
@@ -410,11 +487,25 @@ validate_evidence_copy() {
   cmp -s "$runtime_dir/evidence-source-sha256.txt" "$runtime_dir/evidence-copied-sha256.txt"
 }
 
+evidence_parent_is_safe() {
+  [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]]
+}
+
+prepare_evidence_parent() {
+  if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
+    evidence_parent_is_safe
+    return
+  fi
+  mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+  evidence_parent_is_safe
+}
+
 publish_evidence_directory() {
   local directory="$1" staging_name=""
+  evidence_parent_is_safe || return 1
   [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || return 1
-  mkdir -p "$evidence_parent" || return 1
   evidence_publish_lock="$evidence_parent/.session-access-revocation.publish.lock"
+  evidence_parent_is_safe || { evidence_publish_lock=""; return 1; }
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
     return 1
@@ -424,6 +515,11 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  evidence_parent_is_safe || {
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  }
   if ! evidence_publish_tmp="$(mktemp -d "$evidence_parent/.session-access-revocation.publish.XXXXXX")"; then
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
@@ -452,6 +548,13 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  if ! evidence_parent_is_safe; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
   if ! mv -n -- "$evidence_publish_tmp" "$evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
     [[ -e "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
@@ -461,8 +564,11 @@ publish_evidence_directory() {
     return 1
   fi
   if [[ -d "$evidence_dir/$staging_name" ]]; then
-    rm -r -- "$evidence_dir/$staging_name" || return 1
     evidence_publish_tmp=""
+    if ! rm -r -- "$evidence_dir/$staging_name"; then
+      evidence_publish_lock=""
+      return 1
+    fi
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
     return 1
@@ -535,7 +641,7 @@ publish_evidence() {
 }
 
 on_exit() {
-  local status=$? publication_status=0 snapshots_safe=1
+  local status="${1:-$?}" publication_status=0 snapshots_safe=1
   trap - EXIT INT TERM
   set +e
   if [[ "$evidence_eligible" -eq 1 && "$evidence_published" -ne 1 &&
@@ -559,7 +665,8 @@ on_exit() {
   fi
   if [[ "$project_may_exist" -eq 1 && "$docker_available" -eq 1 ]] &&
     docker container ls -a \
-      --filter "label=com.docker.compose.project=$project_name" -q | grep -q .; then
+      --filter "label=com.docker.compose.project=$project_name" -q \
+      2>>"$runtime_dir/isolated-cleanup.raw" | grep -q .; then
     if [[ "$status" -ne 0 ]]; then
       "${compose[@]}" ps >"$runtime_dir/isolated-ps.raw" 2>&1 || true
     fi
@@ -579,10 +686,13 @@ on_exit() {
   fi
   exit "$status"
 }
-trap on_exit EXIT INT TERM
+trap on_exit EXIT
+trap 'on_exit 130' INT
+trap 'on_exit 143' TERM
 
 verify_source_package() {
-  local package_dir="${SESSION_REVOCATION_SOURCE_PACKAGE_DIR:-}"
+  local caller_package_dir="${SESSION_REVOCATION_SOURCE_PACKAGE_DIR:-}"
+  local package_dir="$runtime_dir/source-package"
   local authorized_digest="${SESSION_REVOCATION_SOURCE_PACKAGE_MANIFEST_SHA256:-}"
   local actual_digest
   local artifact
@@ -596,8 +706,8 @@ verify_source_package() {
     package-sha256.txt
   )
 
-  [[ "$package_dir" == /* && "$package_dir" != "/" &&
-    -d "$package_dir" && ! -L "$package_dir" ]] || {
+  [[ "$caller_package_dir" == /* && "$caller_package_dir" != "/" &&
+    -d "$caller_package_dir" && ! -L "$caller_package_dir" ]] || {
     echo "SESSION_REVOCATION_SOURCE_PACKAGE_DIR must be an absolute regular directory" >&2
     return 1
   }
@@ -606,13 +716,13 @@ verify_source_package() {
     return 1
   }
   for artifact in "${package_artifacts[@]}"; do
-    [[ -f "$package_dir/$artifact" && ! -L "$package_dir/$artifact" ]] || {
+    [[ -f "$caller_package_dir/$artifact" && ! -L "$caller_package_dir/$artifact" ]] || {
       echo "session revocation source package artifact is missing or unsafe: $artifact" >&2
       return 1
     }
   done
   while IFS= read -r -d '' entry; do
-    entry="${entry#"$package_dir"/}"
+    entry="${entry#"$caller_package_dir"/}"
     case "$entry" in
       source-files.z | source-sha256.txt | source.tar | package-sha256.txt) ;;
       *)
@@ -621,21 +731,45 @@ verify_source_package() {
         ;;
     esac
     entry_count=$((entry_count + 1))
-  done < <(find "$package_dir" -mindepth 1 -maxdepth 1 -print0)
+  done < <(find "$caller_package_dir" -mindepth 1 -maxdepth 1 -print0 2>>"$runtime_dir/caller-package-list.raw")
   [[ "$entry_count" -eq 4 ]] || {
     echo "session revocation source package must contain exactly four artifacts" >&2
     return 1
   }
+  mkdir "$package_dir" 2>>"$runtime_dir/package-snapshot.raw" || {
+    echo "cannot create private session revocation source package snapshot" >&2
+    return 1
+  }
+  chmod 700 "$package_dir" 2>>"$runtime_dir/package-snapshot.raw" || return 1
+  cp -- "$caller_package_dir/source-files.z" "$caller_package_dir/source-sha256.txt" \
+    "$caller_package_dir/source.tar" "$caller_package_dir/package-sha256.txt" \
+    "$package_dir/" >>"$runtime_dir/package-snapshot.raw" 2>&1 || {
+    echo "cannot snapshot transferred session revocation source package" >&2
+    return 1
+  }
+  chmod 600 "$package_dir/source-files.z" "$package_dir/source-sha256.txt" \
+    "$package_dir/source.tar" "$package_dir/package-sha256.txt" \
+    2>>"$runtime_dir/package-snapshot.raw" || return 1
+  for artifact in "${package_artifacts[@]}"; do
+    [[ -f "$package_dir/$artifact" && ! -L "$package_dir/$artifact" ]] || {
+      echo "private session revocation source package snapshot is incomplete" >&2
+      return 1
+    }
+  done
 
-  actual_digest="$(sha256sum "$package_dir/package-sha256.txt")"
-  actual_digest="${actual_digest%% *}"
+  if ! sha256sum "$package_dir/package-sha256.txt" >"$runtime_dir/actual-package-sha256.txt" \
+    2>>"$runtime_dir/package-checksums.raw"; then
+    echo "cannot hash session revocation source package manifest" >&2
+    return 1
+  fi
+  IFS=' ' read -r actual_digest _ <"$runtime_dir/actual-package-sha256.txt"
   [[ "$actual_digest" == "$authorized_digest" ]] || {
     echo "session revocation source package manifest is not authorized" >&2
     return 1
   }
   (
     cd "$package_dir"
-    sha256sum source-files.z source-sha256.txt source.tar
+    sha256sum source-files.z source-sha256.txt source.tar 2>>"$runtime_dir/package-checksums.raw"
   ) >"$runtime_dir/expected-package-sha256.txt"
   cmp -s "$runtime_dir/expected-package-sha256.txt" \
     "$package_dir/package-sha256.txt" || {
@@ -648,39 +782,17 @@ verify_source_package() {
     echo "session revocation source package list is invalid" >&2
     return 1
   }
-  : >"$runtime_dir/archive-source-files.z"
-  while IFS= read -r path; do
-    [[ -n "$path" && "$path" != /* && "$path" != -* &&
-      "$path" != ../* && "$path" != */../* && "$path" != */.. &&
-      "$path" != ./* && "$path" != */./* && "$path" != *//* &&
-      "$path" != *[!A-Za-z0-9._/-]* ]] || {
-      echo "session revocation source archive contains an unsafe path" >&2
-      return 1
-    }
-    if [[ "$path" == */ ]]; then
-      path="${path%/}"
-      source_path_is_forbidden "$path" && return 1
-      source_list_contains_child "$package_dir/source-files.z" "$path" || {
-        echo "session revocation source archive contains an unexpected directory" >&2
-        return 1
-      }
-    else
-      printf '%s\0' "$path" >>"$runtime_dir/archive-source-files.z"
-    fi
-  done < <(tar -tf "$package_dir/source.tar")
-  validate_source_list "$runtime_dir/archive-source-files.z" \
-    "$runtime_dir/sorted-archive-source-files.z" || {
-    echo "session revocation source archive list is invalid" >&2
-    return 1
-  }
-  cmp -s "$package_dir/source-files.z" "$runtime_dir/archive-source-files.z" || {
-    echo "session revocation source archive does not match its source list" >&2
+  validate_archive_list "$package_dir" "$package_dir/source-files.z" "$runtime_dir" || {
+    echo "session revocation source archive list or entry type is unsafe" >&2
     return 1
   }
 
   mkdir "$build_context"
   chmod 700 "$build_context"
-  tar -C "$build_context" -xf "$package_dir/source.tar"
+  tar -C "$build_context" -xf "$package_dir/source.tar" >"$runtime_dir/source-archive-extract.raw" 2>&1 || {
+    echo "session revocation source archive extraction failed" >&2
+    return 1
+  }
   validate_received_source_files "$build_context" "$package_dir/source-files.z" || {
     echo "session revocation extracted source contains a missing or unsafe file" >&2
     return 1
@@ -721,6 +833,7 @@ verify_source_package
 printf 'classification=source_package|result=PASS|count=%s|sha256=%s\n' \
   "$source_count" "$source_manifest_sha256" >"$source_results"
 
+prepare_evidence_parent || { echo "session revocation evidence parent is unsafe" >&2; exit 1; }
 [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" &&
   ! -e "$evidence_parent/.session-access-revocation.publish.lock" &&
   ! -L "$evidence_parent/.session-access-revocation.publish.lock" ]] || {
@@ -766,7 +879,7 @@ mysql_sql() {
   "${compose[@]}" exec -T mysql sh -ec '
     MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --protocol=TCP -h 127.0.0.1 \
       -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch --skip-column-names --execute="$1"
-  ' sh "$sql"
+  ' sh "$sql" 2>>"$runtime_dir/mysql-sql.raw"
 }
 
 mysql_file() {
@@ -774,7 +887,7 @@ mysql_file() {
   "${compose[@]}" exec -T mysql sh -ec '
     MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --protocol=TCP -h 127.0.0.1 \
       -u"$MYSQL_USER" "$MYSQL_DATABASE" < "$1"
-  ' sh "$container_path"
+  ' sh "$container_path" >>"$runtime_dir/mysql-file.raw" 2>&1
 }
 
 reset_schema() {
@@ -825,7 +938,10 @@ run_focused_test() {
 
 current_stage="mysql_start"
 project_may_exist=1
-"${compose[@]}" up -d --wait mysql
+if ! "${compose[@]}" up -d --wait mysql >"$runtime_dir/mysql-start.raw" 2>&1; then
+  echo "isolated session revocation MySQL start failed" >&2
+  exit 1
+fi
 current_stage="mysql_version"
 mysql_version="$(mysql_sql 'SELECT VERSION()')"
 [[ "$mysql_version" == 8.4.* ]] || {
@@ -835,7 +951,10 @@ mysql_version="$(mysql_sql 'SELECT VERSION()')"
 printf 'classification=mysql_version|result=PASS|count=1\n' >>"$source_results"
 
 current_stage="bootstrap_build"
-"${compose[@]}" --profile tools build bootstrap-admin
+if ! "${compose[@]}" --profile tools build bootstrap-admin >"$runtime_dir/bootstrap-build.raw" 2>&1; then
+  echo "session revocation bootstrap image build failed" >&2
+  exit 1
+fi
 
 current_stage="migration_chain"
 apply_migration_chain

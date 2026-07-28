@@ -893,12 +893,25 @@ Sanitized evidence is retained under
 `deploy/acceptance/evidence/session-access-revocation/`. It contains only the
 authorized source-package classification, validated gate classifications,
 approved production-container snapshots, the evidence leak-scan result, and a
-deterministic evidence SHA-256 manifest. The only production interaction is
-read-only inspection of three named container identities, states, and restart
-counts; before and after snapshots must match. The script never executes
-production SQL, reads production uploads, deploys or restarts production
-services, or changes production data or sessions. It stops the dedicated
-project services at exit and retains its resources for review.
+deterministic evidence SHA-256 manifest. A successful evidence set also retains
+these four validated summaries:
+
+- `mysql-auto-migrate-false.txt`: filtered focused-test lines for
+  `AUTO_MIGRATE=false`, restricted to Go `RUN`/`PASS`/`ok` lines plus the
+  asserted `status/code =` and `EXPLAIN access/key =` summaries, and containing
+  the `TestSessionRevocationMySQLAcceptance` PASS marker.
+- `mysql-auto-migrate-true.txt`: the same filtered schema for
+  `AUTO_MIGRATE=true`, including the same required focused-test PASS marker.
+- `backend-tests.txt`: only Go package result lines beginning with `?` or `ok`
+  from the complete backend test run.
+- `go-vet.txt`: exactly `go_vet=pass`.
+
+The only production interaction is read-only inspection of three named
+container identities, states, and restart counts; before and after snapshots
+must match. The script never executes production SQL, reads production
+uploads, deploys or restarts production services, or changes production data
+or sessions. It stops the dedicated project services at exit and retains its
+resources for review.
 
 ## Miniapp auth refresh acceptance
 

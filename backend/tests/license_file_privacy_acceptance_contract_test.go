@@ -186,6 +186,74 @@ exec /bin/chmod "$@"
 			t.Fatalf("failed export destination was retained: %v", err)
 		}
 	})
+
+	t.Run("one resolved commit binds list and archive across ref movement", func(t *testing.T) {
+		movingRepo, movingScript := newLicensePrivacyFixtureRepo(t)
+		originalOID := licensePrivacyGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		writeLicensePrivacyFixtureFile(t, movingRepo, "Makefile", "fixture:\n\t@second\n", 0o600)
+		runLicensePrivacyGit(t, movingRepo, "add", "--", "Makefile")
+		runLicensePrivacyGit(t, movingRepo, "commit", "-q", "-m", "move ref target")
+		movedOID := licensePrivacyGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		runLicensePrivacyGit(t, movingRepo, "update-ref", "HEAD", originalOID)
+		stubDir := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, stubDir, "git", `#!/bin/sh
+if [ "${1:-}" = ls-tree ]; then
+  /usr/bin/git "$@" || exit $?
+  /usr/bin/git -C "$MOVE_REPO" update-ref HEAD "$MOVE_TO_OID" || exit $?
+  exit 0
+fi
+exec /usr/bin/git "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "moved-ref-package")
+		command := exec.Command("/bin/bash", movingScript)
+		command.Dir = movingRepo
+		command.Env = []string{
+			"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + destination,
+			"MOVE_REPO=" + movingRepo,
+			"MOVE_TO_OID=" + movedOID,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export while HEAD moves: %v: %s", err, output)
+		}
+		extracted := t.TempDir()
+		licensePrivacyExtractTar(t, filepath.Join(destination, "source.tar"), extracted)
+		makefile, err := os.ReadFile(filepath.Join(extracted, "Makefile"))
+		if err != nil || string(makefile) != "fixture:\n\t@true\n" {
+			t.Fatalf("ref movement changed exported bytes: %q, %v", makefile, err)
+		}
+	})
+
+	t.Run("concurrent destination creator remains owner", func(t *testing.T) {
+		raceRepo, raceScript := newLicensePrivacyFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "raced-package")
+		stubDir := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+case " $* " in
+  *" $RACE_DESTINATION "*)
+    if [ ! -e "$RACE_DESTINATION" ]; then
+      /bin/mkdir "$RACE_DESTINATION" || exit $?
+      printf 'concurrent-owner\n' >"$RACE_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", raceScript)
+		command.Dir = raceRepo
+		command.Env = []string{
+			"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + destination,
+			"RACE_DESTINATION=" + destination,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export acquired a concurrently created destination: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "concurrent-owner\n" {
+			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func TestLicenseFilePrivacyAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T) {
@@ -397,6 +465,27 @@ func TestLicenseFilePrivacyAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T
 			}
 		})
 	}
+	t.Run("linked evidence parent refuses before Docker", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		evidenceParent := filepath.Join(remote, "deploy", "acceptance", "evidence")
+		external := t.TempDir()
+		if err := os.Symlink(external, evidenceParent); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script,
+			licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"), marker, "")
+		if err == nil {
+			t.Fatalf("linked evidence parent unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked evidence parent reached Docker")
+		}
+		entries, err := os.ReadDir(external)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("linked evidence parent target was modified: %v, %v", entries, err)
+		}
+	})
 }
 
 func TestLicenseFilePrivacyAcceptanceRetainsSanitizedFailureEvidence(t *testing.T) {
@@ -420,6 +509,7 @@ exit 0
 			t.Fatalf("controlled raw failure leaked %q to caller output: %q", forbidden, output)
 		}
 	}
+
 	evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
 	entries, err := os.ReadDir(evidence)
 	if err != nil {
@@ -717,6 +807,68 @@ exec /bin/rmdir "$@"
 	}
 }
 
+func TestLicenseFilePrivacyAcceptancePreservesNestedMoveRemovalAmbiguity(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+	writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+[ -d "${target}.publish.lock" ] || exit 91
+/bin/mkdir "$target" || exit $?
+exec /bin/mv "$source" "$target/"
+`, 0o700)
+	writeLicensePrivacyFixtureFile(t, stubDir, "rm", `#!/bin/sh
+case " $* " in
+  *"/license-file-privacy/"*"license-file-privacy.publish."*) exit 73;;
+esac
+exec /bin/rm "$@"
+`, 0o700)
+	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("nested move removal failure unexpectedly succeeded: %s", output)
+	}
+	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
+}
+
+func TestLicenseFilePrivacyAcceptanceClassifiesInitialProductionSnapshotFailure(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+: >>"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" container ls "*"name=^/secondhand-market-"*) exit 42;;
+  *" compose "*" stop "*) exit 0;;
+esac
+exit 0
+`)
+	output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, "")
+	if err == nil {
+		t.Fatalf("failed production-before snapshot unexpectedly succeeded: %s", output)
+	}
+	evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+	results, readErr := os.ReadFile(filepath.Join(evidence, "acceptance-results.txt"))
+	if readErr != nil {
+		t.Fatalf("initial snapshot failure retained no classified fallback: %v; output=%q", readErr, output)
+	}
+	if !bytes.Contains(results, []byte("stage=production_before")) &&
+		!bytes.Contains(results, []byte("stage=evidence_sanitization")) {
+		t.Fatalf("initial snapshot failure classification = %q", results)
+	}
+	check := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
+	check.Dir = evidence
+	if checkOutput, checkErr := check.CombinedOutput(); checkErr != nil {
+		t.Fatalf("verify initial snapshot failure evidence: %v: %s", checkErr, checkOutput)
+	}
+}
+
 func prepareMetadataFreeLicensePrivacyAcceptance(t *testing.T) (string, string, string) {
 	t.Helper()
 	fixture, fixtureScript := newLicensePrivacyFixtureRepo(t)
@@ -781,6 +933,146 @@ func assertLicensePrivacyNoPublicationState(t *testing.T, remote string) {
 		if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") || entry.Name() == "license-file-privacy.publish.lock" {
 			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
+	}
+}
+
+func TestLicenseFilePrivacyAcceptanceRejectsMutableAndStructurallyUnsafeSource(t *testing.T) {
+	t.Run("post-check package replacement cannot become authoritative", func(t *testing.T) {
+		fixture, fixtureScript := newLicensePrivacyFixtureRepo(t)
+		packageA := filepath.Join(t.TempDir(), "package-a")
+		command := exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + packageA, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package A: %v: %s", err, output)
+		}
+		writeLicensePrivacyFixtureFile(t, fixture, "Makefile", "fixture:\n\t@replacement\n", 0o600)
+		runLicensePrivacyGit(t, fixture, "add", "--", "Makefile")
+		runLicensePrivacyGit(t, fixture, "commit", "-q", "-m", "replacement package")
+		packageB := filepath.Join(t.TempDir(), "package-b")
+		command = exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + packageB, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package B: %v: %s", err, output)
+		}
+		remote := t.TempDir()
+		licensePrivacyExtractTar(t, filepath.Join(packageB, "source.tar"), remote)
+		writeLicensePrivacyFixtureFile(t, remote, "deploy/acceptance/.env", "MYSQL_DATABASE=fixture\n", 0o600)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		writeLicensePrivacyFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+"$REAL_SHA256SUM" "$@"
+status=$?
+case " $* " in
+  *"source.tar"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER"
+      /bin/cp "$ALTERNATE_PACKAGE/source-files.z" "$CALLER_PACKAGE/source-files.z"
+      /bin/cp "$ALTERNATE_PACKAGE/source-sha256.txt" "$CALLER_PACKAGE/source-sha256.txt"
+      /bin/cp "$ALTERNATE_PACKAGE/source.tar" "$CALLER_PACKAGE/source.tar"
+      /bin/cp "$ALTERNATE_PACKAGE/package-sha256.txt" "$CALLER_PACKAGE/package-sha256.txt"
+    fi
+    ;;
+esac
+exit "$status"
+`, 0o700)
+		swapMarker := filepath.Join(t.TempDir(), "package-swapped")
+		output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageA,
+			filepath.Join(remote, "deploy/acceptance/license-file-privacy-smoke.sh"), stubDir, marker, "", []string{
+				"CALLER_PACKAGE=" + packageA,
+				"ALTERNATE_PACKAGE=" + packageB,
+				"SWAP_MARKER=" + swapMarker,
+				"REAL_SHA256SUM=" + licensePrivacyCommandPath(t, "sha256sum"),
+			})
+		if err == nil {
+			t.Fatalf("post-check package replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("package replacement mutation did not run: %v", err)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("post-check package replacement reached Docker: %s", output)
+		}
+	})
+
+	t.Run("private archive fails before received source hashing", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		writeLicensePrivacyFixtureFile(t, packageDir, "source.tar", "malformed archive\n", 0o600)
+		licensePrivacyWritePackageManifest(t, packageDir, "  ")
+		marker := filepath.Join(t.TempDir(), "received-hashed")
+		dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		writeLicensePrivacyFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+[ "$PWD" != "$RECEIVED_ROOT" ] || : >"$RECEIVED_HASHED"
+exec "$REAL_SHA256SUM" "$@"
+`, 0o700)
+		output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, dockerMarker, "", []string{
+			"RECEIVED_ROOT=" + remote,
+			"RECEIVED_HASHED=" + marker,
+			"REAL_SHA256SUM=" + licensePrivacyCommandPath(t, "sha256sum"),
+		})
+		if err == nil {
+			t.Fatalf("malformed private archive unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("received source was hashed before private archive validation")
+		}
+	})
+
+	t.Run("received source linked ancestor refuses before Docker", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		external := filepath.Join(t.TempDir(), "backend")
+		if err := os.Rename(filepath.Join(remote, "backend"), external); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, filepath.Join(remote, "backend")); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script,
+			licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"), marker, "")
+		if err == nil {
+			t.Fatalf("linked received ancestor unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked received ancestor reached Docker")
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		typeflag byte
+		extraDir bool
+	}{
+		{name: "fifo", typeflag: tar.TypeFifo},
+		{name: "hardlink", typeflag: tar.TypeLink},
+		{name: "symlink", typeflag: tar.TypeSymlink},
+		{name: "device", typeflag: tar.TypeChar},
+		{name: "extra directory", extraDir: true},
+	} {
+		t.Run("archive preflight rejects "+tc.name, func(t *testing.T) {
+			remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+			licensePrivacyRewriteArchiveType(t, filepath.Join(packageDir, "source.tar"), "Makefile", tc.typeflag, tc.extraDir)
+			licensePrivacyWritePackageManifest(t, packageDir, "  ")
+			extractionMarker := filepath.Join(t.TempDir(), "archive-extracted")
+			dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+			stubDir := licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+			writeLicensePrivacyFixtureFile(t, stubDir, "tar", `#!/bin/sh
+case " $* " in *" -xf "*"source.tar"*) : >"$ARCHIVE_EXTRACTED";; esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+			output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, dockerMarker, "", []string{"ARCHIVE_EXTRACTED=" + extractionMarker})
+			if err == nil {
+				t.Fatalf("unsafe archive member unexpectedly succeeded: %s", output)
+			}
+			if _, err := os.Stat(extractionMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsafe %s archive reached extraction", tc.name)
+			}
+			if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsafe %s archive reached Docker", tc.name)
+			}
+		})
 	}
 }
 
@@ -1048,6 +1340,81 @@ func runLicensePrivacyGit(t *testing.T, root string, args ...string) {
 	cmd.Dir = root
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+}
+
+func licensePrivacyGitOutput(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func licensePrivacyCommandPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func licensePrivacyRewriteArchiveType(t *testing.T, archivePath, target string, typeflag byte, extraDirectory bool) {
+	t.Helper()
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(bytes.NewReader(raw))
+	var rewritten bytes.Buffer
+	writer := tar.NewWriter(&rewritten)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cloned := *header
+		if header.Name == target && typeflag != 0 {
+			cloned.Typeflag = typeflag
+			cloned.Size = 0
+			if typeflag == tar.TypeLink || typeflag == tar.TypeSymlink {
+				cloned.Linkname = "backend/go.mod"
+			}
+			if typeflag == tar.TypeChar {
+				cloned.Devmajor = 1
+				cloned.Devminor = 3
+			}
+		}
+		if err := writer.WriteHeader(&cloned); err != nil {
+			t.Fatal(err)
+		}
+		if cloned.Typeflag == tar.TypeReg || cloned.Typeflag == tar.TypeRegA {
+			if _, err := writer.Write(contents); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if extraDirectory {
+		if err := writer.WriteHeader(&tar.Header{Name: "unexpected/", Mode: 0o700, Typeflag: tar.TypeDir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, rewritten.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

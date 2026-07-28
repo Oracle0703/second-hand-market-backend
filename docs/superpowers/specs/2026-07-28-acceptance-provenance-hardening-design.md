@@ -5,14 +5,19 @@
 **Branch:** `codex/f15-idempotency-atomicity`
 
 **Status:** Architecture and written specification approved on 2026-07-28.
-Local implementation and scoped Critical/Important review closure for Tasks 1-4
-are complete through `f507a7d`. Task 5 implementation and fresh
-final-implementation-head local gates are complete at clean commit
-`9733826d7062ba07f1f32e0e4ee151c3f86c8c82`. Its documentation fix round 1 was
-independently re-reviewed clean at `32a8743`, so Task 5 is complete. Task 6
-package export and final whole-branch review remain pending. F-04/F-13, F-05,
-F-06, and F-14 are not test-server approved by this work yet. Production
-migrations, deployments, releases, data, files, and services are unchanged.
+Local implementation and scoped Critical/Important review closure for Tasks 1-5
+are complete through `32a8743`. Final whole-branch review of
+`d90c8e6..bf83ac7` then found 4 Critical, 8 Important, and 2 Minor protocol
+gaps. The single final-fix wave based on
+`bf83ac7a13834a61bbf1a5c186ce5ee452f7135e` now has load-bearing RED/GREEN
+coverage and complete focused contract and static gates in the current
+uncommitted worktree. The scoped re-review's missing TERM regression and status
+wording findings are addressed, and its final pass found no remaining Critical,
+Important, or Minor issue. The final commit and Task 6 package export remain
+pending.
+F-04/F-13, F-05, F-06, and F-14 are not test-server approved by this work yet.
+Production migrations, deployments, releases, data, files, and services are
+unchanged.
 
 **Approval record:** The user explicitly approved the complete architecture for
 Unified Approach A on 2026-07-28. After the written specification was committed
@@ -46,6 +51,23 @@ Node `v22.22.2`/npm `10.9.7` toolchain. Four `bash -n` commands and
 removed, and no repository `node_modules` or build output was generated. No
 SSH, transfer, remote execution, Docker server run, or production access
 occurred.
+
+**Final-fix local execution record:** From the uncommitted final-fix worktree
+based on `bf83ac7`, the complete focused suites passed for F-04/F-13
+(`backend/tests` 69.244s), F-05 (56.616s), F-06 (104.427s), and F-14 (59.161s).
+The combined four-harness and current-migration command passed
+(`backend/tests` 282.903s). Four `bash -n` checks, `gofmt -d` cleanliness for
+the four contract files, and `git diff --check` also passed. These are local
+contract results only; no package was exported, no test server was contacted,
+and no production action occurred.
+
+The scoped re-review found one Important missing TERM/143 regression in F-06
+and F-14 and one Minor overbroad gate-status sentence. Mutation-tested TERM
+regressions now cover both harnesses, and the wording above distinguishes this
+wave's focused/static gates from the earlier broad gates at `9733826`. The
+complete affected F-06/F-14 suites passed (`backend/tests` 169.280s), the final
+combined four-harness/current-migration command passed (324.692s), and the
+scoped re-review then found no remaining Critical, Important, or Minor issue.
 
 ## 1. Problem Statement
 

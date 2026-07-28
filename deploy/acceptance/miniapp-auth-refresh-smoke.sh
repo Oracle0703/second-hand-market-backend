@@ -5,10 +5,12 @@ set -euo pipefail
 base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$base_dir/../.." && pwd)"
 evidence_dir="$base_dir/evidence/miniapp-auth-refresh"
+evidence_parent="${evidence_dir%/*}"
 expected_node="v22.22.2"
 expected_npm="10.9.7"
 evidence_publish_tmp=""
 evidence_publish_lock=""
+runtime_dir=""
 
 source_path_is_allowed() {
   local path="$1"
@@ -55,10 +57,11 @@ source_path_is_portable() {
 }
 
 write_source_file_list() {
+  local commit="${1:-HEAD}"
   (
     cd "$repo_dir"
-    git ls-tree -r --name-only -z HEAD -- Makefile miniapp \
-      deploy/acceptance/miniapp-auth-refresh-smoke.sh |
+    git ls-tree -r --name-only -z "$commit" -- Makefile miniapp \
+      deploy/acceptance/miniapp-auth-refresh-smoke.sh 2>/dev/null |
       while IFS= read -r -d '' path; do
         source_path_is_portable "$path" || continue
         source_path_is_forbidden "$path" && continue
@@ -131,11 +134,17 @@ validate_source_list() {
 }
 
 validate_received_source_files() {
-  local directory="$1"
-  local source_list="$2"
-  local path
+  local directory="$1" source_list="$2" path current component
+  local -a components=()
+  [[ ! -L "$directory" ]] || return 1
   while IFS= read -r -d '' path; do
-    [[ -f "$directory/$path" && ! -L "$directory/$path" ]] || return 1
+    current="$directory"
+    IFS=/ read -r -a components <<<"$path"
+    for component in "${components[@]}"; do
+      current="$current/$component"
+      [[ ! -L "$current" ]] || return 1
+    done
+    [[ -f "$current" ]] || return 1
   done <"$source_list"
 }
 
@@ -148,13 +157,13 @@ source_list_contains_child() {
 }
 
 validate_package_checksums() {
-  local package_dir="$1" expected_name actual_hash line line_count=0
+  local package_dir="$1" diagnostics="${2:-/dev/null}" expected_name actual_hash line line_count=0
   local -a names=(source-files.z source-sha256.txt source.tar)
   exec 3<"$package_dir/package-sha256.txt"
   while [[ "$line_count" -lt 3 ]]; do
     expected_name="${names[$line_count]}"
     IFS= read -r line <&3 || { exec 3<&-; return 1; }
-    actual_hash="$(sha256sum "$package_dir/$expected_name" | cut -d ' ' -f1)"
+    actual_hash="$(sha256sum "$package_dir/$expected_name" 2>>"$diagnostics" | cut -d ' ' -f1)"
     [[ "$line" == "$actual_hash  $expected_name" ]] || { exec 3<&-; return 1; }
     line_count=$((line_count + 1))
   done
@@ -204,23 +213,27 @@ export_head_source() (
   local export_runtime=""
   local extracted=""
   local completed=0
+  local export_dir_owned=0
   local path
+  local head_oid
   local -a archive_paths=()
 
   cleanup_source_export() {
-    local status=$?
+    local status="${1:-$?}"
     trap - EXIT INT TERM
     if [[ -n "$export_runtime" && -d "$export_runtime" ]]; then
       rm -r -- "$export_runtime"
     fi
-    if [[ "$completed" -ne 1 && -d "$export_dir" ]]; then
+    if [[ "$completed" -ne 1 && "$export_dir_owned" -eq 1 && -d "$export_dir" ]]; then
       rm -r -- "$export_dir"
     fi
     exit "$status"
   }
-  trap cleanup_source_export EXIT INT TERM
+  trap cleanup_source_export EXIT
+  trap 'cleanup_source_export 130' INT
+  trap 'cleanup_source_export 143' TERM
 
-  [[ "$export_dir" == /* && "$export_dir" != "/" && ! -e "$export_dir" ]] || {
+  [[ "$export_dir" == /* && "$export_dir" != "/" && ! -e "$export_dir" && ! -L "$export_dir" ]] || {
     echo "MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2
     return 1
   }
@@ -233,9 +246,19 @@ export_head_source() (
 
   export_runtime="$(mktemp -d)"
   extracted="$export_runtime/extracted"
-  mkdir -p "$export_dir" "$extracted"
-  chmod 700 "$export_dir" "$export_runtime" "$extracted"
-  if ! write_source_file_list >"$export_dir/source-files.z" ||
+  chmod 700 "$export_runtime"
+  head_oid="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}' 2>"$export_runtime/head-resolve.raw")" || {
+    echo "cannot resolve committed HEAD" >&2
+    return 1
+  }
+  mkdir "$export_dir" 2>"$export_runtime/export-destination.raw" || {
+    echo "source export destination was concurrently acquired" >&2
+    return 1
+  }
+  export_dir_owned=1
+  mkdir "$extracted"
+  chmod 700 "$export_dir" "$extracted"
+  if ! write_source_file_list "$head_oid" >"$export_dir/source-files.z" ||
     ! validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z"; then
     echo "committed HEAD miniapp source list is invalid" >&2
     return 1
@@ -245,8 +268,10 @@ export_head_source() (
   done <"$export_dir/source-files.z"
   if [[ "${#archive_paths[@]}" -eq 0 ]] || ! (
     cd "$repo_dir"
-    git archive --format=tar --output="$export_dir/source.tar" HEAD -- "${archive_paths[@]}"
-  ) || ! tar -C "$extracted" -xf "$export_dir/source.tar" ||
+    git archive --format=tar --output="$export_dir/source.tar" "$head_oid" -- "${archive_paths[@]}"
+  ) >"$export_runtime/git-archive.raw" 2>&1 ||
+    ! validate_archive_list "$export_dir" "$export_dir/source-files.z" "$export_runtime" 2>>"$export_runtime/archive-validation.raw" ||
+    ! tar -C "$extracted" -xf "$export_dir/source.tar" >"$export_runtime/archive-extract.raw" 2>&1 ||
     ! validate_received_source_files "$extracted" "$export_dir/source-files.z" ||
     ! write_context_file_list "$extracted" >"$export_runtime/archive-source-files.z" ||
     ! cmp -s "$export_dir/source-files.z" "$export_runtime/archive-source-files.z" ||
@@ -254,7 +279,7 @@ export_head_source() (
       cd "$export_dir"
       sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt
     ) || ! validate_package_artifact_list "$export_dir" ||
-    ! validate_package_checksums "$export_dir"; then
+    ! validate_package_checksums "$export_dir" "$export_runtime/package-checksums.raw"; then
     echo "committed HEAD miniapp archive does not match its source list" >&2
     return 1
   fi
@@ -294,6 +319,33 @@ source_package_dir="${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR:-}"
   echo "MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR must identify the transferred source package" >&2
   exit 1
 }
+preflight_on_exit() {
+  local status="${1:-$?}"
+  trap - EXIT INT TERM
+  set +e
+  [[ -z "$runtime_dir" || ! -d "$runtime_dir" ]] || rm -r -- "$runtime_dir"
+  exit "$status"
+}
+runtime_dir="$(mktemp -d 2>/dev/null)" || { echo "cannot create private miniapp runtime" >&2; exit 1; }
+trap preflight_on_exit EXIT
+trap 'preflight_on_exit 130' INT
+trap 'preflight_on_exit 143' TERM
+chmod 700 "$runtime_dir" 2>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure private miniapp runtime" >&2; exit 1; }
+runtime_evidence="$runtime_dir/evidence"
+build_context="$runtime_dir/build-context"
+source_package_snapshot="$runtime_dir/source-package"
+current_stage="preflight"
+success=0
+evidence_eligible=0
+sanitization_failed=0
+mkdir "$runtime_evidence" "$build_context" "$source_package_snapshot" 2>"$runtime_dir/runtime-directories.raw" || {
+  echo "cannot create private miniapp runtime state" >&2
+  exit 1
+}
+chmod 700 "$runtime_evidence" "$build_context" "$source_package_snapshot" 2>>"$runtime_dir/runtime-mode.raw" || {
+  echo "cannot secure private miniapp runtime state" >&2
+  exit 1
+}
 for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
   [[ -f "$source_package_dir/$artifact" && ! -L "$source_package_dir/$artifact" ]] || {
     echo "transferred miniapp source package is incomplete" >&2
@@ -304,29 +356,41 @@ validate_package_artifact_list "$source_package_dir" || {
   echo "transferred miniapp source package must contain exactly four artifacts" >&2
   exit 1
 }
+cp -- "$source_package_dir/source-files.z" "$source_package_dir/source-sha256.txt" \
+  "$source_package_dir/source.tar" "$source_package_dir/package-sha256.txt" \
+  "$source_package_snapshot/" >"$runtime_dir/package-snapshot.raw" 2>&1 || {
+  echo "cannot snapshot transferred miniapp source package" >&2
+  exit 1
+}
+chmod 600 "$source_package_snapshot/source-files.z" "$source_package_snapshot/source-sha256.txt" \
+  "$source_package_snapshot/source.tar" "$source_package_snapshot/package-sha256.txt" \
+  2>>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure miniapp source package snapshot" >&2; exit 1; }
+validate_package_artifact_list "$source_package_snapshot" 2>"$runtime_dir/package-snapshot-list.raw" || {
+  echo "private miniapp source package snapshot is invalid" >&2
+  exit 1
+}
+for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
+  [[ -f "$source_package_snapshot/$artifact" && ! -L "$source_package_snapshot/$artifact" ]] || {
+    echo "private miniapp source package snapshot is incomplete" >&2
+    exit 1
+  }
+done
 
 authorized_package_manifest_sha256="${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256:-}"
-actual_package_manifest_sha256="$(sha256sum "$source_package_dir/package-sha256.txt" | cut -d ' ' -f1)"
+actual_package_manifest_sha256="$(sha256sum "$source_package_snapshot/package-sha256.txt" 2>>"$runtime_dir/package-manifest.raw" | cut -d ' ' -f1)"
 [[ "${#authorized_package_manifest_sha256}" -eq 64 &&
   "$authorized_package_manifest_sha256" != *[!0-9a-f]* &&
   "$actual_package_manifest_sha256" == "$authorized_package_manifest_sha256" ]] || {
   echo "source package manifest digest does not match authorization" >&2
   exit 1
 }
-validate_package_checksums "$source_package_dir" || {
+validate_package_checksums "$source_package_snapshot" "$runtime_dir/package-checksums.raw" || {
   echo "transferred miniapp source package checksum failed" >&2
   exit 1
 }
 
-runtime_dir="$(mktemp -d)"
-runtime_evidence="$runtime_dir/evidence"
-build_context="$runtime_dir/build-context"
-current_stage="preflight"
-success=0
-evidence_eligible=0
-sanitization_failed=0
-source_files="$source_package_dir/source-files.z"
-source_manifest="$source_package_dir/source-sha256.txt"
+source_files="$source_package_snapshot/source-files.z"
+source_manifest="$source_package_snapshot/source-sha256.txt"
 
 hash_evidence_directory() {
   local directory="$1"
@@ -337,11 +401,25 @@ hash_evidence_directory() {
   ) >"$directory/evidence-sha256.txt"
 }
 
+evidence_parent_is_safe() {
+  [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]]
+}
+
+prepare_evidence_parent() {
+  if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
+    evidence_parent_is_safe
+    return
+  fi
+  mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+  evidence_parent_is_safe
+}
+
 publish_evidence_directory() {
-  local directory="$1" parent="${evidence_dir%/*}" staging_name=""
+  local directory="$1" staging_name=""
+  evidence_parent_is_safe || return 1
   [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || return 1
-  mkdir -p "$parent" || return 1
   evidence_publish_lock="${evidence_dir}.publish.lock"
+  evidence_parent_is_safe || { evidence_publish_lock=""; return 1; }
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
     return 1
@@ -351,6 +429,11 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  evidence_parent_is_safe || {
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  }
   if ! evidence_publish_tmp="$(mktemp -d "${evidence_dir}.publish.XXXXXX")"; then
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
@@ -379,6 +462,13 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  if ! evidence_parent_is_safe; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
   if ! mv -n -- "$evidence_publish_tmp" "$evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
     [[ -e "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
@@ -388,8 +478,11 @@ publish_evidence_directory() {
     return 1
   fi
   if [[ -d "$evidence_dir/$staging_name" ]]; then
-    rm -r -- "$evidence_dir/$staging_name" || return 1
     evidence_publish_tmp=""
+    if ! rm -r -- "$evidence_dir/$staging_name"; then
+      evidence_publish_lock=""
+      return 1
+    fi
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
     return 1
@@ -566,37 +659,43 @@ trap on_exit EXIT
 trap 'on_exit 130' INT
 trap 'on_exit 143' TERM
 
-mkdir -p "$runtime_evidence" "$build_context"
-chmod 700 "$runtime_dir" "$runtime_evidence" "$build_context"
 validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" || {
   echo "transferred miniapp source list is invalid" >&2
   exit 1
 }
-validate_received_source_files "$repo_dir" "$source_files" || {
-  echo "received miniapp source contains a missing or unsafe file" >&2
-  exit 1
-}
-write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt"
-cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || {
-  echo "received miniapp source does not match package manifest" >&2
-  exit 1
-}
-validate_archive_list "$source_package_dir" "$source_files" "$runtime_dir" || {
+validate_archive_list "$source_package_snapshot" "$source_files" "$runtime_dir" 2>>"$runtime_dir/archive-validation.raw" || {
   echo "source archive list or entry type is unsafe" >&2
   exit 1
 }
-tar -C "$build_context" -xf "$source_package_dir/source.tar"
-write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z"
+tar -C "$build_context" -xf "$source_package_snapshot/source.tar" >"$runtime_dir/archive-extract.raw" 2>&1 || {
+  echo "source archive extraction failed" >&2
+  exit 1
+}
+validate_received_source_files "$build_context" "$source_files" 2>>"$runtime_dir/build-context-validation.raw" || {
+  echo "temporary miniapp source contains a missing or unsafe file" >&2
+  exit 1
+}
+write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z" 2>>"$runtime_dir/build-context-validation.raw"
 cmp -s "$source_files" "$runtime_dir/build-context-files.z" || {
   echo "source archive contents do not match the committed source list" >&2
   exit 1
 }
-write_directory_manifest "$build_context" "$source_files" "$runtime_dir/build-context-sha256.txt"
+write_directory_manifest "$build_context" "$source_files" "$runtime_dir/build-context-sha256.txt" 2>>"$runtime_dir/build-context-validation.raw"
 cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || {
   echo "temporary miniapp build context does not match package manifest" >&2
   exit 1
 }
+validate_received_source_files "$repo_dir" "$source_files" 2>>"$runtime_dir/received-source-validation.raw" || {
+  echo "received miniapp source contains a missing or unsafe file" >&2
+  exit 1
+}
+write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt" 2>>"$runtime_dir/received-source-validation.raw"
+cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || {
+  echo "received miniapp source does not match package manifest" >&2
+  exit 1
+}
 
+prepare_evidence_parent || { echo "miniapp auth refresh evidence parent is unsafe" >&2; exit 1; }
 [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" &&
   ! -e "${evidence_dir}.publish.lock" && ! -L "${evidence_dir}.publish.lock" ]] || {
   echo "refusing to overwrite existing miniapp auth refresh evidence" >&2
@@ -604,17 +703,17 @@ cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || {
 }
 
 source_count="$(tr -cd '\0' <"$source_files" | wc -c | tr -d ' ')"
-manifest_sha256="$(sha256sum "$source_manifest" | cut -d ' ' -f1)"
+manifest_sha256="$(sha256sum "$source_manifest" 2>>"$runtime_dir/source-manifest.raw" | cut -d ' ' -f1)"
 printf 'classification=source_package|result=PASS|count=%s|sha256=%s\n' "$source_count" "$manifest_sha256" >"$runtime_evidence/acceptance-results.txt"
 evidence_eligible=1
 
 current_stage="toolchain"
 command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
 command -v npm >/dev/null || { echo "npm is required" >&2; exit 1; }
-node_version="$(node --version)"
-npm_version="$(npm --version)"
-[[ "$node_version" == "$expected_node" ]] || { echo "node must be $expected_node (found $node_version)" >&2; exit 1; }
-[[ "$npm_version" == "$expected_npm" ]] || { echo "npm must be $expected_npm (found $npm_version)" >&2; exit 1; }
+node_version="$(node --version 2>>"$runtime_dir/toolchain.raw")" || { echo "cannot read node version" >&2; exit 1; }
+npm_version="$(npm --version 2>>"$runtime_dir/toolchain.raw")" || { echo "cannot read npm version" >&2; exit 1; }
+[[ "$node_version" == "$expected_node" ]] || { echo "node must be $expected_node" >&2; exit 1; }
+[[ "$npm_version" == "$expected_npm" ]] || { echo "npm must be $expected_npm" >&2; exit 1; }
 printf 'classification=toolchain|result=PASS|count=2\n' >>"$runtime_evidence/acceptance-results.txt"
 
 export TARO_APP_API_BASE_URL="https://example.invalid/api/v1"

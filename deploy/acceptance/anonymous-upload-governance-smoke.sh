@@ -6,6 +6,7 @@ base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$base_dir/../.." && pwd)"
 project_name="secondhand-upload-governance-acceptance"
 retained_evidence_dir="$base_dir/evidence/anonymous-upload-governance"
+evidence_parent="${retained_evidence_dir%/*}"
 evidence_dir=""
 evidence_publish_tmp=""
 evidence_publish_lock=""
@@ -75,9 +76,10 @@ source_path_is_portable() {
 }
 
 write_source_file_list() {
+  local commit="${1:-HEAD}"
   (
     cd "$repo_dir"
-    git ls-tree -r --name-only -z HEAD -- Makefile backend frontend deploy/acceptance |
+    git ls-tree -r --name-only -z "$commit" -- Makefile backend frontend deploy/acceptance 2>/dev/null |
       while IFS= read -r -d '' path; do
         source_path_is_portable "$path" || continue
         source_path_is_forbidden "$path" && continue
@@ -154,13 +156,13 @@ validate_package_artifact_list() {
 }
 
 validate_package_checksums() {
-  local package_dir="$1" expected_name actual_hash line line_count=0
+  local package_dir="$1" diagnostics="${2:-/dev/null}" expected_name actual_hash line line_count=0
   local -a names=(source-files.z source-sha256.txt source.tar)
   exec 3<"$package_dir/package-sha256.txt"
   while [[ "$line_count" -lt 3 ]]; do
     expected_name="${names[$line_count]}"
     IFS= read -r line <&3 || { exec 3<&-; return 1; }
-    actual_hash="$(sha256sum "$package_dir/$expected_name" | cut -d ' ' -f1)"
+    actual_hash="$(sha256sum "$package_dir/$expected_name" 2>>"$diagnostics" | cut -d ' ' -f1)"
     [[ "$line" == "$actual_hash  $expected_name" ]] || { exec 3<&-; return 1; }
     line_count=$((line_count + 1))
   done
@@ -211,9 +213,22 @@ validate_archive_list() {
   cmp -s "$source_list" "$runtime/archive-source-files.z"
 }
 
+evidence_parent_is_safe() {
+  [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]]
+}
+
+prepare_evidence_parent() {
+  if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
+    evidence_parent_is_safe
+    return
+  fi
+  mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+  evidence_parent_is_safe
+}
+
 export_head_source() (
   set -euo pipefail
-  local export_dir="$1" export_runtime="" extracted="" completed=0 path
+  local export_dir="$1" export_runtime="" extracted="" completed=0 export_dir_owned=0 path head_oid
   local -a archive_paths=()
 
   cleanup_source_export() {
@@ -222,7 +237,7 @@ export_head_source() (
     if [[ -n "$export_runtime" && -d "$export_runtime" ]]; then
       rm -r -- "$export_runtime"
     fi
-    if [[ "$completed" -ne 1 && -d "$export_dir" ]]; then
+    if [[ "$completed" -ne 1 && "$export_dir_owned" -eq 1 && -d "$export_dir" ]]; then
       rm -r -- "$export_dir"
     fi
     exit "$status"
@@ -231,7 +246,7 @@ export_head_source() (
   trap 'cleanup_source_export 130' INT
   trap 'cleanup_source_export 143' TERM
 
-  [[ "$export_dir" == /* && "$export_dir" != / && ! -e "$export_dir" ]] || {
+  [[ "$export_dir" == /* && "$export_dir" != / && ! -e "$export_dir" && ! -L "$export_dir" ]] || {
     echo "ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2
     return 1
   }
@@ -243,17 +258,34 @@ export_head_source() (
   done
   export_runtime="$(mktemp -d)"
   extracted="$export_runtime/extracted"
-  mkdir -p "$export_dir" "$extracted"
-  chmod 700 "$export_dir" "$export_runtime" "$extracted"
-  write_source_file_list >"$export_dir/source-files.z"
+  chmod 700 "$export_runtime"
+  head_oid="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}' 2>"$export_runtime/head-resolve.raw")" || {
+    echo "cannot resolve committed HEAD" >&2
+    return 1
+  }
+  mkdir "$export_dir" 2>"$export_runtime/export-destination.raw" || {
+    echo "source export destination was concurrently acquired" >&2
+    return 1
+  }
+  export_dir_owned=1
+  mkdir "$extracted"
+  chmod 700 "$export_dir" "$extracted"
+  write_source_file_list "$head_oid" >"$export_dir/source-files.z"
   validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z" || return 1
   while IFS= read -r -d '' path; do archive_paths+=("$path"); done <"$export_dir/source-files.z"
   [[ "${#archive_paths[@]}" -gt 0 ]] || return 1
   (
     cd "$repo_dir"
-    git archive --format=tar --output="$export_dir/source.tar" HEAD -- "${archive_paths[@]}"
-  )
-  tar -C "$extracted" -xf "$export_dir/source.tar"
+    git archive --format=tar --output="$export_dir/source.tar" "$head_oid" -- "${archive_paths[@]}"
+  ) >"$export_runtime/git-archive.raw" 2>&1 || { echo "committed HEAD archive export failed" >&2; return 1; }
+  validate_archive_list "$export_dir" "$export_dir/source-files.z" "$export_runtime" || {
+    echo "committed HEAD archive preflight failed" >&2
+    return 1
+  }
+  tar -C "$extracted" -xf "$export_dir/source.tar" >"$export_runtime/archive-extract.raw" 2>&1 || {
+    echo "committed HEAD archive extraction failed" >&2
+    return 1
+  }
   validate_received_source_files "$extracted" "$export_dir/source-files.z" || return 1
   write_context_file_list "$extracted" >"$export_runtime/archive-files.z"
   cmp -s "$export_dir/source-files.z" "$export_runtime/archive-files.z" || return 1
@@ -264,7 +296,7 @@ export_head_source() (
   )
   chmod 600 "$export_dir/source-files.z" "$export_dir/source-sha256.txt" "$export_dir/source.tar" "$export_dir/package-sha256.txt"
   validate_package_artifact_list "$export_dir"
-  validate_package_checksums "$export_dir"
+  validate_package_checksums "$export_dir" "$export_runtime/package-checksums.raw"
   rm -r -- "$export_runtime"
   export_runtime=""
   completed=1
@@ -273,6 +305,7 @@ export_head_source() (
 preflight_on_exit() {
   local status="${1:-$?}"
   trap - EXIT INT TERM
+  set +e
   [[ -z "$runtime_dir" || ! -d "$runtime_dir" ]] || rm -r -- "$runtime_dir"
   exit "$status"
 }
@@ -318,7 +351,22 @@ source_package_dir="${ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_PACKAGE_DIR:-}"
   echo "ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_PACKAGE_DIR must identify the transferred source package" >&2
   exit 1
 }
-validate_package_artifact_list "$source_package_dir" || {
+runtime_dir="$(mktemp -d 2>/dev/null)" || { echo "cannot create private upload governance runtime" >&2; exit 1; }
+trap preflight_on_exit EXIT
+trap 'preflight_on_exit 130' INT
+trap 'preflight_on_exit 143' TERM
+chmod 700 "$runtime_dir" 2>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure private upload governance runtime" >&2; exit 1; }
+source_package_snapshot="$runtime_dir/source-package"
+build_context="$runtime_dir/build-context"
+mkdir "$source_package_snapshot" "$build_context" 2>"$runtime_dir/runtime-directories.raw" || {
+  echo "cannot create private upload governance runtime state" >&2
+  exit 1
+}
+chmod 700 "$source_package_snapshot" "$build_context" 2>>"$runtime_dir/runtime-mode.raw" || {
+  echo "cannot secure private upload governance runtime state" >&2
+  exit 1
+}
+validate_package_artifact_list "$source_package_dir" 2>"$runtime_dir/caller-package-list.raw" || {
   echo "transferred anonymous upload governance source package must contain exactly four artifacts" >&2
   exit 1
 }
@@ -328,49 +376,53 @@ for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; 
     exit 1
   }
 done
+cp -- "$source_package_dir/source-files.z" "$source_package_dir/source-sha256.txt" \
+  "$source_package_dir/source.tar" "$source_package_dir/package-sha256.txt" \
+  "$source_package_snapshot/" >"$runtime_dir/package-snapshot.raw" 2>&1 || {
+  echo "cannot snapshot transferred anonymous upload governance source package" >&2
+  exit 1
+}
+chmod 600 "$source_package_snapshot/source-files.z" "$source_package_snapshot/source-sha256.txt" \
+  "$source_package_snapshot/source.tar" "$source_package_snapshot/package-sha256.txt" \
+  2>>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure upload governance source package snapshot" >&2; exit 1; }
+validate_package_artifact_list "$source_package_snapshot" 2>"$runtime_dir/package-snapshot-list.raw" || {
+  echo "private anonymous upload governance source package snapshot is invalid" >&2
+  exit 1
+}
+for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
+  [[ -f "$source_package_snapshot/$artifact" && ! -L "$source_package_snapshot/$artifact" ]] || {
+    echo "private anonymous upload governance source package snapshot is incomplete" >&2
+    exit 1
+  }
+done
 authorized_package_manifest_sha256="${ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_PACKAGE_MANIFEST_SHA256:-}"
-actual_package_manifest_sha256="$(sha256sum "$source_package_dir/package-sha256.txt" | cut -d ' ' -f1)"
+actual_package_manifest_sha256="$(sha256sum "$source_package_snapshot/package-sha256.txt" 2>>"$runtime_dir/package-manifest.raw" | cut -d ' ' -f1)"
 [[ "${#authorized_package_manifest_sha256}" -eq 64 &&
   "$authorized_package_manifest_sha256" != *[!0-9a-f]* &&
   "$actual_package_manifest_sha256" == "$authorized_package_manifest_sha256" ]] || {
   echo "source package manifest digest does not match authorization" >&2
   exit 1
 }
-validate_package_checksums "$source_package_dir" || {
+validate_package_checksums "$source_package_snapshot" "$runtime_dir/package-checksums.raw" || {
   echo "transferred anonymous upload governance source package checksum failed" >&2
   exit 1
 }
-runtime_dir="$(mktemp -d)"
-trap preflight_on_exit EXIT
-trap 'preflight_on_exit 130' INT
-trap 'preflight_on_exit 143' TERM
-source_files="$source_package_dir/source-files.z"
-source_manifest="$source_package_dir/source-sha256.txt"
+source_files="$source_package_snapshot/source-files.z"
+source_manifest="$source_package_snapshot/source-sha256.txt"
 validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" || {
   echo "transferred anonymous upload governance source list is invalid" >&2
   exit 1
 }
-validate_received_source_files "$repo_dir" "$source_files" || {
-  echo "received anonymous upload governance source contains a missing or unsafe file" >&2
-  exit 1
-}
-write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt"
-cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || {
-  echo "received anonymous upload governance source does not match package manifest" >&2
-  exit 1
-}
-build_context="$runtime_dir/build-context"
-mkdir -p "$build_context"
-validate_archive_list "$source_package_dir" "$source_files" "$runtime_dir" || {
+validate_archive_list "$source_package_snapshot" "$source_files" "$runtime_dir" || {
   echo "source archive list or entry type is unsafe" >&2
   exit 1
 }
-if ! tar -C "$build_context" -xf "$source_package_dir/source.tar" >"$runtime_dir/source-archive-extract.raw" 2>&1; then
+if ! tar -C "$build_context" -xf "$source_package_snapshot/source.tar" >"$runtime_dir/source-archive-extract.raw" 2>&1; then
   echo "source archive extraction failed" >&2
   exit 1
 fi
-[[ -z "$(find "$build_context" -type l -print -quit)" ]] || {
-  echo "source archive contains a symlink" >&2
+validate_received_source_files "$build_context" "$source_files" 2>>"$runtime_dir/build-context-validation.raw" || {
+  echo "temporary upload governance source contains a missing or unsafe file" >&2
   exit 1
 }
 write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z"
@@ -383,9 +435,24 @@ cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || {
   echo "temporary build context does not match the committed source manifest" >&2
   exit 1
 }
+validate_received_source_files "$repo_dir" "$source_files" 2>>"$runtime_dir/received-source-validation.raw" || {
+  echo "received anonymous upload governance source contains a missing or unsafe file" >&2
+  exit 1
+}
+write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt" 2>>"$runtime_dir/received-source-validation.raw"
+cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || {
+  echo "received anonymous upload governance source does not match package manifest" >&2
+  exit 1
+}
 source_count="$(tr -cd '\0' <"$source_files" | wc -c | tr -d ' ')"
-source_manifest_sha256="$(sha256sum "$source_manifest" | cut -d ' ' -f1)"
-[[ -f "$base_dir/.env" ]] || {
+source_manifest_sha256="$(sha256sum "$source_manifest" 2>>"$runtime_dir/source-manifest.raw" | cut -d ' ' -f1)"
+prepare_evidence_parent || { echo "anonymous upload governance evidence parent is unsafe" >&2; exit 1; }
+[[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" &&
+  ! -e "${retained_evidence_dir}.publish.lock" && ! -L "${retained_evidence_dir}.publish.lock" ]] || {
+  echo "refusing to overwrite existing anonymous upload governance evidence" >&2
+  exit 1
+}
+[[ -f "$base_dir/.env" && ! -L "$base_dir/.env" ]] || {
   echo "run deploy/acceptance/prepare.sh first" >&2
   exit 1
 }
@@ -395,15 +462,9 @@ for command in docker curl jq openssl sha256sum truncate base64 sort xargs mktem
     exit 1
   }
 done
-
-[[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" &&
-  ! -e "${retained_evidence_dir}.publish.lock" && ! -L "${retained_evidence_dir}.publish.lock" ]] || {
-  echo "refusing to overwrite existing anonymous upload governance evidence" >&2
-  exit 1
-}
-existing_containers="$(docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q)"
-existing_volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project_name" -q)"
-existing_networks="$(docker network ls --filter "label=com.docker.compose.project=$project_name" -q)"
+existing_containers="$(docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q 2>>"$runtime_dir/project-collision.raw")" || { echo "cannot inspect isolated project containers" >&2; exit 1; }
+existing_volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project_name" -q 2>>"$runtime_dir/project-collision.raw")" || { echo "cannot inspect isolated project volumes" >&2; exit 1; }
+existing_networks="$(docker network ls --filter "label=com.docker.compose.project=$project_name" -q 2>>"$runtime_dir/project-collision.raw")" || { echo "cannot inspect isolated project networks" >&2; exit 1; }
 [[ -z "$existing_containers" && -z "$existing_volumes" && -z "$existing_networks" ]] || {
   echo "refusing to reuse existing $project_name resources" >&2
   exit 1
@@ -498,10 +559,11 @@ snapshot_file_is_safe() {
 }
 
 publish_evidence_directory() {
-  local directory="$1" parent="${retained_evidence_dir%/*}" staging_name=""
+  local directory="$1" staging_name=""
+  evidence_parent_is_safe || return 1
   [[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" ]] || return 1
-  mkdir -p "$parent" || return 1
   evidence_publish_lock="${retained_evidence_dir}.publish.lock"
+  evidence_parent_is_safe || { evidence_publish_lock=""; return 1; }
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
     return 1
@@ -511,6 +573,11 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
+  evidence_parent_is_safe || {
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  }
   if ! evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")"; then
     rmdir "$evidence_publish_lock"
     evidence_publish_lock=""
@@ -524,7 +591,8 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
-  if ! (cd "$directory" && tar -cf - .) | tar -C "$evidence_publish_tmp" -xf -; then
+  if ! (cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw") |
+    tar -C "$evidence_publish_tmp" -xf - 2>>"$runtime_dir/evidence-copy-errors.raw"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock"
@@ -538,7 +606,14 @@ publish_evidence_directory() {
     evidence_publish_lock=""
     return 1
   fi
-  if ! mv -n -- "$evidence_publish_tmp" "$retained_evidence_dir" || [[ -e "$evidence_publish_tmp" ]]; then
+  if ! evidence_parent_is_safe; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! mv -n -- "$evidence_publish_tmp" "$retained_evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" || [[ -e "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock"
@@ -546,8 +621,11 @@ publish_evidence_directory() {
     return 1
   fi
   if [[ -d "$retained_evidence_dir/$staging_name" ]]; then
-    rm -r -- "$retained_evidence_dir/$staging_name"
     evidence_publish_tmp=""
+    if ! rm -r -- "$retained_evidence_dir/$staging_name"; then
+      evidence_publish_lock=""
+      return 1
+    fi
     rmdir "$evidence_publish_lock"
     evidence_publish_lock=""
     return 1
@@ -696,7 +774,9 @@ on_exit() {
   fi
   exit "$status"
 }
-trap on_exit EXIT INT TERM
+trap on_exit EXIT
+trap 'on_exit 130' INT
+trap 'on_exit 143' TERM
 
 snapshot_production() {
   local output="$1" line matches

@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +68,13 @@ func TestSessionRevocationAcceptanceSourceListContainsOnlyCommittedWhitelist(t *
 		writeIdempotencyAcceptanceFixtureFile(t, fixtureRepo, stagedPath, "package backend\n", 0o600)
 		runIdempotencyAcceptanceGit(t, fixtureRepo, "add", "--", stagedPath)
 		writeIdempotencyAcceptanceFixtureFile(t, fixtureRepo, untrackedPath, "package backend\n", 0o600)
+		for _, path := range []string{"backend/control\nname.go", "backend/back\\slash.go", "backend/nonportable-\u2603.go"} {
+			writeIdempotencyAcceptanceFixtureFile(t, fixtureRepo, path, "package backend\n", 0o600)
+			runIdempotencyAcceptanceGit(t, fixtureRepo, "add", "--", path)
+		}
+		runIdempotencyAcceptanceGit(t, fixtureRepo, "reset", "-q", "--", stagedPath)
+		runIdempotencyAcceptanceGit(t, fixtureRepo, "commit", "-q", "-m", "nonportable committed paths")
+		runIdempotencyAcceptanceGit(t, fixtureRepo, "add", "--", stagedPath)
 
 		cmd := exec.Command("/bin/bash", fixtureScript)
 		cmd.Dir = fixtureRepo
@@ -80,6 +89,9 @@ func TestSessionRevocationAcceptanceSourceListContainsOnlyCommittedWhitelist(t *
 		for _, path := range splitNULPaths(t, output) {
 			if path == stagedPath || path == untrackedPath {
 				t.Fatalf("source-list mode included non-HEAD path %q", path)
+			}
+			if strings.ContainsAny(path, "\n\\") || strings.Contains(path, "nonportable-") {
+				t.Fatalf("source-list mode included nonportable committed path %q", path)
 			}
 		}
 	})
@@ -215,6 +227,75 @@ func TestSessionRevocationAcceptanceSourceExportUsesImmutableHEAD(t *testing.T) 
 			})
 		}
 	})
+
+	t.Run("one resolved commit binds list and archive across ref movement", func(t *testing.T) {
+		movingRepo, movingScript := newSessionRevocationAcceptanceFixtureRepo(t)
+		originalOID := sessionRevocationGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		writeIdempotencyAcceptanceFixtureFile(t, movingRepo, "Makefile", "fixture:\n\t@second\n", 0o600)
+		runIdempotencyAcceptanceGit(t, movingRepo, "add", "--", "Makefile")
+		runIdempotencyAcceptanceGit(t, movingRepo, "commit", "-q", "-m", "move ref target")
+		movedOID := sessionRevocationGitOutput(t, movingRepo, "rev-parse", "HEAD")
+		runIdempotencyAcceptanceGit(t, movingRepo, "update-ref", "HEAD", originalOID)
+		stubDir := t.TempDir()
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "git", `#!/bin/sh
+if [ "${1:-}" = ls-tree ]; then
+  "$REAL_GIT" "$@" || exit $?
+  "$REAL_GIT" -C "$MOVE_REPO" update-ref HEAD "$MOVE_TO_OID" || exit $?
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "moved-ref-package")
+		command := exec.Command("/bin/bash", movingScript)
+		command.Dir = movingRepo
+		command.Env = []string{
+			"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + destination,
+			"MOVE_REPO=" + movingRepo,
+			"MOVE_TO_OID=" + movedOID,
+			"REAL_GIT=" + sessionRevocationCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export while HEAD moves: %v: %s", err, output)
+		}
+		extracted := t.TempDir()
+		extractIdempotencyAcceptanceTar(t, filepath.Join(destination, "source.tar"), extracted)
+		makefile, err := os.ReadFile(filepath.Join(extracted, "Makefile"))
+		if err != nil || string(makefile) != "fixture:\n\t@true\n" {
+			t.Fatalf("ref movement changed exported bytes: %q, %v", makefile, err)
+		}
+	})
+
+	t.Run("concurrent destination creator remains owner", func(t *testing.T) {
+		raceRepo, raceScript := newSessionRevocationAcceptanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "raced-package")
+		stubDir := t.TempDir()
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+case " $* " in
+  *" $RACE_DESTINATION "*)
+    if [ ! -e "$RACE_DESTINATION" ]; then
+      /bin/mkdir "$RACE_DESTINATION" || exit $?
+      printf 'concurrent-owner\n' >"$RACE_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", raceScript)
+		command.Dir = raceRepo
+		command.Env = []string{
+			"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + destination,
+			"RACE_DESTINATION=" + destination,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export acquired a concurrently created destination: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "concurrent-owner\n" {
+			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func requiredSessionRevocationAcceptancePaths() []string {
@@ -278,6 +359,81 @@ func newSessionRevocationAcceptanceFixtureRepo(t *testing.T) (string, string) {
 		"-c", "user.email=acceptance-contract@example.invalid",
 		"commit", "-q", "-m", "fixture")
 	return fixtureRepo, fixtureScript
+}
+
+func sessionRevocationGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func sessionRevocationCommandPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func sessionRevocationRewriteArchiveType(t *testing.T, archivePath, target string, typeflag byte, extraDirectory bool) {
+	t.Helper()
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(bytes.NewReader(raw))
+	var rewritten bytes.Buffer
+	writer := tar.NewWriter(&rewritten)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cloned := *header
+		if header.Name == target && typeflag != 0 {
+			cloned.Typeflag = typeflag
+			cloned.Size = 0
+			if typeflag == tar.TypeLink || typeflag == tar.TypeSymlink {
+				cloned.Linkname = "backend/go.mod"
+			}
+			if typeflag == tar.TypeChar {
+				cloned.Devmajor = 1
+				cloned.Devminor = 3
+			}
+		}
+		if err := writer.WriteHeader(&cloned); err != nil {
+			t.Fatal(err)
+		}
+		if cloned.Typeflag == tar.TypeReg || cloned.Typeflag == tar.TypeRegA {
+			if _, err := writer.Write(contents); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if extraDirectory {
+		if err := writer.WriteHeader(&tar.Header{Name: "backend/", Mode: 0o700, Typeflag: tar.TypeDir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, rewritten.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func sessionRevocationAcceptanceRepoDir(t *testing.T) string {
@@ -439,6 +595,180 @@ func TestSessionRevocationAcceptanceMetadataFreePackageRefusesOrProgressesBefore
 	}
 }
 
+func TestSessionRevocationAcceptanceRejectsMutableAndUnsafeBoundaries(t *testing.T) {
+	t.Run("post-check package replacement cannot become authoritative", func(t *testing.T) {
+		fixture, fixtureScript := newSessionRevocationAcceptanceFixtureRepo(t)
+		packageA := filepath.Join(t.TempDir(), "package-a")
+		command := exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + packageA, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package A: %v: %s", err, output)
+		}
+		writeIdempotencyAcceptanceFixtureFile(t, fixture, "Makefile", "fixture:\n\t@replacement\n", 0o600)
+		runIdempotencyAcceptanceGit(t, fixture, "add", "--", "Makefile")
+		runIdempotencyAcceptanceGit(t, fixture, "commit", "-q", "-m", "replacement package")
+		packageB := filepath.Join(t.TempDir(), "package-b")
+		command = exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixture
+		command.Env = []string{"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + packageB, "PATH=" + os.Getenv("PATH")}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export package B: %v: %s", err, output)
+		}
+		remote := t.TempDir()
+		extractIdempotencyAcceptanceTar(t, filepath.Join(packageB, "source.tar"), remote)
+		writeIdempotencyAcceptanceFixtureFile(t, remote, "deploy/acceptance/.env", "MYSQL_DATABASE=fixture\n", 0o600)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "sort", `#!/bin/sh
+case " $* " in
+  *"source-files.z"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER"
+      /bin/cp "$ALTERNATE_PACKAGE/source-files.z" "$CALLER_PACKAGE/source-files.z"
+      /bin/cp "$ALTERNATE_PACKAGE/source-sha256.txt" "$CALLER_PACKAGE/source-sha256.txt"
+      /bin/cp "$ALTERNATE_PACKAGE/source.tar" "$CALLER_PACKAGE/source.tar"
+      /bin/cp "$ALTERNATE_PACKAGE/package-sha256.txt" "$CALLER_PACKAGE/package-sha256.txt"
+    fi
+    ;;
+esac
+exec "$REAL_SORT" "$@"
+`, 0o700)
+		swapMarker := filepath.Join(t.TempDir(), "package-swapped")
+		output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t, remote, packageA,
+			filepath.Join(remote, "deploy/acceptance/session-revocation-smoke.sh"), stubDir, marker,
+			sessionRevocationPackageDigest(t, packageA), []string{
+				"CALLER_PACKAGE=" + packageA,
+				"ALTERNATE_PACKAGE=" + packageB,
+				"SWAP_MARKER=" + swapMarker,
+				"REAL_SORT=" + sessionRevocationCommandPath(t, "sort"),
+			})
+		if err == nil {
+			t.Fatalf("post-check package replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("package replacement mutation did not run: %v", err)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("post-check package replacement reached Docker: %s", output)
+		}
+	})
+
+	t.Run("received source linked ancestor refuses before Docker", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeSessionRevocationAcceptance(t)
+		external := filepath.Join(t.TempDir(), "backend")
+		if err := os.Rename(filepath.Join(remote, "backend"), external); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, filepath.Join(remote, "backend")); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		output, err := runMetadataFreeSessionRevocationAcceptance(t, remote, packageDir, script,
+			writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"), marker)
+		if err == nil {
+			t.Fatalf("linked received ancestor unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked received ancestor reached Docker")
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		typeflag byte
+		extraDir bool
+	}{
+		{name: "fifo", typeflag: tar.TypeFifo},
+		{name: "hardlink", typeflag: tar.TypeLink},
+		{name: "symlink", typeflag: tar.TypeSymlink},
+		{name: "device", typeflag: tar.TypeChar},
+		{name: "extra directory", extraDir: true},
+	} {
+		t.Run("archive preflight rejects "+tc.name, func(t *testing.T) {
+			remote, packageDir, script := prepareMetadataFreeSessionRevocationAcceptance(t)
+			sessionRevocationRewriteArchiveType(t, filepath.Join(packageDir, "source.tar"), "Makefile", tc.typeflag, tc.extraDir)
+			rewriteSessionRevocationPackageManifest(t, packageDir)
+			extractionMarker := filepath.Join(t.TempDir(), "archive-extracted")
+			dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+			stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+			writeIdempotencyAcceptanceFixtureFile(t, stubDir, "tar", `#!/bin/sh
+case " $* " in *" -xf "*"source.tar"*) : >"$ARCHIVE_EXTRACTED";; esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+			output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t, remote, packageDir, script, stubDir,
+				dockerMarker, sessionRevocationPackageDigest(t, packageDir), []string{"ARCHIVE_EXTRACTED=" + extractionMarker})
+			if err == nil {
+				t.Fatalf("unsafe archive member unexpectedly succeeded: %s", output)
+			}
+			if _, err := os.Stat(extractionMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsafe %s archive reached extraction", tc.name)
+			}
+			if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsafe %s archive reached Docker", tc.name)
+			}
+		})
+	}
+
+	t.Run("Compose diagnostics stay private", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeSessionRevocationAcceptance(t)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := writeIdempotencyAcceptanceDockerStub(t, `#!/bin/sh
+: >"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" container ls "*"name=^/secondhand-market-"*) exit 0;;
+  *" compose "*" up "*) printf 'Authorization: Bearer session-compose-secret\n' >&2; exit 64;;
+esac
+exit 0
+`)
+		output, err := runMetadataFreeSessionRevocationAcceptance(t, remote, packageDir, script, stubDir, marker)
+		if err == nil {
+			t.Fatalf("Compose diagnostic failure unexpectedly succeeded: %s", output)
+		}
+		for _, secret := range []string{"Authorization", "Bearer", "session-compose-secret"} {
+			if bytes.Contains(output, []byte(secret)) {
+				t.Fatalf("Compose diagnostic leaked %q to caller output: %q", secret, output)
+			}
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		signal string
+		status int
+	}{
+		{name: "interrupt exits 130", signal: "INT", status: 130},
+		{name: "terminate exits 143", signal: "TERM", status: 143},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote, packageDir, script := prepareMetadataFreeSessionRevocationAcceptance(t)
+			marker := filepath.Join(t.TempDir(), "docker-called")
+			stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+			sha256sumStub := strings.ReplaceAll(`#!/bin/sh
+"$REAL_SHA256SUM" "$@"
+status=$?
+case " $* " in
+  *"package-sha256.txt"*)
+    if [ ! -e "$SIGNAL_SENT" ]; then : >"$SIGNAL_SENT"; kill -__SIGNAL__ "$PPID"; fi
+    ;;
+esac
+exit "$status"
+`, "__SIGNAL__", tc.signal)
+			writeIdempotencyAcceptanceFixtureFile(t, stubDir, "sha256sum", sha256sumStub, 0o700)
+			output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t, remote, packageDir, script, stubDir, marker,
+				sessionRevocationPackageDigest(t, packageDir), []string{
+					"REAL_SHA256SUM=" + sessionRevocationCommandPath(t, "sha256sum"),
+					"SIGNAL_SENT=" + filepath.Join(t.TempDir(), "signal-sent"),
+				})
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.status {
+				t.Fatalf("%s exit = %v, want status %d; output=%q", tc.signal, err, tc.status, output)
+			}
+		})
+	}
+}
+
 func TestSessionRevocationAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -521,6 +851,27 @@ func TestSessionRevocationAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T)
 			}
 		})
 	}
+	t.Run("linked evidence parent refuses before Docker", func(t *testing.T) {
+		remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+		evidenceParent := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence")
+		external := t.TempDir()
+		if err := os.Symlink(external, evidenceParent); err != nil {
+			t.Fatal(err)
+		}
+		dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		output, err := runMetadataFreeSessionRevocationAcceptance(t, remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+		if err == nil {
+			t.Fatalf("linked evidence parent unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("linked evidence parent reached Docker")
+		}
+		entries, err := os.ReadDir(external)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("linked evidence parent target was modified: %v, %v", entries, err)
+		}
+	})
 }
 
 func TestSessionRevocationAcceptanceRetainsSanitizedFailureEvidence(t *testing.T) {
@@ -729,6 +1080,36 @@ exec /bin/rmdir "$@"
 	if _, err := os.Stat(tripwire); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("preserved publication state reached Docker")
 	}
+}
+
+func TestSessionRevocationAcceptancePreservesNestedMoveRemovalAmbiguity(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "mv", `#!/bin/sh
+case " $* " in
+  *" -n "*.session-access-revocation.publish.*) ;;
+  *) exec /bin/mv "$@";;
+esac
+while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
+source=$1
+target=$2
+lock="$(dirname "$target")/.session-access-revocation.publish.lock"
+[ -d "$lock" ] || exit 91
+/bin/mkdir "$target" || exit $?
+exec /bin/mv "$source" "$target/"
+`, 0o700)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "rm", `#!/bin/sh
+case " $* " in
+  *"/session-access-revocation/"*".session-access-revocation.publish."*) exit 73;;
+esac
+exec /bin/rm "$@"
+`, 0o700)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t, remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatalf("nested move removal failure unexpectedly succeeded: %s", output)
+	}
+	assertSessionRevocationAmbiguousPublicationPreserved(t, remoteRepo, output)
 }
 
 func TestSessionRevocationAcceptanceRefusesProductionInspectionError(t *testing.T) {
