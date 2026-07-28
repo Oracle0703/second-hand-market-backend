@@ -92,6 +92,9 @@ recoverable backup evidence
 -> 0008 anonymous upload governance preflight
 -> 0008 anonymous upload governance up migration exactly once
 -> 0008 anonymous upload governance postflight
+-> 0009 buyer intent open uniqueness preflight
+-> 0009 buyer intent open uniqueness up migration exactly once
+-> 0009 buyer intent open uniqueness postflight
 -> deploy API and admin frontend together
 -> health/auth/read checks
 -> controlled dedicated test product create/close/complete

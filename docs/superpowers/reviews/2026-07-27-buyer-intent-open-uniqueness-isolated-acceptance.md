@@ -95,3 +95,17 @@ ee185083b43c7f2eef2dd462388010b966485ef355ccc6600b17bff309c33235  production-bef
 
 F-11 测试服务器审核通过，F-12 的 F-11 前置条件已满足；这不表示 F-12 已实现或已验收。
 生产 `0008`/`0009`、应用部署和生产写验证仍需独立授权，不能把本报告解释为生产关闭。
+
+## 5. 文档审阅修复
+
+以 `c72643b` 为审阅基线的第一轮文档审阅发现，`docs/release-readiness.md`
+的生产维护窗顺序在 0008 postflight 后直接进入部署，与同一文档要求生产 `0009`
+必须在独立授权维护窗执行的当前状态矛盾。现已在部署前明确补入：
+
+```text
+0009 buyer intent open uniqueness preflight
+-> 0009 buyer intent open uniqueness up migration exactly once
+-> 0009 buyer intent open uniqueness postflight
+```
+
+本轮只修正文档，没有执行任何生产命令。聚焦顺序检查和 `git diff --check` 均通过。
