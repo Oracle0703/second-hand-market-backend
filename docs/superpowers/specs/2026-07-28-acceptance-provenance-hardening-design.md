@@ -8,11 +8,11 @@
 Local implementation and scoped Critical/Important review closure for Tasks 1-4
 are complete through `f507a7d`. Task 5 implementation and fresh
 final-implementation-head local gates are complete at clean commit
-`9733826d7062ba07f1f32e0e4ee151c3f86c8c82`. Its fix round 1 remains pending
-scoped independent re-review. Task 6 package export and final whole-branch
-review remain pending. F-04/F-13, F-05, F-06, and F-14 are not test-server
-approved by this work yet. Production migrations, deployments, releases, data,
-files, and services are unchanged.
+`9733826d7062ba07f1f32e0e4ee151c3f86c8c82`. Its documentation fix round 1 was
+independently re-reviewed clean at `32a8743`, so Task 5 is complete. Task 6
+package export and final whole-branch review remain pending. F-04/F-13, F-05,
+F-06, and F-14 are not test-server approved by this work yet. Production
+migrations, deployments, releases, data, files, and services are unchanged.
 
 **Approval record:** The user explicitly approved the complete architecture for
 Unified Approach A on 2026-07-28. After the written specification was committed

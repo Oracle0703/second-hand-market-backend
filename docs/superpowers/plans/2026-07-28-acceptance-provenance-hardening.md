@@ -13,8 +13,9 @@
 - Tasks 1-4 are implemented and their scoped Critical/Important review loops
   are closed through `f507a7d`. Task 5 implementation and fresh
   final-implementation-head gates are complete at clean commit
-  `9733826d7062ba07f1f32e0e4ee151c3f86c8c82`; its fix round 1 is pending
-  scoped independent re-review. The reviewed code range starts at `d90c8e6`.
+  `9733826d7062ba07f1f32e0e4ee151c3f86c8c82`; its documentation fix round 1
+  was independently re-reviewed clean at `32a8743`. Task 5 is complete. The
+  reviewed branch range starts at `d90c8e6`; final whole-branch review remains.
 - At that exact commit, the combined four-harness command passed
   (`backend/tests` 199.011s; real 202.47s); backend full passed (`migrations`
   13.735s, `backend/tests` 219.382s; real 224.12s); race passed
