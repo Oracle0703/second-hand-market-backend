@@ -568,6 +568,76 @@ exit 0
 	}
 }
 
+func TestSessionRevocationAcceptanceFailsClosedOnEvidenceScannerError(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "grep", `#!/bin/sh
+case " $* " in
+  *" -ERn "*) exit 2 ;;
+esac
+exec /usr/bin/grep "$@"
+`, 0o700)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatal("evidence scanner error unexpectedly succeeded")
+	}
+	assertSessionRevocationSanitizationFallback(t, remoteRepo, output)
+}
+
+func TestSessionRevocationAcceptancePublicationFailureLeavesNoPartialEvidence(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case " $* " in
+  *"/evidence-candidate/"*".txt"*|*".session-access-revocation."*".txt"*) exit 74 ;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+	if output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker); err == nil {
+		t.Fatalf("forced evidence publication failure unexpectedly succeeded: %s", output)
+	}
+	assertSessionRevocationNoPublicationState(t, remoteRepo)
+}
+
+func TestSessionRevocationAcceptanceRefusesProductionInspectionError(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	stateDir := t.TempDir()
+	dockerMarker := filepath.Join(stateDir, "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, `#!/bin/sh
+: >>"$DOCKER_CALLED"
+args=" $* "
+case "$args" in
+  *" container ls "*"name=^/secondhand-market-"*) printf 'production-inspection-secret\n' >&2; exit 125 ;;
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect --type container "*) printf 'production-inspection-secret\n' >&2; exit 125 ;;
+  *" compose "*" up "*) exit 0 ;;
+  *" compose "*" exec "*)
+    case "$args" in *"SELECT VERSION()"*) printf '8.4.0\n' ;; esac
+    exit 0 ;;
+  *" compose "*" run "*"TestSessionRevocationMySQLAcceptance"*)
+    printf '%s\n' '--- PASS: TestSessionRevocationMySQLAcceptance (0.01s)' 'PASS' 'ok  fixture/tests 0.01s'
+    exit 0 ;;
+  *" compose "*" run "*"go test ./..."*) printf 'ok  fixture/all 0.01s\n'; exit 0 ;;
+  *" compose "*" run "*"go vet ./..."*) exit 0 ;;
+  *" compose "*) exit 0 ;;
+esac
+exit 0
+`)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatalf("production inspection error produced a false PASS: %s", output)
+	}
+	if bytes.Contains(output, []byte("production-inspection-secret")) {
+		t.Fatalf("production inspection diagnostics leaked to caller: %q", output)
+	}
+	assertSessionRevocationSanitizationFallback(t, remoteRepo, output)
+}
+
 func TestSessionRevocationAcceptancePreservesRuntimeGateOrder(t *testing.T) {
 	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
 	stateDir := t.TempDir()
@@ -577,6 +647,7 @@ func TestSessionRevocationAcceptancePreservesRuntimeGateOrder(t *testing.T) {
 printf '%s\n' "$*" >>"$DOCKER_LOG"
 args=" $* "
 case "$args" in
+  *" container ls "*"name=^/secondhand-market-"*) exit 0 ;;
   *" container ls "*)
     [ -f "$PROJECT_STARTED" ] && printf 'isolated-container\n'
     exit 0
@@ -612,18 +683,154 @@ exit 0
 		t.Fatalf("read Docker command log: %v", err)
 	}
 	logText := string(rawLog)
-	requireOrderedSessionSnippets(t, logText, []string{
+	expectedMigrationChain := []string{
+		"0001_init.up.sql",
+		"0002_buyer_domain.up.sql",
+		"0003_buyer_auth_provider.up.sql",
+		"0004_merchant_multi_stock.preflight.sql",
+		"0004_merchant_multi_stock.up.sql",
+		"0004_merchant_multi_stock.postflight.sql",
+		"0005_file_records_table.preflight.sql",
+		"0005_file_records_table.up.sql",
+		"0005_file_records_table.postflight.sql",
+		"0006_file_binding_ownership.preflight.sql",
+		"0006_file_binding_ownership.up.sql",
+		"0006_file_binding_ownership.postflight.sql",
+		"0007_license_file_privacy.preflight.sql",
+		"0007_license_file_privacy.up.sql",
+		"0007_license_file_privacy.postflight.sql",
+		"0008_anonymous_upload_governance.preflight.sql",
+		"0008_anonymous_upload_governance.up.sql",
+		"0008_anonymous_upload_governance.postflight.sql",
+		"0009_buyer_intent_open_uniqueness.preflight.sql",
+		"0009_buyer_intent_open_uniqueness.up.sql",
 		"0009_buyer_intent_open_uniqueness.postflight.sql",
+	}
+	ordered := []string{
+		"name=^/secondhand-market-api$",
+		"compose --project-name secondhand-session-revocation-acceptance",
+		" up -d --wait mysql",
+		"SELECT VERSION()",
+	}
+	ordered = append(ordered, expectedMigrationChain...)
+	ordered = append(ordered,
 		"AUTO_MIGRATE=false",
-		"0009_buyer_intent_open_uniqueness.postflight.sql",
+	)
+	ordered = append(ordered, expectedMigrationChain...)
+	ordered = append(ordered,
 		"AUTO_MIGRATE=true",
 		"go test ./... -count=1",
 		"go vet ./...",
+		"name=^/secondhand-market-api$",
 		" stop",
-	})
+	)
+	requireOrderedSessionSnippets(t, logText, ordered)
+	for _, migration := range expectedMigrationChain {
+		if count := strings.Count(logText, migration); count != 2 {
+			t.Fatalf("migration %q count = %d, want 2: %s", migration, count, logText)
+		}
+	}
+	if count := strings.Count(logText, "name=^/secondhand-market-api$"); count != 2 {
+		t.Fatalf("production API snapshot count = %d, want 2: %s", count, logText)
+	}
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+	results, err := os.ReadFile(filepath.Join(evidenceDir, "acceptance-results.txt"))
+	if err != nil {
+		t.Fatalf("read success evidence classifications: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(results)), "\n")
+	if len(lines) != 8 || !strings.HasPrefix(lines[0], "classification=source_package|result=PASS|count=") {
+		t.Fatalf("success evidence classifications = %q", results)
+	}
+	for index, expected := range []string{
+		"classification=mysql_version|result=PASS|count=1",
+		"classification=migration_chain|result=PASS|count=1",
+		"classification=session_auto_migrate_false|result=PASS|count=1",
+		"classification=session_auto_migrate_true|result=PASS|count=1",
+		"classification=backend_tests|result=PASS|count=1",
+		"classification=go_vet|result=PASS|count=1",
+		"classification=production_snapshot|result=PASS|count=3",
+	} {
+		if lines[index+1] != expected {
+			t.Fatalf("success classification %d = %q, want %q", index+1, lines[index+1], expected)
+		}
+	}
+	runtimePath := ""
+	for _, field := range strings.Fields(logText) {
+		if strings.HasSuffix(field, "/session-revocation-compose.yml") {
+			runtimePath = filepath.Dir(field)
+			break
+		}
+	}
+	if runtimePath == "" {
+		t.Fatal("runtime Compose override path was not recorded")
+	}
+	if _, err := os.Lstat(runtimePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary runtime directory survived: %s: %v", runtimePath, err)
+	}
 	for _, forbidden := range []string{" down", " prune", "secondhand-market-api stop", "secondhand-market-web stop", "secondhand-market-mysql stop"} {
 		if strings.Contains(logText, forbidden) {
 			t.Fatalf("runtime used forbidden Docker operation %q: %s", forbidden, logText)
+		}
+	}
+}
+
+const sessionRevocationControlledFailureDockerStub = `#!/bin/sh
+: >>"$DOCKER_CALLED"
+args=" $* "
+case "$args" in
+  *" container ls "*"name=^/secondhand-market-"*) exit 0 ;;
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect --type container "*) exit 1 ;;
+  *" compose "*" stop "*|*" compose "*" up "*|*" compose "*" build "*) exit 0 ;;
+  *" compose "*" exec "*)
+    case "$args" in *"SELECT VERSION()"*) printf '8.4.0\n' ;; esac
+    exit 0 ;;
+  *" compose "*" run "*)
+    printf 'Authorization: Bearer raw-session-secret\n' >&2
+    exit 42 ;;
+esac
+exit 0
+`
+
+func assertSessionRevocationSanitizationFallback(t *testing.T, remoteRepo string, commandOutput []byte) {
+	t.Helper()
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+	entries, err := os.ReadDir(evidenceDir)
+	if err != nil {
+		t.Fatalf("read sanitization fallback: %v; output = %q", err, commandOutput)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("sanitization fallback entries = %v, want exactly three", entries)
+	}
+	results, err := os.ReadFile(filepath.Join(evidenceDir, "acceptance-results.txt"))
+	if err != nil || string(results) != "classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n" {
+		t.Fatalf("sanitization fallback result = %q, %v", results, err)
+	}
+	scan, err := os.ReadFile(filepath.Join(evidenceDir, "evidence-leak-scan.txt"))
+	if err != nil || string(scan) != "classification=evidence_scan|result=FAIL|count=1\n" {
+		t.Fatalf("sanitization fallback scan = %q, %v", scan, err)
+	}
+	check := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
+	check.Dir = evidenceDir
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("verify sanitization fallback hashes: %v: %s", err, output)
+	}
+}
+
+func assertSessionRevocationNoPublicationState(t *testing.T, remoteRepo string) {
+	t.Helper()
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+	if _, err := os.Lstat(evidenceDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial retained evidence survived: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(evidenceDir))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".session-access-revocation.") {
+			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
 	}
 }

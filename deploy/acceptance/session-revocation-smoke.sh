@@ -274,147 +274,305 @@ source_results="$runtime_dir/acceptance-results.txt"
 production_before="$runtime_dir/production-before.txt"
 production_after="$runtime_dir/production-after.txt"
 evidence_parent="$(dirname -- "$evidence_dir")"
-publication_enabled=0
 evidence_published=0
+evidence_eligible=0
+evidence_publish_tmp=""
+evidence_publish_lock=""
 docker_available=0
 project_may_exist=0
 current_stage="source_package"
 source_count=0
 source_manifest_sha256=""
 
-write_absent_production_snapshot() {
-  local output="$1"
-  local container
-  : >"$output"
-  for container in "${production_containers[@]}"; do
-    printf '/%s|absent|absent|absent\n' "$container" >>"$output"
-  done
-}
-
 snapshot_production() {
   local output="$1"
-  local line
+  local line matches
   local container
   : >"$output"
   for container in "${production_containers[@]}"; do
-    if docker inspect --type container "$container" >/dev/null 2>&1; then
-      line="$(docker inspect --type container \
-        --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
-        "$container" 2>/dev/null || true)"
-      if [[ -n "$line" ]]; then
-        printf '%s\n' "$line" >>"$output"
-      else
-        printf '/%s|unavailable|unavailable|unavailable\n' "$container" >>"$output"
-      fi
-    else
+    if ! matches="$(docker container ls -a \
+      --filter "name=^/${container}$" --format '{{.Names}}' \
+      2>>"$runtime_dir/production-snapshot-errors.raw")"; then
+      return 1
+    fi
+    if [[ -z "$matches" ]]; then
       printf '/%s|absent|absent|absent\n' "$container" >>"$output"
+    elif [[ "$matches" == "$container" ]]; then
+      if ! line="$(docker inspect --type container \
+        --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
+        "$container" 2>>"$runtime_dir/production-snapshot-errors.raw")" ||
+        [[ -z "$line" ]]; then
+        return 1
+      fi
+      printf '%s\n' "$line" >>"$output"
+    else
+      return 1
     fi
   done
+  snapshot_file_is_safe "$output"
+}
+
+snapshot_file_is_safe() {
+  local file="$1" name id state restart_count extra count=0
+  local -a expected=(/secondhand-market-api /secondhand-market-web /secondhand-market-mysql)
+  [[ -s "$file" && -f "$file" && ! -L "$file" ]] || return 1
+  while IFS='|' read -r name id state restart_count extra; do
+    [[ "$count" -lt 3 && "$name" == "${expected[$count]}" && -z "$extra" ]] || return 1
+    if [[ "$id" == absent ]]; then
+      [[ "$state" == absent && "$restart_count" == absent ]] || return 1
+    else
+      [[ "${#id}" -eq 64 && "$id" != *[!0-9a-f]* &&
+        "$state" =~ ^[a-z]+$ && "$restart_count" =~ ^[0-9]+$ ]] || return 1
+    fi
+    count=$((count + 1))
+  done <"$file"
+  [[ "$count" -eq 3 ]]
 }
 
 write_evidence_hashes() {
   local directory="$1"
-  (
+  local temporary="$directory/.evidence-sha256.tmp"
+  if ! (
     cd "$directory"
     find . -maxdepth 1 -type f -name '*.txt' ! -name 'evidence-sha256.txt' -print0 |
       LC_ALL=C sort -z | xargs -0 sha256sum
-  ) >"$directory/evidence-sha256.txt"
+  ) >"$temporary"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  mv -- "$temporary" "$directory/evidence-sha256.txt" || {
+    rm -f -- "$temporary"
+    return 1
+  }
 }
 
-evidence_contains_forbidden_data() {
-  local directory="$1"
-  grep -ERn --binary-files=without-match \
+scan_evidence_directory() {
+  local directory="$1" output="$2" scan_status=0
+  grep -ERn --binary-files=text \
     'Authorization|access_token|refresh_token|DB_DSN=|MYSQL_PASSWORD=|MYSQL_ROOT_PASSWORD=|JWT_ACCESS_SECRET=|JWT_REFRESH_SECRET=|FILE_UPLOAD_IP_HASH_SECRET=|eyJ[A-Za-z0-9_-]+\.|openid["=:]|session_id["=:]|user_id["=:]|actor_id["=:]' \
-    "$directory" >/dev/null
+    "$directory" >"$output" || scan_status=$?
+  [[ "$scan_status" -eq 1 ]]
 }
 
-publish_evidence() {
-  local status="$1"
-  local staging
+failure_stage_is_safe() {
+  case "$1" in
+    production_before | mysql_start | mysql_version | bootstrap_build | migration_chain | \
+      session_auto_migrate_false | migration_chain_true_reset | session_auto_migrate_true | \
+      backend_tests | go_vet | production_snapshot | evidence_publication)
+      return 0
+      ;;
+  esac
+  return 1
+}
 
-  mkdir -p "$evidence_parent"
-  staging="$(mktemp -d "$evidence_parent/.session-access-revocation.XXXXXX")"
-  chmod 700 "$staging"
-  cp "$source_results" "$staging/acceptance-results.txt" &&
-    cp "$production_before" "$staging/production-before.txt" &&
-    cp "$production_after" "$staging/production-after.txt" || {
-    rm -r -- "$staging"
-    return 1
-  }
-  if [[ "$status" -ne 0 ]]; then
-    printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' \
-      "$current_stage" >"$staging/failure-status.txt"
+classification_file_is_safe() {
+  local file="$1" mode="$2" line count=0
+  local -a expected=(
+    'classification=mysql_version|result=PASS|count=1'
+    'classification=migration_chain|result=PASS|count=1'
+    'classification=session_auto_migrate_false|result=PASS|count=1'
+    'classification=session_auto_migrate_true|result=PASS|count=1'
+    'classification=backend_tests|result=PASS|count=1'
+    'classification=go_vet|result=PASS|count=1'
+    'classification=production_snapshot|result=PASS|count=3'
+  )
+  [[ -s "$file" && -f "$file" && ! -L "$file" ]] || return 1
+  while IFS= read -r line; do
+    if [[ "$count" -eq 0 ]]; then
+      [[ "$line" =~ ^classification=source_package\|result=PASS\|count=[1-9][0-9]*\|sha256=[0-9a-f]{64}$ ]] || return 1
+    else
+      [[ "$count" -le 7 && "$line" == "${expected[$((count - 1))]}" ]] || return 1
+    fi
+    count=$((count + 1))
+  done <"$file"
+  if [[ "$mode" == success ]]; then
+    [[ "$count" -eq 8 ]]
   else
-    cp "$runtime_dir/mysql-auto-migrate-false.txt" \
-      "$staging/mysql-auto-migrate-false.txt" &&
-      cp "$runtime_dir/mysql-auto-migrate-true.txt" \
-        "$staging/mysql-auto-migrate-true.txt" &&
-      cp "$runtime_dir/backend-tests.txt" "$staging/backend-tests.txt" || {
-      rm -r -- "$staging"
-      return 1
-    }
-    printf 'go_vet=pass\n' >"$staging/go-vet.txt"
+    [[ "$count" -ge 1 && "$count" -lt 8 ]]
   fi
+}
 
-  if evidence_contains_forbidden_data "$staging"; then
-    rm -f -- "$staging/mysql-auto-migrate-false.txt" \
-      "$staging/mysql-auto-migrate-true.txt" "$staging/backend-tests.txt"
-    write_absent_production_snapshot "$staging/production-before.txt"
-    write_absent_production_snapshot "$staging/production-after.txt"
-  fi
-  if evidence_contains_forbidden_data "$staging"; then
-    rm -r -- "$staging"
-    echo "sanitized evidence fallback could not remove forbidden data" >&2
-    return 1
-  fi
-  printf 'classification=evidence_scan|result=PASS|count=0\n' \
-    >"$staging/evidence-leak-scan.txt"
-  write_evidence_hashes "$staging"
-  chmod 600 "$staging"/*.txt
+validate_evidence_copy() {
+  local source="$1" copied="$2" path
+  local source_list="$runtime_dir/evidence-source-files.z"
+  local copied_list="$runtime_dir/evidence-copied-files.z"
+  [[ -d "$source" && ! -L "$source" && -d "$copied" && ! -L "$copied" ]] || return 1
+  [[ -z "$(find "$source" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  [[ -z "$(find "$copied" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  write_context_file_list "$source" >"$source_list" || return 1
+  write_context_file_list "$copied" >"$copied_list" || return 1
+  cmp -s "$source_list" "$copied_list" || return 1
+  while IFS= read -r -d '' path; do
+    [[ -f "$copied/$path" && ! -L "$copied/$path" ]] || return 1
+  done <"$source_list"
+  write_directory_manifest "$source" "$source_list" "$runtime_dir/evidence-source-sha256.txt" || return 1
+  write_directory_manifest "$copied" "$copied_list" "$runtime_dir/evidence-copied-sha256.txt" || return 1
+  cmp -s "$runtime_dir/evidence-source-sha256.txt" "$runtime_dir/evidence-copied-sha256.txt"
+}
 
-  [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || {
-    rm -r -- "$staging"
-    echo "refusing to overwrite existing session revocation evidence" >&2
+publish_evidence_directory() {
+  local directory="$1" staging_name=""
+  [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || return 1
+  mkdir -p "$evidence_parent" || return 1
+  evidence_publish_lock="$evidence_parent/.session-access-revocation.publish.lock"
+  mkdir "$evidence_publish_lock" || {
+    evidence_publish_lock=""
     return 1
   }
-  mv "$staging" "$evidence_dir" || {
-    rm -r -- "$staging"
+  if [[ -e "$evidence_dir" || -L "$evidence_dir" ]]; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
     return 1
-  }
+  fi
+  if ! evidence_publish_tmp="$(mktemp -d "$evidence_parent/.session-access-revocation.publish.XXXXXX")"; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  staging_name="${evidence_publish_tmp##*/}"
+  if ! chmod 700 "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! (cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw") |
+    tar -C "$evidence_publish_tmp" -xf - 2>>"$runtime_dir/evidence-copy-errors.raw"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_copy "$directory" "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! mv -n -- "$evidence_publish_tmp" "$evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
+    [[ -e "$evidence_publish_tmp" ]]; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if [[ -d "$evidence_dir/$staging_name" ]]; then
+    rm -r -- "$evidence_dir/$staging_name" || return 1
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_copy "$directory" "$evidence_dir"; then
+    rm -r -- "$evidence_dir"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  evidence_publish_tmp=""
+  if ! rmdir "$evidence_publish_lock"; then
+    rm -r -- "$evidence_dir"
+    evidence_publish_lock=""
+    return 1
+  fi
+  evidence_publish_lock=""
   evidence_published=1
 }
 
+publish_sanitization_failure() {
+  local fallback="$runtime_dir/sanitization-fallback"
+  mkdir "$fallback" || return 1
+  chmod 700 "$fallback" || return 1
+  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' \
+    >"$fallback/acceptance-results.txt" || return 1
+  printf 'classification=evidence_scan|result=FAIL|count=1\n' \
+    >"$fallback/evidence-leak-scan.txt" || return 1
+  write_evidence_hashes "$fallback" || return 1
+  chmod 600 "$fallback"/*.txt || return 1
+  publish_evidence_directory "$fallback"
+}
+
+publish_evidence() {
+  local status="$1" mode=failure candidate="$runtime_dir/evidence-candidate"
+  [[ "$status" -ne 0 ]] || mode=success
+  if ! classification_file_is_safe "$source_results" "$mode" ||
+    ! snapshot_file_is_safe "$production_before" ||
+    ! snapshot_file_is_safe "$production_after" ||
+    ! cmp -s "$production_before" "$production_after"; then
+    publish_sanitization_failure || return 1
+    return 2
+  fi
+  mkdir "$candidate" || return 1
+  chmod 700 "$candidate" || return 1
+  cp "$source_results" "$candidate/acceptance-results.txt" || return 1
+  cp "$production_before" "$candidate/production-before.txt" || return 1
+  cp "$production_after" "$candidate/production-after.txt" || return 1
+  if [[ "$status" -ne 0 ]]; then
+    failure_stage_is_safe "$current_stage" || {
+      publish_sanitization_failure || return 1
+      return 2
+    }
+    printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' \
+      "$current_stage" >"$candidate/failure-status.txt" || return 1
+  else
+    cp "$runtime_dir/mysql-auto-migrate-false.txt" "$candidate/mysql-auto-migrate-false.txt" || return 1
+    cp "$runtime_dir/mysql-auto-migrate-true.txt" "$candidate/mysql-auto-migrate-true.txt" || return 1
+    cp "$runtime_dir/backend-tests.txt" "$candidate/backend-tests.txt" || return 1
+    printf 'go_vet=pass\n' >"$candidate/go-vet.txt" || return 1
+  fi
+  if ! scan_evidence_directory "$candidate" "$runtime_dir/evidence-leaks.raw"; then
+    rm -r -- "$candidate"
+    publish_sanitization_failure || return 1
+    return 2
+  fi
+  printf 'classification=evidence_scan|result=PASS|count=0\n' \
+    >"$candidate/evidence-leak-scan.txt" || return 1
+  write_evidence_hashes "$candidate" || return 1
+  chmod 600 "$candidate"/*.txt || return 1
+  publish_evidence_directory "$candidate"
+}
+
 on_exit() {
-  local status=$?
+  local status=$? publication_status=0 snapshots_safe=1
   trap - EXIT INT TERM
   set +e
-  if [[ "$publication_enabled" -eq 1 && "$evidence_published" -ne 1 ]]; then
-    if [[ ! -s "$production_before" ]]; then
-      if [[ "$docker_available" -eq 1 ]]; then
-        snapshot_production "$production_before"
-      else
-        write_absent_production_snapshot "$production_before"
-      fi
+  if [[ "$evidence_eligible" -eq 1 && "$evidence_published" -ne 1 &&
+    ! -e "$evidence_dir" && ! -L "$evidence_dir" ]]; then
+    if ! snapshot_file_is_safe "$production_before"; then
+      snapshot_production "$production_before" >/dev/null 2>&1 || snapshots_safe=0
     fi
-    if [[ "$status" -ne 0 || ! -s "$production_after" ]]; then
-      if [[ "$docker_available" -eq 1 ]]; then
-        snapshot_production "$production_after"
-      else
-        cp "$production_before" "$production_after"
-      fi
+    if [[ "$status" -ne 0 ]] || ! snapshot_file_is_safe "$production_after"; then
+      snapshot_production "$production_after" >/dev/null 2>&1 || snapshots_safe=0
     fi
-    if ! publish_evidence "$status"; then
+    if [[ "$snapshots_safe" -ne 1 ]]; then
+      publish_sanitization_failure || publication_status=$?
+      [[ "$publication_status" -ne 0 ]] || publication_status=2
+    else
+      publish_evidence "$status" || publication_status=$?
+    fi
+    if [[ "$publication_status" -ne 0 ]]; then
       status=1
+      success=0
     fi
   fi
   if [[ "$project_may_exist" -eq 1 && "$docker_available" -eq 1 ]] &&
     docker container ls -a \
       --filter "label=com.docker.compose.project=$project_name" -q | grep -q .; then
     if [[ "$status" -ne 0 ]]; then
-      echo "session revocation acceptance failed; retained service state follows" >&2
-      "${compose[@]}" ps >&2 || true
+      "${compose[@]}" ps >"$runtime_dir/isolated-ps.raw" 2>&1 || true
     fi
-    "${compose[@]}" stop >/dev/null 2>&1 || true
+    "${compose[@]}" stop >"$runtime_dir/isolated-stop.raw" 2>&1 || true
+  fi
+  if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
+    rm -r -- "$evidence_publish_tmp"
+  fi
+  if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
+    rmdir "$evidence_publish_lock" || true
   fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
     rm -r -- "$runtime_dir"
@@ -579,19 +737,25 @@ command -v docker >/dev/null || {
   exit 1
 }
 docker_available=1
-publication_enabled=1
 
 current_stage="resource_collision"
-existing_containers="$(docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q)"
-existing_volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project_name" -q)"
-existing_networks="$(docker network ls --filter "label=com.docker.compose.project=$project_name" -q)"
+existing_containers="$(docker container ls -a --filter "label=com.docker.compose.project=$project_name" -q \
+  2>>"$runtime_dir/project-collision-errors.raw")"
+existing_volumes="$(docker volume ls --filter "label=com.docker.compose.project=$project_name" -q \
+  2>>"$runtime_dir/project-collision-errors.raw")"
+existing_networks="$(docker network ls --filter "label=com.docker.compose.project=$project_name" -q \
+  2>>"$runtime_dir/project-collision-errors.raw")"
 [[ -z "$existing_containers" && -z "$existing_volumes" && -z "$existing_networks" ]] || {
   echo "refusing to reuse existing $project_name resources" >&2
   exit 1
 }
 
+evidence_eligible=1
 current_stage="production_before"
-snapshot_production "$production_before"
+snapshot_production "$production_before" || {
+  echo "production-before snapshot failed strict inspection" >&2
+  exit 1
+}
 
 compose_override="$runtime_dir/session-revocation-compose.yml"
 printf 'services:\n  bootstrap-admin:\n    build:\n      context: "%s"\n      dockerfile: backend/Dockerfile\n' \
@@ -708,7 +872,10 @@ fi
 printf 'classification=go_vet|result=PASS|count=1\n' >>"$source_results"
 
 current_stage="production_snapshot"
-snapshot_production "$production_after"
+snapshot_production "$production_after" || {
+  echo "production-after snapshot failed strict inspection" >&2
+  exit 1
+}
 cmp -s "$production_before" "$production_after" || {
   echo "production container identity, state, or restart count changed" >&2
   exit 1
@@ -716,6 +883,12 @@ cmp -s "$production_before" "$production_after" || {
 printf 'classification=production_snapshot|result=PASS|count=3\n' >>"$source_results"
 
 current_stage="evidence_publication"
+publication_status=0
+publish_evidence 0 || publication_status=$?
+[[ "$publication_status" -eq 0 ]] || {
+  echo "session revocation evidence publication failed closed" >&2
+  exit 1
+}
 success=1
 echo "isolated session access revocation acceptance passed"
 echo "mysql version: $mysql_version"
