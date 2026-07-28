@@ -4,6 +4,74 @@ This stack runs a production-mode API and admin frontend against an isolated
 MySQL 8.4 database on the same Docker host. It is intended for migration,
 concurrency, and UI acceptance before a production deployment.
 
+## Idempotency atomicity acceptance
+
+The idempotency acceptance is a separately authorized, one-run check. Transfer
+its committed source whitelist only to the fixed remote directory
+`/home/yu/services/secondhand-idempotency-acceptance-20260728`. Generate the
+NUL-delimited whitelist without Docker or remote access:
+
+```bash
+IDEMPOTENCY_SOURCE_LIST_ONLY=1 \
+  ./deploy/acceptance/idempotency-atomicity-smoke.sh > /tmp/idempotency-source-list.z
+```
+
+The list is built from the Git index and contains only `Makefile`, the backend
+Dockerfile and Go module files, committed backend Go files, committed
+migrations, and committed non-sensitive acceptance files. It excludes `.env`,
+secrets, databases, `backend/app.db`, uploads, evidence, backups, `.git`,
+caches, `node_modules`, `.tmp`, and protected review documents. Create transfer
+archives from that NUL-delimited list; do not copy a workspace directory or add
+untracked files.
+
+Before transfer, compute the sorted file SHA-256 manifest and its digest in the
+source checkout. Recompute both from source-list mode in the remote checkout
+and require byte-for-byte manifest equality and the same digest before the one
+authorized run:
+
+```bash
+xargs -0 sha256sum < /tmp/idempotency-source-list.z \
+  > /tmp/idempotency-source-sha256.txt
+sha256sum /tmp/idempotency-source-sha256.txt
+```
+
+Generate only acceptance credentials with `deploy/acceptance/prepare.sh` in the
+fixed remote directory. Then run exactly:
+
+```bash
+IDEMPOTENCY_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_IDEMPOTENCY_DATA \
+ACCEPTANCE_DB_ENGINE=mysql8.4 \
+COMPOSE_PROJECT_NAME=secondhand-idempotency-acceptance \
+make acceptance-idempotency-smoke
+```
+
+The harness refuses any existing `secondhand-idempotency-acceptance` container,
+volume, network, or evidence directory. It starts only that project's MySQL
+8.4 service, applies migrations `0001` through `0009`, and runs the isolated
+MySQL idempotency contract with AutoMigrate disabled and enabled. It then runs
+the full backend tests, the focused race suites, and `go vet` with the MySQL
+opt-in disabled. The build context is reconstructed from the committed
+whitelist and verified against its SHA-256 manifest.
+
+Evidence is written under
+`deploy/acceptance/evidence/idempotency-atomicity`. Apart from the before/after
+files containing one authorized snapshot row for each of the three production
+containers, evidence contains only classified PASS lines, counts, manifest
+digests, the zero-match sanitization result, and SHA-256 hashes of every
+evidence file. It never includes test payloads, stored responses, credentials,
+tokens, buyer contact fields, database connection values, or raw test
+identifiers.
+
+Before and after the run, the harness compares only the name, container ID,
+state, and restart count of `secondhand-market-api`, `secondhand-market-web`,
+and `secondhand-market-mysql`. It does not inspect production SQL, data, logs,
+environment, mounts, configuration, services, migrations, or deployments. The
+isolated project containers are stopped after the comparison; its containers,
+volumes, networks, and sanitized evidence are retained for separately
+authorized review. The existing-resource and evidence guards make the run
+one-shot. Do not delete, reuse, or rerun those retained resources without a new
+authorization.
+
 ## Buyer intent open-uniqueness matrix
 
 Task 9 must transfer the approved source whitelist to the exact remote path
