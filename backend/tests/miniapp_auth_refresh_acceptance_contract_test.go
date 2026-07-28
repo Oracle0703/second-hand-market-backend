@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -64,6 +66,15 @@ func TestMiniappAuthRefreshAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 
 	fixtureRepo, fixtureScript := newMiniappAuthRefreshFixtureRepo(t)
 	for _, path := range []string{
+		"miniapp/src/control\nname.ts",
+		"miniapp/src/back\\slash.ts",
+		"miniapp/src/nonportable-\u2603.ts",
+	} {
+		writeMiniappAuthRefreshFixtureFile(t, fixtureRepo, path, "export {}\n", 0o600)
+	}
+	runMiniappAuthRefreshGit(t, fixtureRepo, "add", "--", "miniapp/src/control\nname.ts", "miniapp/src/back\\slash.ts", "miniapp/src/nonportable-\u2603.ts")
+	runMiniappAuthRefreshGit(t, fixtureRepo, "commit", "-q", "-m", "nonportable committed names")
+	for _, path := range []string{
 		"miniapp/project.private.config.json",
 		"miniapp/.swc/cache.bin",
 		"miniapp/dist/app.js",
@@ -83,9 +94,16 @@ func TestMiniappAuthRefreshAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 	if err != nil {
 		t.Fatalf("run fixture source-list mode: %v", err)
 	}
-	for _, path := range splitMiniappAuthRefreshNULPaths(t, fixtureOutput) {
+	fixturePaths := splitMiniappAuthRefreshNULPaths(t, fixtureOutput)
+	for _, path := range fixturePaths {
 		if !miniappAuthRefreshAllowedPath(path) {
 			t.Fatalf("source-list mode admitted forbidden, staged, dirty, or untracked path %q", path)
+		}
+	}
+	joinedFixturePaths := strings.Join(fixturePaths, "\n")
+	for _, forbidden := range []string{"control\nname.ts", "back\\slash.ts", "nonportable-"} {
+		if strings.Contains(joinedFixturePaths, forbidden) {
+			t.Fatalf("source-list mode admitted non-portable committed path containing %q: %q", forbidden, joinedFixturePaths)
 		}
 	}
 }
@@ -111,10 +129,26 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("source export invoked a node, npm, or network tripwire")
 	}
+	entries, err := os.ReadDir(exportDir)
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("source export must contain exactly four artifacts: %v, %v", entries, err)
+	}
 	for _, name := range []string{"source-files.z", "source-sha256.txt", "source.tar", "package-sha256.txt"} {
 		if info, err := os.Lstat(filepath.Join(exportDir, name)); err != nil || !info.Mode().IsRegular() {
 			t.Fatalf("source export artifact %q must be a regular file: %v", name, err)
+		} else if info.Mode().Perm() != 0o600 {
+			t.Fatalf("source export artifact %q mode = %o, want 0600", name, info.Mode().Perm())
 		}
+	}
+	packageManifest, err := os.ReadFile(filepath.Join(exportDir, "package-sha256.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestLines := strings.Split(strings.TrimSuffix(string(packageManifest), "\n"), "\n")
+	if len(manifestLines) != 3 || !strings.HasSuffix(manifestLines[0], "  source-files.z") ||
+		!strings.HasSuffix(manifestLines[1], "  source-sha256.txt") ||
+		!strings.HasSuffix(manifestLines[2], "  source.tar") {
+		t.Fatalf("package manifest has noncanonical names or order: %q", packageManifest)
 	}
 	rawList, err := os.ReadFile(filepath.Join(exportDir, "source-files.z"))
 	if err != nil {
@@ -142,9 +176,76 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 	if output, err := manifestCheck.CombinedOutput(); err != nil {
 		t.Fatalf("verify exported miniapp source manifest: %v: %s", err, output)
 	}
+
+	for _, tc := range []struct{ name, destination string }{
+		{"relative", "source-package"},
+		{"root", "/"},
+		{"pre-existing", t.TempDir()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := exec.Command("/bin/bash", fixtureScript)
+			command.Dir = fixtureRepo
+			command.Env = []string{"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + tc.destination, "PATH=" + os.Getenv("PATH")}
+			if err := command.Run(); err == nil {
+				t.Fatalf("source export destination %q unexpectedly succeeded", tc.destination)
+			}
+		})
+	}
+	command := exec.Command("/bin/bash", fixtureScript)
+	command.Dir = fixtureRepo
+	command.Env = []string{
+		"MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY=1",
+		"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + filepath.Join(t.TempDir(), "both"),
+		"PATH=" + os.Getenv("PATH"),
+	}
+	if err := command.Run(); err == nil {
+		t.Fatal("combined source modes unexpectedly succeeded")
+	}
+
+	t.Run("final chmod failure removes incomplete export", func(t *testing.T) {
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case " $* " in
+  *"source-files.z "*) exit 73;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "interrupted-package")
+		command := exec.Command("/bin/bash", fixtureScript)
+		command.Dir = fixtureRepo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("source export unexpectedly survived final chmod failure: %s", output)
+		}
+		if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed source export retained incomplete destination: %v", err)
+		}
+	})
 }
 
 func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBeforeNPM(t *testing.T) {
+	t.Run("missing explicit package directory refuses before node or npm", func(t *testing.T) {
+		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+		cmd := exec.Command("/bin/bash", remoteScript)
+		cmd.Dir = remoteRepo
+		cmd.Env = []string{
+			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
+			"MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256=" + miniappAuthRefreshPackageDigest(t, packageDir),
+			"NPM_CALLED=" + marker,
+			"NPM_COMMAND_LOG=" + commandLog,
+			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		output, err := cmd.CombinedOutput()
+		if err == nil || !errors.Is(func() error { _, statErr := os.Stat(marker); return statErr }(), os.ErrNotExist) {
+			t.Fatalf("missing explicit package directory reached node or npm: %v: %q", err, output)
+		}
+	})
+
 	t.Run("valid package reaches npm after exact toolchain checks", func(t *testing.T) {
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
@@ -166,6 +267,26 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			mutate: func(t *testing.T, _ string, _ string) {},
 		},
 		{
+			name: "extra package file",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				writeMiniappAuthRefreshFixtureFile(t, packageDir, "unexpected.txt", "unexpected\n", 0o600)
+			},
+		},
+		{
+			name: "extra package directory",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				if err := os.Mkdir(filepath.Join(packageDir, "unexpected"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "noncanonical package manifest whitespace",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				miniappAuthRefreshWritePackageManifest(t, packageDir, " ")
+			},
+		},
+		{
 			name: "tampered source list",
 			mutate: func(t *testing.T, _ string, packageDir string) {
 				appendMiniappAuthRefreshFixtureFile(t, packageDir, "source-files.z", []byte("miniapp/src/tampered.ts\x00"))
@@ -181,6 +302,104 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			name: "tampered received file",
 			mutate: func(t *testing.T, remoteRepo, _ string) {
 				writeMiniappAuthRefreshFixtureFile(t, remoteRepo, "miniapp/package.json", "{\"tampered\":true}\n", 0o600)
+			},
+		},
+		{
+			name: "missing package artifact",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				if err := os.Remove(filepath.Join(packageDir, "source.tar")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlink package artifact",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				if err := os.Remove(filepath.Join(packageDir, "source.tar")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("source-files.z", filepath.Join(packageDir, "source.tar")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "received source symlink",
+			mutate: func(t *testing.T, remoteRepo, _ string) {
+				if err := os.Remove(filepath.Join(remoteRepo, "Makefile")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("miniapp/package.json", filepath.Join(remoteRepo, "Makefile")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "archive extra file",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				miniappAuthRefreshRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "", "miniapp/src/archive-extra.ts", "")
+				miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
+			},
+		},
+		{
+			name: "archive missing file",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				miniappAuthRefreshRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "Makefile", "", "")
+				miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
+			},
+		},
+		{
+			name: "archive symlink entry",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				miniappAuthRefreshRewriteArchive(t, filepath.Join(packageDir, "source.tar"), "", "", "Makefile")
+				miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
+			},
+		},
+		{
+			name: "unsorted source list",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				paths := miniappAuthRefreshReadSourcePaths(t, packageDir)
+				paths[0], paths[1] = paths[1], paths[0]
+				miniappAuthRefreshWriteSourcePaths(t, packageDir, paths)
+			},
+		},
+		{
+			name: "duplicate source list",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				paths := miniappAuthRefreshReadSourcePaths(t, packageDir)
+				paths = append(paths, paths[0])
+				sort.Strings(paths)
+				miniappAuthRefreshWriteSourcePaths(t, packageDir, paths)
+			},
+		},
+		{
+			name: "forbidden source list",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				paths := append(miniappAuthRefreshReadSourcePaths(t, packageDir), "miniapp/.env")
+				sort.Strings(paths)
+				miniappAuthRefreshWriteSourcePaths(t, packageDir, paths)
+			},
+		},
+		{
+			name: "missing required source path",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				paths := miniappAuthRefreshReadSourcePaths(t, packageDir)
+				miniappAuthRefreshWriteSourcePaths(t, packageDir, paths[1:])
+			},
+		},
+		{
+			name: "mismatched per-file hash",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				manifestPath := filepath.Join(packageDir, "source-sha256.txt")
+				raw, err := os.ReadFile(manifestPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				copy(raw[:64], strings.Repeat("0", 64))
+				if err := os.WriteFile(manifestPath, raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
 			},
 		},
 	} {
@@ -200,6 +419,67 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 				t.Fatalf("%s reached npm before refusing; output = %q", tc.name, output)
 			}
 		})
+	}
+}
+
+func TestMiniappAuthRefreshAcceptancePublishesEvidenceAtomically(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "tar", `#!/bin/sh
+if [ "$*" = "-cf - ." ]; then exit 74; fi
+exec /usr/bin/tar "$@"
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("forced publication failure unexpectedly succeeded: %s", output)
+	}
+	retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
+	if _, err := os.Lstat(retained); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial retained evidence survived publication failure: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(retained))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "miniapp-auth-refresh.publish.") {
+			t.Fatalf("partial sibling publication directory survived: %q", entry.Name())
+		}
+	}
+}
+
+func TestMiniappAuthRefreshAcceptanceFailsClosedOnMalformedCheckpoint(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "npm", `#!/bin/sh
+if [ "${1:-}" = "--version" ]; then printf '10.9.7\n'; exit 0; fi
+: >"$NPM_CALLED"
+printf 'classification=npm_ci|result=PASS|count=999\n' >>"$PWD/../../evidence/acceptance-results.txt"
+exit 42
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("malformed checkpoint failure unexpectedly succeeded: %s", output)
+	}
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
+	entries, err := os.ReadDir(evidenceDir)
+	if err != nil {
+		t.Fatalf("read sanitization fallback: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("sanitization fallback entries = %v, want exactly three files", entries)
+	}
+	results, err := os.ReadFile(filepath.Join(evidenceDir, "acceptance-results.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(results) != "classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n" {
+		t.Fatalf("sanitization fallback results = %q", results)
+	}
+	leakScan, err := os.ReadFile(filepath.Join(evidenceDir, "evidence-leak-scan.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(leakScan) != "classification=evidence_scan|result=FAIL|count=1\n" {
+		t.Fatalf("sanitization fallback leak scan = %q", leakScan)
 	}
 }
 
@@ -527,6 +807,102 @@ func miniappAuthRefreshPackageDigest(t *testing.T, packageDir string) string {
 	}
 	digest := sha256.Sum256(manifest)
 	return hex.EncodeToString(digest[:])
+}
+
+func miniappAuthRefreshReadSourcePaths(t *testing.T, packageDir string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(packageDir, "source-files.z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return splitMiniappAuthRefreshNULPaths(t, raw)
+}
+
+func miniappAuthRefreshWriteSourcePaths(t *testing.T, packageDir string, paths []string) {
+	t.Helper()
+	var raw bytes.Buffer
+	for _, path := range paths {
+		raw.WriteString(path)
+		raw.WriteByte(0)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "source-files.z"), raw.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	miniappAuthRefreshWritePackageManifest(t, packageDir, "  ")
+}
+
+func miniappAuthRefreshWritePackageManifest(t *testing.T, packageDir, separator string) {
+	t.Helper()
+	var manifest strings.Builder
+	for _, name := range []string{"source-files.z", "source-sha256.txt", "source.tar"} {
+		raw, err := os.ReadFile(filepath.Join(packageDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(raw)
+		fmt.Fprintf(&manifest, "%s%s%s\n", hex.EncodeToString(digest[:]), separator, name)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package-sha256.txt"), []byte(manifest.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func miniappAuthRefreshRewriteArchive(t *testing.T, archivePath, omit, extra, symlink string) {
+	t.Helper()
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(bytes.NewReader(raw))
+	var rewritten bytes.Buffer
+	writer := tar.NewWriter(&rewritten)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == omit {
+			continue
+		}
+		cloned := *header
+		if header.Name == symlink {
+			cloned.Typeflag = tar.TypeSymlink
+			cloned.Linkname = "miniapp/package.json"
+			cloned.Size = 0
+			if err := writer.WriteHeader(&cloned); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := writer.WriteHeader(&cloned); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if extra != "" {
+		contents := []byte("export {}\n")
+		if err := writer.WriteHeader(&tar.Header{Name: extra, Mode: 0o600, Size: int64(len(contents)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, rewritten.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func prepareMetadataFreeMiniappAuthRefresh(t *testing.T) (string, string, string) {
