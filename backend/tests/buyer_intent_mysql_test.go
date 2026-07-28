@@ -152,7 +152,7 @@ func TestBuyerIntentMySQLAcceptance(t *testing.T) {
 		t.Fatal("buyer and product independence was not preserved")
 	}
 
-	assertBuyerIntentMySQLDriftFailsClosed(t, srv, fixture, buyerHeaders, merchantHeaders)
+	assertBuyerIntentMySQLDriftFailsClosed(t, srv, fixture, merchantHeaders)
 }
 
 func TestBuyerIntentDriftBuyerCreateFailsClosed(t *testing.T) {
@@ -472,8 +472,20 @@ func assertBuyerIntentMySQLStates(t *testing.T, srv *app.Server, buyerID, produc
 	return closed, open
 }
 
-func assertBuyerIntentMySQLDriftFailsClosed(t *testing.T, srv *app.Server, fixture buyerIntentMySQLFixture, buyerHeaders, merchantHeaders map[string]string) {
+func assertBuyerIntentMySQLDriftFailsClosed(t *testing.T, srv *app.Server, fixture buyerIntentMySQLFixture, merchantHeaders map[string]string) {
 	t.Helper()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	driftBuyer := createBuyerIntentMySQLBuyer(t, srv, "f11-drift-buyer-"+suffix, "f11-drift-device-"+suffix)
+	driftBuyerHeaders := map[string]string{
+		"Authorization": "Bearer " + driftBuyer.token,
+		"X-Device-Id":   driftBuyer.device,
+	}
+	t.Cleanup(func() {
+		_ = srv.DB.Where("buyer_id = ?", driftBuyer.id).Delete(&model.BuyerIntent{}).Error
+		_ = srv.DB.Where("user_type = ? AND user_id = ?", model.UserTypeBuyer, driftBuyer.id).Delete(&model.AuthSession{}).Error
+		_ = srv.DB.Where("buyer_id = ?", driftBuyer.id).Delete(&model.BuyerDeviceBinding{}).Error
+		_ = srv.DB.Unscoped().Where("id = ?", driftBuyer.id).Delete(&model.BuyerUser{}).Error
+	})
 	states := []struct {
 		status string
 		open   bool
@@ -485,7 +497,7 @@ func assertBuyerIntentMySQLDriftFailsClosed(t *testing.T, srv *app.Server, fixtu
 		intentNo := fmt.Sprintf("F11D%d%d", index, time.Now().UnixNano())
 		if result := srv.DB.Exec(`
 			INSERT INTO buyer_intents (intent_no, buyer_id, product_id, merchant_id, status, is_open, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`, intentNo, fixture.buyerID, fixture.secondProductID, fixture.merchantID, state.status, state.open); result.Error != nil || result.RowsAffected != 1 {
+			VALUES (?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`, intentNo, driftBuyer.id, fixture.secondProductID, fixture.merchantID, state.status, state.open); result.Error != nil || result.RowsAffected != 1 {
 			t.Fatal("insert isolated MySQL buyer intent drift state")
 		}
 		var intent model.BuyerIntent
@@ -494,13 +506,13 @@ func assertBuyerIntentMySQLDriftFailsClosed(t *testing.T, srv *app.Server, fixtu
 		}
 		calls := []func() buyerIntentMySQLResponse{
 			func() buyerIntentMySQLResponse {
-				return createBuyerIntentMySQL(t, srv, buyerHeaders, fixture.secondProductID, fmt.Sprintf("f11-drift-create-%d", index))
+				return createBuyerIntentMySQL(t, srv, driftBuyerHeaders, fixture.secondProductID, fmt.Sprintf("f11-drift-create-%d", index))
 			},
 			func() buyerIntentMySQLResponse {
-				return buyerIntentMySQLRequest(t, srv, http.MethodGet, "/api/v1/buyer/intents", nil, buyerHeaders)
+				return buyerIntentMySQLRequest(t, srv, http.MethodGet, "/api/v1/buyer/intents", nil, driftBuyerHeaders)
 			},
 			func() buyerIntentMySQLResponse {
-				return buyerIntentMySQLRequest(t, srv, http.MethodGet, fmt.Sprintf("/api/v1/buyer/intents/%d", intent.ID), nil, buyerHeaders)
+				return buyerIntentMySQLRequest(t, srv, http.MethodGet, fmt.Sprintf("/api/v1/buyer/intents/%d", intent.ID), nil, driftBuyerHeaders)
 			},
 			func() buyerIntentMySQLResponse {
 				return buyerIntentMySQLRequest(t, srv, http.MethodGet, "/api/v1/merchant/intents", nil, merchantHeaders)
