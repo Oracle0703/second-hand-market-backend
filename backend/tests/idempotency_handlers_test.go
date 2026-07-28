@@ -217,6 +217,48 @@ func TestIdempotentMerchantAndOrderTransitionsRollbackWhenOperationLogFails(t *t
 	}
 }
 
+func TestIdempotentOrderTransitionRollsBackWhenInventoryOperationLogFails(t *testing.T) {
+	transition := findIdempotencyTransitionCase(t, "order created to completed")
+	fixture := transition.newFixture(t)
+	before := snapshotIdempotencyTransition(t, fixture)
+	callbackName := "idempotency-handlers:" + strings.ReplaceAll(t.Name(), "/", "-")
+	callbackRemoved := false
+	matched := false
+	if err := fixture.srv.DB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		logItem, ok := tx.Statement.Dest.(*model.OperationLog)
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Table == "operation_logs" &&
+			ok && logItem.Action == "product_order_inventory" {
+			matched = true
+			tx.AddError(errors.New("forced inventory operation log failure"))
+		}
+	}); err != nil {
+		t.Fatalf("register inventory operation log callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if !callbackRemoved {
+			_ = fixture.srv.DB.Callback().Create().Remove(callbackName)
+		}
+	})
+
+	failed := requestIdempotencyTransition(t, fixture, "inventory-operation-log-key")
+	if !matched {
+		t.Fatal("inventory operation log failure callback was not reached")
+	}
+	if failed.HTTPStatus != http.StatusInternalServerError || failed.Code != common.CodeInternal {
+		t.Fatalf("inventory operation log failure response = status %d, code %d", failed.HTTPStatus, failed.Code)
+	}
+	assertIdempotencyTransitionSnapshot(t, fixture, before)
+
+	if err := fixture.srv.DB.Callback().Create().Remove(callbackName); err != nil {
+		t.Fatalf("remove inventory operation log callback: %v", err)
+	}
+	callbackRemoved = true
+	retry := requestIdempotencyTransition(t, fixture, "inventory-operation-log-key")
+	assertSuccessfulIdempotencyTransition(t, transition, fixture, retry, false)
+	assertSingleTerminalRecord(t, fixture, "inventory-operation-log-key")
+	assertCommittedIdempotencyTransition(t, transition, fixture, before)
+}
+
 func TestIdempotentMerchantAndOrderTransitionsPreserveSuccessPayloads(t *testing.T) {
 	for _, transition := range idempotencyTransitionCases() {
 		t.Run(transition.name, func(t *testing.T) {
@@ -317,6 +359,17 @@ func idempotencyTransitionCases() []idempotencyTransitionCase {
 			},
 		},
 	}
+}
+
+func findIdempotencyTransitionCase(t *testing.T, name string) idempotencyTransitionCase {
+	t.Helper()
+	for _, transition := range idempotencyTransitionCases() {
+		if transition.name == name {
+			return transition
+		}
+	}
+	t.Fatalf("idempotency transition case %q not found", name)
+	return idempotencyTransitionCase{}
 }
 
 func newContactedIntentFixture(t *testing.T) idempotencyTransitionFixture {
