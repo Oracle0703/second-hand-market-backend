@@ -89,6 +89,7 @@ func TestIdempotentMerchantAndOrderTransitionsPreserveSuccessPayloads(t *testing
 
 			replay := requestIdempotencyTransition(t, fixture, "success-payload-key")
 			assertSuccessfulIdempotencyTransition(t, transition, fixture, replay, true)
+			assertSameIdempotencyBusinessPayload(t, first, replay)
 			assertSingleTerminalRecord(t, fixture, "success-payload-key")
 			assertIdempotencyTransitionSnapshot(t, fixture, committed)
 		})
@@ -112,7 +113,7 @@ func idempotencyTransitionCases() []idempotencyTransitionCase {
 			operationLogDelta: 1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
-				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentNew || str(response.Data["to_status"]) != model.IntentContacted {
+				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentNew || str(response.Data["to_status"]) != model.IntentContacted || str(response.Data["handled_at"]) == "" {
 					t.Fatalf("contacted payload changed")
 				}
 			},
@@ -129,7 +130,7 @@ func idempotencyTransitionCases() []idempotencyTransitionCase {
 			operationLogDelta: 1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
-				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentContacted || str(response.Data["to_status"]) != model.IntentClosed {
+				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentContacted || str(response.Data["to_status"]) != model.IntentClosed || str(response.Data["closed_at"]) == "" {
 					t.Fatalf("closed intent payload changed")
 				}
 			},
@@ -146,7 +147,7 @@ func idempotencyTransitionCases() []idempotencyTransitionCase {
 			operationLogDelta: 1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
-				if numToUint64(response.Data["product_id"]) != fixture.productID || str(response.Data["from_status"]) != model.ProductDraft || str(response.Data["to_status"]) != model.ProductOnShelf {
+				if numToUint64(response.Data["product_id"]) != fixture.productID || str(response.Data["from_status"]) != model.ProductDraft || str(response.Data["to_status"]) != model.ProductOnShelf || str(response.Data["changed_at"]) == "" {
 					t.Fatalf("on-shelf payload changed")
 				}
 			},
@@ -164,7 +165,7 @@ func idempotencyTransitionCases() []idempotencyTransitionCase {
 			orderEventDelta:   1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
-				if numToUint64(response.Data["order_id"]) != fixture.orderID || str(response.Data["from_status"]) != model.OrderCreated || str(response.Data["to_status"]) != model.OrderCompleted || str(response.Data["product_status"]) != model.ProductSold || numToUint64(response.Data["stock"]) != 0 || numToUint64(response.Data["reserved_stock"]) != 0 || numToUint64(response.Data["available_stock"]) != 0 {
+				if numToUint64(response.Data["order_id"]) != fixture.orderID || str(response.Data["from_status"]) != model.OrderCreated || str(response.Data["to_status"]) != model.OrderCompleted || str(response.Data["product_status"]) != model.ProductSold || numToUint64(response.Data["quantity"]) != 1 || numToUint64(response.Data["deal_price_cent"]) != 1000 || numToUint64(response.Data["total_deal_price_cent"]) != 1000 || numToUint64(response.Data["stock"]) != 0 || numToUint64(response.Data["reserved_stock"]) != 0 || numToUint64(response.Data["available_stock"]) != 0 || str(response.Data["completed_at"]) == "" {
 					t.Fatalf("completed order payload changed")
 				}
 			},
@@ -303,6 +304,22 @@ func assertSuccessfulIdempotencyTransition(t *testing.T, transition idempotencyT
 	transition.assertData(t, fixture, response)
 	if got, ok := response.Data["idempotent"].(bool); !ok || got != replay {
 		t.Fatalf("idempotent flag = %v, want %t", response.Data["idempotent"], replay)
+	}
+}
+
+func assertSameIdempotencyBusinessPayload(t *testing.T, first, replay apiResp) {
+	t.Helper()
+	withoutFlag := func(data map[string]interface{}) map[string]interface{} {
+		business := make(map[string]interface{}, len(data))
+		for key, value := range data {
+			if key != "idempotent" {
+				business[key] = value
+			}
+		}
+		return business
+	}
+	if !reflect.DeepEqual(withoutFlag(first.Data), withoutFlag(replay.Data)) {
+		t.Fatal("replayed business payload changed")
 	}
 }
 
