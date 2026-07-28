@@ -58,6 +58,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if err := verifyBuyerIntentOpenUniqueness(db); err != nil {
 		return nil, err
 	}
+	if err := verifyIdempotencyTransactionalTables(db); err != nil {
+		return nil, err
+	}
 	if err := seedDefaults(db); err != nil {
 		return nil, err
 	}
