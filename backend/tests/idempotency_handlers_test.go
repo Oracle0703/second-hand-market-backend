@@ -51,6 +51,7 @@ func TestIdempotentMerchantAndOrderTransitionsRollbackWhenTerminalWriteFails(t *
 			retry := requestIdempotencyTransition(t, fixture, "terminal-write-key")
 			assertSuccessfulIdempotencyTransition(t, transition, fixture, retry, false)
 			assertSingleTerminalRecord(t, fixture, "terminal-write-key")
+			assertCommittedIdempotencyTransition(t, transition, fixture, before)
 		})
 	}
 }
@@ -72,6 +73,7 @@ func TestIdempotentMerchantAndOrderTransitionsRollbackWhenOperationLogFails(t *t
 			retry := requestIdempotencyTransition(t, fixture, "operation-log-key")
 			assertSuccessfulIdempotencyTransition(t, transition, fixture, retry, false)
 			assertSingleTerminalRecord(t, fixture, "operation-log-key")
+			assertCommittedIdempotencyTransition(t, transition, fixture, before)
 		})
 	}
 }
@@ -80,61 +82,97 @@ func TestIdempotentMerchantAndOrderTransitionsPreserveSuccessPayloads(t *testing
 	for _, transition := range idempotencyTransitionCases() {
 		t.Run(transition.name, func(t *testing.T) {
 			fixture := transition.newFixture(t)
+			before := snapshotIdempotencyTransition(t, fixture)
 			first := requestIdempotencyTransition(t, fixture, "success-payload-key")
 			assertSuccessfulIdempotencyTransition(t, transition, fixture, first, false)
+			committed := assertCommittedIdempotencyTransition(t, transition, fixture, before)
 
 			replay := requestIdempotencyTransition(t, fixture, "success-payload-key")
 			assertSuccessfulIdempotencyTransition(t, transition, fixture, replay, true)
 			assertSingleTerminalRecord(t, fixture, "success-payload-key")
+			assertIdempotencyTransitionSnapshot(t, fixture, committed)
 		})
 	}
 }
 
 type idempotencyTransitionCase struct {
-	name       string
-	newFixture func(*testing.T) idempotencyTransitionFixture
-	assertData func(*testing.T, idempotencyTransitionFixture, apiResp)
+	name              string
+	newFixture        func(*testing.T) idempotencyTransitionFixture
+	operationLogDelta int64
+	orderEventDelta   int64
+	assertData        func(*testing.T, idempotencyTransitionFixture, apiResp)
+	assertPersisted   func(*testing.T, idempotencyTransitionSnapshot)
 }
 
 func idempotencyTransitionCases() []idempotencyTransitionCase {
 	return []idempotencyTransitionCase{
 		{
-			name:       "merchant intent new to contacted",
-			newFixture: newContactedIntentFixture,
+			name:              "merchant intent new to contacted",
+			newFixture:        newContactedIntentFixture,
+			operationLogDelta: 1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
 				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentNew || str(response.Data["to_status"]) != model.IntentContacted {
 					t.Fatalf("contacted payload changed")
 				}
 			},
+			assertPersisted: func(t *testing.T, snapshot idempotencyTransitionSnapshot) {
+				t.Helper()
+				if snapshot.intent.Status != model.IntentContacted || !snapshot.intent.IsOpen {
+					t.Fatal("contacted intent state was not committed exactly once")
+				}
+			},
 		},
 		{
-			name:       "merchant intent contacted to closed",
-			newFixture: newClosedIntentFixture,
+			name:              "merchant intent contacted to closed",
+			newFixture:        newClosedIntentFixture,
+			operationLogDelta: 1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
 				if numToUint64(response.Data["intent_id"]) != fixture.intentID || str(response.Data["from_status"]) != model.IntentContacted || str(response.Data["to_status"]) != model.IntentClosed {
 					t.Fatalf("closed intent payload changed")
 				}
 			},
+			assertPersisted: func(t *testing.T, snapshot idempotencyTransitionSnapshot) {
+				t.Helper()
+				if snapshot.intent.Status != model.IntentClosed || snapshot.intent.IsOpen {
+					t.Fatal("closed intent state was not committed exactly once")
+				}
+			},
 		},
 		{
-			name:       "product draft to on shelf",
-			newFixture: newOnShelfProductFixture,
+			name:              "product draft to on shelf",
+			newFixture:        newOnShelfProductFixture,
+			operationLogDelta: 1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
 				if numToUint64(response.Data["product_id"]) != fixture.productID || str(response.Data["from_status"]) != model.ProductDraft || str(response.Data["to_status"]) != model.ProductOnShelf {
 					t.Fatalf("on-shelf payload changed")
 				}
 			},
+			assertPersisted: func(t *testing.T, snapshot idempotencyTransitionSnapshot) {
+				t.Helper()
+				if snapshot.product.Status != model.ProductOnShelf {
+					t.Fatal("on-shelf product state was not committed exactly once")
+				}
+			},
 		},
 		{
-			name:       "order created to completed",
-			newFixture: newCompletedOrderFixture,
+			name:              "order created to completed",
+			newFixture:        newCompletedOrderFixture,
+			operationLogDelta: 2,
+			orderEventDelta:   1,
 			assertData: func(t *testing.T, fixture idempotencyTransitionFixture, response apiResp) {
 				t.Helper()
 				if numToUint64(response.Data["order_id"]) != fixture.orderID || str(response.Data["from_status"]) != model.OrderCreated || str(response.Data["to_status"]) != model.OrderCompleted || str(response.Data["product_status"]) != model.ProductSold || numToUint64(response.Data["stock"]) != 0 || numToUint64(response.Data["reserved_stock"]) != 0 || numToUint64(response.Data["available_stock"]) != 0 {
 					t.Fatalf("completed order payload changed")
+				}
+			},
+			assertPersisted: func(t *testing.T, snapshot idempotencyTransitionSnapshot) {
+				t.Helper()
+				if snapshot.order.Status != model.OrderCompleted || snapshot.order.IsActive ||
+					snapshot.product.Status != model.ProductSold || snapshot.product.Stock != 0 || snapshot.product.ReservedStock != 0 {
+					t.Fatal("completed order inventory state was not committed exactly once")
 				}
 			},
 		},
@@ -266,6 +304,22 @@ func assertSuccessfulIdempotencyTransition(t *testing.T, transition idempotencyT
 	if got, ok := response.Data["idempotent"].(bool); !ok || got != replay {
 		t.Fatalf("idempotent flag = %v, want %t", response.Data["idempotent"], replay)
 	}
+}
+
+func assertCommittedIdempotencyTransition(t *testing.T, transition idempotencyTransitionCase, fixture idempotencyTransitionFixture, before idempotencyTransitionSnapshot) idempotencyTransitionSnapshot {
+	t.Helper()
+	after := snapshotIdempotencyTransition(t, fixture)
+	if after.operationLogCount != before.operationLogCount+transition.operationLogDelta {
+		t.Fatalf("operation log count = %d, want %d", after.operationLogCount, before.operationLogCount+transition.operationLogDelta)
+	}
+	if after.orderEventCount != before.orderEventCount+transition.orderEventDelta {
+		t.Fatalf("order event count = %d, want %d", after.orderEventCount, before.orderEventCount+transition.orderEventDelta)
+	}
+	if after.idempotencyRecords != before.idempotencyRecords+1 {
+		t.Fatalf("idempotency record count = %d, want %d", after.idempotencyRecords, before.idempotencyRecords+1)
+	}
+	transition.assertPersisted(t, after)
+	return after
 }
 
 func assertSingleTerminalRecord(t *testing.T, fixture idempotencyTransitionFixture, key string) {
