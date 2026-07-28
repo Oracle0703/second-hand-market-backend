@@ -217,7 +217,8 @@ func TestAnonymousUploadGovernanceAcceptanceScriptContracts(t *testing.T) {
 			"frontend/vitest.config.ts",
 			"sha256sum",
 			"isolated anonymous upload governance acceptance passed",
-			"resources retained for inspection under Compose project",
+			`"${compose[@]}" stop >"$runtime_dir/isolated-stop.raw" 2>&1 || true`,
+			"publish_success_evidence",
 		},
 		"../../Makefile": {
 			"acceptance-anonymous-upload-governance-smoke:",
@@ -274,17 +275,23 @@ func TestAnonymousUploadGovernanceAcceptanceUsesCurrentMigrationChain(t *testing
 	}
 
 	requireOrderedScriptSnippets(t, string(raw), []string{
-		`run_0008 | tee "$evidence_dir/clean-migration.txt"`,
+		`run_0008 >"$runtime_dir/clean-migration.raw" 2>&1`,
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.preflight.sql",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.up.sql",
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
+		`grep -q anonymous_upload_governance_postflight_passed "$runtime_dir/clean-migration.raw"`,
+		"record_pass clean_migration 1",
 		`-e AUTO_MIGRATE=false \`,
 		`bootstrap-admin go test ./internal/app -run '^TestUploadGovernanceMySQLConcurrencyAndCleanup$' -count=1 -v`,
 	})
+	if strings.Contains(string(raw), `$evidence_dir/clean-migration.txt`) {
+		t.Fatal("clean migration raw output must not enter retained evidence")
+	}
 	// Catches adding a false-mode upload API run before 0009 postflight in the
 	// clean historical-fixture phase.
 	requireCurrentChainBeforeFirstFalseModeFocusedAPI(t, string(raw),
-		"apply_chain_0001_0007\nseed_historical_rows",
+		`apply_chain_0001_0007 >"$runtime_dir/clean-chain-setup.raw" 2>&1
+seed_historical_rows >"$runtime_dir/seed-historical-rows.raw" 2>&1`,
 		`mysql_file /acceptance/migrations/0008_anonymous_upload_governance.postflight.sql \`,
 		"mysql_file /acceptance/migrations/0009_buyer_intent_open_uniqueness.postflight.sql",
 		"-e AUTO_MIGRATE=false",
