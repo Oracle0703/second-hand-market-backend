@@ -375,10 +375,14 @@ func assertBuyerIntentMySQLSchema(t *testing.T, srv *app.Server) {
 	t.Helper()
 	var columns []buyerIntentMySQLColumn
 	if err := srv.DB.Raw(`
-		SELECT data_type, column_type, is_nullable, generation_expression, extra,
-			CASE WHEN generation_expression IS NOT NULL AND generation_expression <> '' THEN 'ALWAYS' ELSE 'NEVER' END AS is_generated
-		FROM information_schema.columns
-		WHERE table_schema = DATABASE() AND table_name = 'buyer_intents' AND column_name = 'open_marker'`).Scan(&columns).Error; err != nil || len(columns) != 1 {
+			SELECT data_type AS data_type,
+				column_type AS column_type,
+				is_nullable AS is_nullable,
+				generation_expression AS generation_expression,
+				extra AS extra,
+				CASE WHEN generation_expression IS NOT NULL AND generation_expression <> '' THEN 'ALWAYS' ELSE 'NEVER' END AS is_generated
+			FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = 'buyer_intents' AND column_name = 'open_marker'`).Scan(&columns).Error; err != nil || len(columns) != 1 {
 		t.Fatal("inspect MySQL buyer intent open marker")
 	}
 	marker := columns[0]
@@ -391,9 +395,12 @@ func assertBuyerIntentMySQLSchema(t *testing.T, srv *app.Server) {
 
 	var rows []buyerIntentMySQLIndexColumn
 	if err := srv.DB.Raw(`
-		SELECT index_name, non_unique, seq_in_index, column_name
-		FROM information_schema.statistics
-		WHERE table_schema = DATABASE() AND table_name = 'buyer_intents'
+			SELECT index_name AS index_name,
+				non_unique AS non_unique,
+				seq_in_index AS seq_in_index,
+				column_name AS column_name
+			FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'buyer_intents'
 		ORDER BY index_name, seq_in_index`).Scan(&rows).Error; err != nil {
 		t.Fatal("inspect MySQL buyer intent indexes")
 	}
