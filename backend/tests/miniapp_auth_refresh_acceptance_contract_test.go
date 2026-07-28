@@ -479,6 +479,56 @@ exec /usr/bin/tar "$@"
 	}
 }
 
+func TestMiniappAuthRefreshAcceptanceRejectsStagedEvidenceTamper(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "tar", `#!/bin/sh
+previous=
+destination=
+for argument in "$@"; do
+  [ "$previous" != -C ] || destination="$argument"
+  previous="$argument"
+done
+case "$destination| $* " in
+  *miniapp-auth-refresh.publish.*'| '*' -xf - '*)
+    /usr/bin/tar "$@" || exit $?
+    printf 'classification=staging_tamper|result=PASS|count=1\n' >"$destination/acceptance-results.txt"
+    exit 0 ;;
+esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("staged evidence tamper unexpectedly succeeded: %s", output)
+	}
+	assertMiniappAuthRefreshNoPublicationState(t, remoteRepo)
+}
+
+func TestMiniappAuthRefreshAcceptanceRejectsPublicationCollision(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "mv", `#!/bin/sh
+case " $* " in
+  *miniapp-auth-refresh.publish.*)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in -n|--) shift ;; *) break ;; esac
+    done
+    source=$1
+    target=$2
+    case "$source|$target" in
+      *miniapp-auth-refresh.publish.*'|'*/miniapp-auth-refresh)
+        mkdir "$target" || exit $?
+        printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
+        exec /bin/mv -n -- "$source" "$target" ;;
+    esac ;;
+esac
+exec /bin/mv "$@"
+`, 0o700)
+	if output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker); err == nil {
+		t.Fatalf("publication collision unexpectedly succeeded: %s", output)
+	}
+	assertMiniappAuthRefreshConcurrentPublicationPreserved(t, remoteRepo)
+}
+
 func TestMiniappAuthRefreshAcceptanceFailsClosedOnMalformedCheckpoint(t *testing.T) {
 	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
@@ -516,22 +566,55 @@ exit 42
 }
 
 func TestMiniappAuthRefreshAcceptanceRefusesExistingEvidenceBeforeNPM(t *testing.T) {
-	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
-	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
-	if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
-		t.Fatalf("create retained evidence fixture: %v", err)
-	}
-	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
-	nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
-	output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker)
-	if err == nil || !strings.Contains(string(output), "refusing to overwrite existing miniapp auth refresh evidence") {
-		t.Fatalf("existing evidence did not produce a stable refusal: %v: %q", err, output)
-	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("existing retained evidence reached npm")
-	}
-	if _, err := os.Stat(nodeMarker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("existing retained evidence reached node")
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{
+			name: "existing evidence",
+			setup: func(t *testing.T, evidence string) {
+				if err := os.MkdirAll(evidence, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "dangling evidence symlink",
+			setup: func(t *testing.T, evidence string) {
+				if err := os.MkdirAll(filepath.Dir(evidence), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(filepath.Dir(evidence), "missing-evidence"), evidence); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "stale publication lock",
+			setup: func(t *testing.T, evidence string) {
+				if err := os.MkdirAll(evidence+".publish.lock", 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+			evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
+			tc.setup(t, evidenceDir)
+			stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "success")
+			nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
+			output, err := runMetadataFreeMiniappAuthRefresh(t, remoteRepo, packageDir, remoteScript, stubDir, marker)
+			if err == nil || !strings.Contains(string(output), "refusing to overwrite existing miniapp auth refresh evidence") {
+				t.Fatalf("%s did not produce a stable refusal: %v: %q", tc.name, err, output)
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s reached npm", tc.name)
+			}
+			if _, err := os.Stat(nodeMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s reached node", tc.name)
+			}
+		})
 	}
 }
 
@@ -1056,6 +1139,48 @@ exit 0
 
 func miniappAuthRefreshNodeMarker(stubDir string) string {
 	return filepath.Join(stubDir, "node-called")
+}
+
+func assertMiniappAuthRefreshNoPublicationState(t *testing.T, remoteRepo string) {
+	t.Helper()
+	retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
+	if _, err := os.Lstat(retained); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial retained evidence survived: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(retained))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "miniapp-auth-refresh.publish.") || entry.Name() == "miniapp-auth-refresh.publish.lock" {
+			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
+		}
+	}
+}
+
+func assertMiniappAuthRefreshConcurrentPublicationPreserved(t *testing.T, remoteRepo string) {
+	t.Helper()
+	retained := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "miniapp-auth-refresh")
+	entries, err := os.ReadDir(retained)
+	if err != nil {
+		t.Fatalf("read concurrent publication directory: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "concurrent-owner.txt" || !entries[0].Type().IsRegular() {
+		t.Fatalf("harness changed concurrent publication directory: %v", entries)
+	}
+	owner, err := os.ReadFile(filepath.Join(retained, "concurrent-owner.txt"))
+	if err != nil || string(owner) != "concurrent-owner\n" {
+		t.Fatalf("concurrent publication marker changed: %q, %v", owner, err)
+	}
+	parentEntries, err := os.ReadDir(filepath.Dir(retained))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range parentEntries {
+		if strings.HasPrefix(entry.Name(), "miniapp-auth-refresh.publish.") || entry.Name() == "miniapp-auth-refresh.publish.lock" {
+			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
+		}
+	}
 }
 
 func runMetadataFreeMiniappAuthRefresh(

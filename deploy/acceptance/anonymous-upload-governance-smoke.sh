@@ -697,16 +697,30 @@ on_exit() {
 trap on_exit EXIT INT TERM
 
 snapshot_production() {
-  local output="$1"
+  local output="$1" line matches
+  local container
   : >"$output"
   for container in "${production_containers[@]}"; do
-    if docker inspect --type container "$container" >/dev/null 2>&1; then
-      docker inspect --type container --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' "$container" \
-        >>"$output" 2>>"$runtime_dir/production-snapshot-errors.raw"
-    else
+    if ! matches="$(docker container ls -a \
+      --filter "name=^/${container}$" --format '{{.Names}}' \
+      2>>"$runtime_dir/production-snapshot-errors.raw")"; then
+      return 1
+    fi
+    if [[ -z "$matches" ]]; then
       printf '/%s|absent|absent|absent\n' "$container" >>"$output"
+    elif [[ "$matches" == "$container" ]]; then
+      if ! line="$(docker inspect --type container \
+        --format '{{.Name}}|{{.Id}}|{{.State.Status}}|{{.RestartCount}}' \
+        "$container" 2>>"$runtime_dir/production-snapshot-errors.raw")" ||
+        [[ -z "$line" ]]; then
+        return 1
+      fi
+      printf '%s\n' "$line" >>"$output"
+    else
+      return 1
     fi
   done
+  snapshot_file_is_safe "$output"
 }
 
 record_pass source_package "$source_count" "$source_manifest_sha256"

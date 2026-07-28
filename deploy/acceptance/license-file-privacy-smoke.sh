@@ -14,6 +14,7 @@ success=0
 current_stage="preflight"
 sanitization_failed=0
 evidence_publish_tmp=""
+evidence_publish_lock=""
 source_export_dir=""
 source_export_runtime=""
 source_export_complete=0
@@ -252,22 +253,94 @@ hash_evidence_directory() {
 }
 
 publish_evidence_directory() {
-  local directory="$1" parent="${retained_evidence_dir%/*}"
-  [[ ! -e "$retained_evidence_dir" ]] || return 1
+  local directory="$1" parent="${retained_evidence_dir%/*}" staging_name=""
+  [[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" ]] || return 1
   mkdir -p "$parent" || return 1
-  evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")" || return 1
-  chmod 700 "$evidence_publish_tmp" || return 1
-  if ! ( cd "$directory" && tar -cf - . ) | tar -C "$evidence_publish_tmp" -xf -; then
-    rm -r -- "$evidence_publish_tmp"
-    evidence_publish_tmp=""
+  evidence_publish_lock="${retained_evidence_dir}.publish.lock"
+  mkdir "$evidence_publish_lock" || {
+    evidence_publish_lock=""
+    return 1
+  }
+  if [[ -e "$retained_evidence_dir" || -L "$retained_evidence_dir" ]]; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
     return 1
   fi
-  if ! mv -- "$evidence_publish_tmp" "$retained_evidence_dir"; then
+  if ! evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")"; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  staging_name="${evidence_publish_tmp##*/}"
+  if ! chmod 700 "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! ( cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw" ) |
+    tar -C "$evidence_publish_tmp" -xf - 2>>"$runtime_dir/evidence-copy-errors.raw"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_staging_copy "$directory" "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! mv -n -- "$evidence_publish_tmp" "$retained_evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
+    [[ -e "$evidence_publish_tmp" ]]; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if [[ -d "$retained_evidence_dir/$staging_name" ]]; then
+    rm -r -- "$retained_evidence_dir/$staging_name" || return 1
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_staging_copy "$directory" "$retained_evidence_dir"; then
+    rm -r -- "$retained_evidence_dir"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
     return 1
   fi
   evidence_publish_tmp=""
+  if ! rmdir "$evidence_publish_lock"; then
+    rm -r -- "$retained_evidence_dir"
+    evidence_publish_lock=""
+    return 1
+  fi
+  evidence_publish_lock=""
+}
+
+validate_evidence_staging_copy() {
+  local source="$1" staged="$2" path
+  local source_list="$runtime_dir/evidence-publish-source-files.z"
+  local staged_list="$runtime_dir/evidence-publish-staged-files.z"
+  [[ -d "$source" && ! -L "$source" && -d "$staged" && ! -L "$staged" ]] || return 1
+  [[ -z "$(find "$source" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  [[ -z "$(find "$staged" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  write_context_file_list "$source" >"$source_list" || return 1
+  write_context_file_list "$staged" >"$staged_list" || return 1
+  cmp -s "$source_list" "$staged_list" || return 1
+  while IFS= read -r -d '' path; do
+    [[ -f "$staged/$path" && ! -L "$staged/$path" ]] || return 1
+  done <"$source_list"
+  write_directory_manifest "$source" "$source_list" "$runtime_dir/evidence-publish-source-sha256.txt" || return 1
+  write_directory_manifest "$staged" "$staged_list" "$runtime_dir/evidence-publish-staged-sha256.txt" || return 1
+  cmp -s "$runtime_dir/evidence-publish-source-sha256.txt" "$runtime_dir/evidence-publish-staged-sha256.txt"
 }
 
 scan_evidence_directory() {
@@ -278,40 +351,52 @@ scan_evidence_directory() {
 
 publish_sanitization_failure() {
   local fallback_dir="$runtime_dir/safe-sanitization-failure"
-  [[ ! -e "$fallback_dir" ]] || rm -r -- "$fallback_dir"
-  mkdir -p "$fallback_dir"; chmod 700 "$fallback_dir"
-  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' >"$fallback_dir/acceptance-results.txt"
-  printf 'classification=evidence_scan|result=FAIL|count=1\n' >"$fallback_dir/evidence-leak-scan.txt"
-  hash_evidence_directory "$fallback_dir"
+  if [[ -e "$fallback_dir" || -L "$fallback_dir" ]]; then rm -r -- "$fallback_dir" || return 1; fi
+  mkdir "$fallback_dir" || return 1
+  chmod 700 "$fallback_dir" || return 1
+  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' >"$fallback_dir/acceptance-results.txt" || return 1
+  printf 'classification=evidence_scan|result=FAIL|count=1\n' >"$fallback_dir/evidence-leak-scan.txt" || return 1
+  hash_evidence_directory "$fallback_dir" || return 1
+  chmod 600 "$fallback_dir"/*.txt || return 1
   publish_evidence_directory "$fallback_dir"
 }
 
 retain_failure_evidence() {
   local safe_dir="$runtime_dir/safe-failure-evidence" snapshot
-  mkdir -p "$safe_dir"; chmod 700 "$safe_dir"
+  mkdir "$safe_dir" || { publish_sanitization_failure; return; }
+  chmod 700 "$safe_dir" || { publish_sanitization_failure; return; }
   [[ "$sanitization_failed" -eq 0 ]] || { publish_sanitization_failure; return; }
   failure_stage_is_safe "$current_stage" || { publish_sanitization_failure; return; }
-  cp "$evidence_dir/acceptance-results.txt" "$safe_dir/acceptance-results.txt"
-  printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' "$current_stage" >>"$safe_dir/acceptance-results.txt"
+  cp "$evidence_dir/acceptance-results.txt" "$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return; }
+  printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' "$current_stage" >>"$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return; }
   checkpoint_file_is_safe "$safe_dir/acceptance-results.txt" failure || { publish_sanitization_failure; return; }
   for snapshot in production-before.txt production-after.txt; do
-    if [[ -e "$evidence_dir/$snapshot" ]]; then snapshot_file_is_safe "$evidence_dir/$snapshot" || { publish_sanitization_failure; return; }; cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot"; fi
+    if [[ -e "$evidence_dir/$snapshot" ]]; then
+      snapshot_file_is_safe "$evidence_dir/$snapshot" || { publish_sanitization_failure; return; }
+      cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot" || { publish_sanitization_failure; return; }
+    fi
   done
   scan_evidence_directory "$safe_dir" "$runtime_dir/failure-evidence-leaks.raw" || { sanitization_failed=1; publish_sanitization_failure; return; }
-  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt"
-  hash_evidence_directory "$safe_dir"
+  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt" || { publish_sanitization_failure; return; }
+  hash_evidence_directory "$safe_dir" || { publish_sanitization_failure; return; }
+  chmod 600 "$safe_dir"/*.txt || { publish_sanitization_failure; return; }
   publish_evidence_directory "$safe_dir"
 }
 
 publish_success_evidence() {
   local safe_dir="$runtime_dir/safe-success-evidence" snapshot
-  mkdir -p "$safe_dir"; chmod 700 "$safe_dir"
+  mkdir "$safe_dir" || { publish_sanitization_failure; return 1; }
+  chmod 700 "$safe_dir" || { publish_sanitization_failure; return 1; }
   checkpoint_file_is_safe "$evidence_dir/acceptance-results.txt" success || { publish_sanitization_failure; return 1; }
-  cp "$evidence_dir/acceptance-results.txt" "$safe_dir/acceptance-results.txt"
-  for snapshot in production-before.txt production-after.txt; do snapshot_file_is_safe "$evidence_dir/$snapshot" || { publish_sanitization_failure; return 1; }; cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot"; done
+  cp "$evidence_dir/acceptance-results.txt" "$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return 1; }
+  for snapshot in production-before.txt production-after.txt; do
+    snapshot_file_is_safe "$evidence_dir/$snapshot" || { publish_sanitization_failure; return 1; }
+    cp "$evidence_dir/$snapshot" "$safe_dir/$snapshot" || { publish_sanitization_failure; return 1; }
+  done
   scan_evidence_directory "$safe_dir" "$runtime_dir/success-evidence-leaks.raw" || { sanitization_failed=1; publish_sanitization_failure; return 1; }
-  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt"
-  hash_evidence_directory "$safe_dir"
+  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt" || { publish_sanitization_failure; return 1; }
+  hash_evidence_directory "$safe_dir" || { publish_sanitization_failure; return 1; }
+  chmod 600 "$safe_dir"/*.txt || { publish_sanitization_failure; return 1; }
   publish_evidence_directory "$safe_dir"
 }
 
@@ -342,6 +427,7 @@ on_exit() {
     retain_failure_evidence || true
   fi
   if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then rm -r -- "$evidence_publish_tmp"; fi
+  if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then rmdir "$evidence_publish_lock" || true; fi
   [[ -z "$runtime_dir" || ! -d "$runtime_dir" ]] || rm -r -- "$runtime_dir"
   exit "$status"
 }
@@ -422,7 +508,11 @@ write_directory_manifest "$build_context" "$source_files" "$runtime_dir/build-co
 cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || { echo "temporary build context does not match the committed source manifest" >&2; exit 1; }
 source_count="$(tr -cd '\0' <"$source_files" | wc -c | tr -d ' ')"
 source_manifest_sha256="$(sha256sum "$source_manifest" | cut -d ' ' -f1)"
-[[ ! -e "$retained_evidence_dir" ]] || { echo "refusing to overwrite existing license privacy evidence" >&2; exit 1; }
+[[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" &&
+  ! -e "${retained_evidence_dir}.publish.lock" && ! -L "${retained_evidence_dir}.publish.lock" ]] || {
+  echo "refusing to overwrite existing license privacy evidence" >&2
+  exit 1
+}
 [[ -f "$base_dir/.env" && ! -L "$base_dir/.env" ]] || {
   echo "run deploy/acceptance/prepare.sh first" >&2
   exit 1

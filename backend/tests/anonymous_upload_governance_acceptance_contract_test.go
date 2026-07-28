@@ -417,6 +417,9 @@ func TestAnonymousUploadGovernanceAcceptanceRetainsSanitizedFailureEvidence(t *t
 	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
 : >>"$DOCKER_CALLED"
 case " $* " in
+  *" container ls "*"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n'; exit 0 ;;
   *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
   *" inspect "*)
     case "$*" in
@@ -488,6 +491,9 @@ exit 0
 : >>"$DOCKER_CALLED"
 mkdir -p "$DOCKER_STATE"
 case " $* " in
+  *" container ls "*"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n'; exit 0 ;;
   *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
   *" inspect "*)
     case "$*" in
@@ -601,6 +607,9 @@ exit 0
 		remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
 		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
 case " $* " in
+  *" container ls "*"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n'; exit 0 ;;
   *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
   *" inspect "*)
     case "$*" in
@@ -640,6 +649,9 @@ exec /usr/bin/tar "$@"
 		remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
 		marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
 case " $* " in
+  *" container ls "*"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-web$"*) printf 'secondhand-market-web\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-mysql$"*) printf 'secondhand-market-mysql\n'; exit 0 ;;
   *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
   *" inspect "*)
     case "$*" in
@@ -818,11 +830,78 @@ func TestAnonymousUploadGovernanceAcceptancePreservesUploadBoundaryMatrix(t *tes
 	}
 }
 
+func TestAnonymousUploadGovernanceAcceptanceRefusesProductionInspectionErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		docker string
+	}{
+		{
+			name: "exact-name listing error",
+			docker: `#!/bin/sh
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-"*) printf 'production-listing-secret\n' >&2; exit 125 ;;
+  *" inspect "*) exit 125 ;;
+  *" compose "*) : >"$DOCKER_CALLED"; exit 99 ;;
+esac
+exit 0
+`,
+		},
+		{
+			name: "present container formatted inspect error",
+			docker: `#!/bin/sh
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-api$"*) printf 'secondhand-market-api\n'; exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-"*) exit 0 ;;
+  *" inspect "*"secondhand-market-api"*) printf 'production-inspect-secret\n' >&2; exit 125 ;;
+  *" inspect "*) exit 125 ;;
+  *" compose "*) : >"$DOCKER_CALLED"; exit 99 ;;
+esac
+exit 0
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+			marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, tc.docker)
+			output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, "")
+			if err == nil {
+				t.Fatalf("production inspection error produced false PASS: %s", output)
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("production inspection error reached Compose: %v", err)
+			}
+			for _, forbidden := range [][]byte{[]byte("production-listing-secret"), []byte("production-inspect-secret")} {
+				if bytes.Contains(output, forbidden) {
+					t.Fatalf("production inspection diagnostics leaked to caller: %q", output)
+				}
+			}
+			assertAnonymousUploadGovernanceSanitizationFallback(t, remoteRepo)
+		})
+	}
+}
+
 const anonymousUploadGovernanceHappyDockerStub = `#!/bin/sh
 : >>"$DOCKER_CALLED"
 mkdir -p "$DOCKER_STATE"
 log() { printf '%s\n' "$1" >>"$DOCKER_SEQUENCE"; }
-if [ "$1" = "container" ] || [ "$1" = "volume" ] || [ "$1" = "network" ]; then exit 0; fi
+if [ "$1" = "container" ]; then
+  case " $* " in
+    *" name=^/secondhand-market-"*)
+      count=0; [ ! -f "$DOCKER_STATE/production-lookups" ] || count=$(cat "$DOCKER_STATE/production-lookups")
+      count=$((count + 1)); printf '%s' "$count" >"$DOCKER_STATE/production-lookups"
+      [ "$count" -ne 1 ] || log production-before
+      [ "$count" -ne 4 ] || log production-after
+      case "$*" in
+        *secondhand-market-api*) printf 'secondhand-market-api\n' ;;
+        *secondhand-market-web*) printf 'secondhand-market-web\n' ;;
+        *) printf 'secondhand-market-mysql\n' ;;
+      esac ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "volume" ] || [ "$1" = "network" ]; then exit 0; fi
 if [ "$1" = "inspect" ]; then
   case "$*" in
     *secondhand-market-api*) name=secondhand-market-api ;;
@@ -831,10 +910,6 @@ if [ "$1" = "inspect" ]; then
   esac
   case " $* " in
     *" --format "*)
-      count=0; [ ! -f "$DOCKER_STATE/formatted-inspects" ] || count=$(cat "$DOCKER_STATE/formatted-inspects")
-      count=$((count + 1)); printf '%s' "$count" >"$DOCKER_STATE/formatted-inspects"
-      [ "$count" -ne 1 ] || log production-before
-      [ "$count" -ne 4 ] || log production-after
       printf '/%s|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|running|0\n' "$name"
       ;;
   esac

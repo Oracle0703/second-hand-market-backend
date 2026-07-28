@@ -343,18 +343,49 @@ exec /usr/bin/tar "$@"
 }
 
 func TestLicenseFilePrivacyAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
-	t.Run("existing evidence", func(t *testing.T) {
-		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
-		evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
-		if err := os.MkdirAll(evidence, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		marker := filepath.Join(t.TempDir(), "docker-called")
-		output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"), marker, "")
-		if err == nil || licensePrivacyFileExists(marker) {
-			t.Fatalf("existing evidence was not refused before Docker: %v: %s", err, output)
-		}
-	})
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{
+			name: "existing evidence",
+			setup: func(t *testing.T, evidence string) {
+				if err := os.MkdirAll(evidence, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "dangling evidence symlink",
+			setup: func(t *testing.T, evidence string) {
+				if err := os.MkdirAll(filepath.Dir(evidence), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(filepath.Dir(evidence), "missing-evidence"), evidence); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "stale publication lock",
+			setup: func(t *testing.T, evidence string) {
+				if err := os.MkdirAll(evidence+".publish.lock", 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+			evidence := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+			tc.setup(t, evidence)
+			marker := filepath.Join(t.TempDir(), "docker-called")
+			output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, licensePrivacyDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n"), marker, "")
+			if err == nil || licensePrivacyFileExists(marker) {
+				t.Fatalf("%s was not refused before Docker: %v: %s", tc.name, err, output)
+			}
+		})
+	}
 	for _, resource := range []string{"container", "volume", "network"} {
 		t.Run(resource, func(t *testing.T) {
 			remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
@@ -559,6 +590,72 @@ exec /usr/bin/tar "$@"
 	})
 }
 
+func TestLicenseFilePrivacyAcceptanceRejectsStagedEvidenceTamper(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+	writeLicensePrivacyFixtureFile(t, stubDir, "tar", `#!/bin/sh
+previous=
+destination=
+for argument in "$@"; do
+  [ "$previous" != -C ] || destination="$argument"
+  previous="$argument"
+done
+case "$destination| $* " in
+  *license-file-privacy.publish.*'| '*' -xf - '*)
+    /usr/bin/tar "$@" || exit $?
+    printf 'classification=staging_tamper|result=PASS|count=1\n' >"$destination/acceptance-results.txt"
+    exit 0 ;;
+esac
+exec /usr/bin/tar "$@"
+`, 0o700)
+	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("staged evidence tamper unexpectedly succeeded: %s", output)
+	}
+	assertLicensePrivacyNoPublicationState(t, remote)
+}
+
+func TestLicenseFilePrivacyAcceptanceRejectsPublicationCollision(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+	writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
+case " $* " in
+  *license-file-privacy.publish.*)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in -n|--) shift ;; *) break ;; esac
+    done
+    source=$1
+    target=$2
+    case "$source|$target" in
+      *license-file-privacy.publish.*'|'*/license-file-privacy)
+        mkdir "$target" || exit $?
+        printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
+        exec /bin/mv -n -- "$source" "$target" ;;
+    esac ;;
+esac
+exec /bin/mv "$@"
+`, 0o700)
+	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
+		t.Fatalf("publication collision unexpectedly succeeded: %s", output)
+	}
+	assertLicensePrivacyConcurrentPublicationPreserved(t, remote)
+}
+
 func prepareMetadataFreeLicensePrivacyAcceptance(t *testing.T) (string, string, string) {
 	t.Helper()
 	fixture, fixtureScript := newLicensePrivacyFixtureRepo(t)
@@ -608,6 +705,48 @@ func licensePrivacyDockerStub(t *testing.T, contents string) string {
 	return root
 }
 func licensePrivacyFileExists(path string) bool { _, err := os.Stat(path); return err == nil }
+
+func assertLicensePrivacyNoPublicationState(t *testing.T, remote string) {
+	t.Helper()
+	retained := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+	if _, err := os.Lstat(retained); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial retained evidence survived: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(retained))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") || entry.Name() == "license-file-privacy.publish.lock" {
+			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
+		}
+	}
+}
+
+func assertLicensePrivacyConcurrentPublicationPreserved(t *testing.T, remote string) {
+	t.Helper()
+	retained := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+	entries, err := os.ReadDir(retained)
+	if err != nil {
+		t.Fatalf("read concurrent publication directory: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "concurrent-owner.txt" || !entries[0].Type().IsRegular() {
+		t.Fatalf("harness changed concurrent publication directory: %v", entries)
+	}
+	owner, err := os.ReadFile(filepath.Join(retained, "concurrent-owner.txt"))
+	if err != nil || string(owner) != "concurrent-owner\n" {
+		t.Fatalf("concurrent publication marker changed: %q, %v", owner, err)
+	}
+	parentEntries, err := os.ReadDir(filepath.Dir(retained))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range parentEntries {
+		if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") || entry.Name() == "license-file-privacy.publish.lock" {
+			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
+		}
+	}
+}
 
 func licensePrivacyReadSourcePaths(t *testing.T, packageDir string) []string {
 	t.Helper()

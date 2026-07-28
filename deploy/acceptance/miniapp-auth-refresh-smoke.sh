@@ -8,6 +8,7 @@ evidence_dir="$base_dir/evidence/miniapp-auth-refresh"
 expected_node="v22.22.2"
 expected_npm="10.9.7"
 evidence_publish_tmp=""
+evidence_publish_lock=""
 
 source_path_is_allowed() {
   local path="$1"
@@ -337,22 +338,94 @@ hash_evidence_directory() {
 }
 
 publish_evidence_directory() {
-  local directory="$1" parent="${evidence_dir%/*}"
-  [[ ! -e "$evidence_dir" ]] || return 1
+  local directory="$1" parent="${evidence_dir%/*}" staging_name=""
+  [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || return 1
   mkdir -p "$parent" || return 1
-  evidence_publish_tmp="$(mktemp -d "${evidence_dir}.publish.XXXXXX")" || return 1
-  chmod 700 "$evidence_publish_tmp" || return 1
-  if ! (cd "$directory" && tar -cf - .) | tar -C "$evidence_publish_tmp" -xf -; then
-    rm -r -- "$evidence_publish_tmp"
-    evidence_publish_tmp=""
+  evidence_publish_lock="${evidence_dir}.publish.lock"
+  mkdir "$evidence_publish_lock" || {
+    evidence_publish_lock=""
+    return 1
+  }
+  if [[ -e "$evidence_dir" || -L "$evidence_dir" ]]; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
     return 1
   fi
-  if ! mv -- "$evidence_publish_tmp" "$evidence_dir"; then
+  if ! evidence_publish_tmp="$(mktemp -d "${evidence_dir}.publish.XXXXXX")"; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  staging_name="${evidence_publish_tmp##*/}"
+  if ! chmod 700 "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! (cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw") |
+    tar -C "$evidence_publish_tmp" -xf - 2>>"$runtime_dir/evidence-copy-errors.raw"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_staging_copy "$directory" "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! mv -n -- "$evidence_publish_tmp" "$evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
+    [[ -e "$evidence_publish_tmp" ]]; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if [[ -d "$evidence_dir/$staging_name" ]]; then
+    rm -r -- "$evidence_dir/$staging_name" || return 1
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    return 1
+  fi
+  if ! validate_evidence_staging_copy "$directory" "$evidence_dir"; then
+    rm -r -- "$evidence_dir"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
     return 1
   fi
   evidence_publish_tmp=""
+  if ! rmdir "$evidence_publish_lock"; then
+    rm -r -- "$evidence_dir"
+    evidence_publish_lock=""
+    return 1
+  fi
+  evidence_publish_lock=""
+}
+
+validate_evidence_staging_copy() {
+  local source="$1" staged="$2" path
+  local source_list="$runtime_dir/evidence-publish-source-files.z"
+  local staged_list="$runtime_dir/evidence-publish-staged-files.z"
+  [[ -d "$source" && ! -L "$source" && -d "$staged" && ! -L "$staged" ]] || return 1
+  [[ -z "$(find "$source" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  [[ -z "$(find "$staged" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  write_context_file_list "$source" >"$source_list" || return 1
+  write_context_file_list "$staged" >"$staged_list" || return 1
+  cmp -s "$source_list" "$staged_list" || return 1
+  while IFS= read -r -d '' path; do
+    [[ -f "$staged/$path" && ! -L "$staged/$path" ]] || return 1
+  done <"$source_list"
+  write_directory_manifest "$source" "$source_list" "$runtime_dir/evidence-publish-source-sha256.txt" || return 1
+  write_directory_manifest "$staged" "$staged_list" "$runtime_dir/evidence-publish-staged-sha256.txt" || return 1
+  cmp -s "$runtime_dir/evidence-publish-source-sha256.txt" "$runtime_dir/evidence-publish-staged-sha256.txt"
 }
 
 checkpoint_pass_line_is_safe() {
@@ -410,12 +483,13 @@ scan_evidence_directory() {
 
 publish_sanitization_failure() {
   local safe_dir="$runtime_dir/safe-sanitization-failure"
-  [[ ! -e "$safe_dir" ]] || rm -r -- "$safe_dir"
-  mkdir -p "$safe_dir"
-  chmod 700 "$safe_dir"
-  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' >"$safe_dir/acceptance-results.txt"
-  printf 'classification=evidence_scan|result=FAIL|count=1\n' >"$safe_dir/evidence-leak-scan.txt"
-  hash_evidence_directory "$safe_dir"
+  if [[ -e "$safe_dir" || -L "$safe_dir" ]]; then rm -r -- "$safe_dir" || return 1; fi
+  mkdir "$safe_dir" || return 1
+  chmod 700 "$safe_dir" || return 1
+  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' >"$safe_dir/acceptance-results.txt" || return 1
+  printf 'classification=evidence_scan|result=FAIL|count=1\n' >"$safe_dir/evidence-leak-scan.txt" || return 1
+  hash_evidence_directory "$safe_dir" || return 1
+  chmod 600 "$safe_dir"/*.txt || return 1
   publish_evidence_directory "$safe_dir"
 }
 
@@ -429,10 +503,10 @@ retain_failure_evidence() {
     publish_sanitization_failure
     return
   }
-  mkdir -p "$safe_dir"
-  chmod 700 "$safe_dir"
-  cp "$runtime_evidence/acceptance-results.txt" "$safe_dir/acceptance-results.txt"
-  printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' "$current_stage" >>"$safe_dir/acceptance-results.txt"
+  mkdir "$safe_dir" || { publish_sanitization_failure; return; }
+  chmod 700 "$safe_dir" || { publish_sanitization_failure; return; }
+  cp "$runtime_evidence/acceptance-results.txt" "$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return; }
+  printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' "$current_stage" >>"$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return; }
   checkpoint_file_is_safe "$safe_dir/acceptance-results.txt" failure || {
     publish_sanitization_failure
     return
@@ -441,8 +515,9 @@ retain_failure_evidence() {
     publish_sanitization_failure
     return
   }
-  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt"
-  hash_evidence_directory "$safe_dir"
+  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt" || { publish_sanitization_failure; return; }
+  hash_evidence_directory "$safe_dir" || { publish_sanitization_failure; return; }
+  chmod 600 "$safe_dir"/*.txt || { publish_sanitization_failure; return; }
   publish_evidence_directory "$safe_dir"
 }
 
@@ -456,8 +531,18 @@ publish_success_evidence() {
     publish_sanitization_failure
     return 1
   }
-  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$runtime_evidence/evidence-leak-scan.txt"
-  hash_evidence_directory "$runtime_evidence"
+  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$runtime_evidence/evidence-leak-scan.txt" || {
+    publish_sanitization_failure
+    return 1
+  }
+  hash_evidence_directory "$runtime_evidence" || {
+    publish_sanitization_failure
+    return 1
+  }
+  chmod 600 "$runtime_evidence"/*.txt || {
+    publish_sanitization_failure
+    return 1
+  }
   current_stage="evidence_publish"
   publish_evidence_directory "$runtime_evidence"
 }
@@ -471,6 +556,9 @@ on_exit() {
   fi
   if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
+  fi
+  if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
+    rmdir "$evidence_publish_lock" || true
   fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
     rm -r -- "$runtime_dir"
@@ -512,7 +600,8 @@ cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || {
   exit 1
 }
 
-[[ ! -e "$evidence_dir" ]] || {
+[[ ! -e "$evidence_dir" && ! -L "$evidence_dir" &&
+  ! -e "${evidence_dir}.publish.lock" && ! -L "${evidence_dir}.publish.lock" ]] || {
   echo "refusing to overwrite existing miniapp auth refresh evidence" >&2
   exit 1
 }
