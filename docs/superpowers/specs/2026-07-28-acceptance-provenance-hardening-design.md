@@ -4,13 +4,14 @@
 
 **Branch:** `codex/f15-idempotency-atomicity`
 
-**Status:** Architecture approved on 2026-07-28. This written specification is
-awaiting approval. Implementation has not started.
+**Status:** Architecture and written specification approved on 2026-07-28.
+Implementation has not started.
 
 **Approval record:** The user explicitly approved the complete architecture for
-Unified Approach A on 2026-07-28. That approval authorizes this specification;
-it does not authorize implementation or a test-server run before this written
-specification is approved.
+Unified Approach A on 2026-07-28. After the written specification was committed
+as `dcf811c`, the user directed work to continue through F-15. That approves the
+transition to implementation planning and code work. It does not authorize a
+test-server run, source transfer, remote cleanup, or production access.
 
 ## 1. Problem Statement
 
