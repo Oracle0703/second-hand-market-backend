@@ -9,6 +9,10 @@ isolated run failed at the acceptance harness `test_metadata` stage; corrective
 commit `f46bb3c` is locally verified and independently reviewed, but the MySQL
 8.4 test-server status remains pending. Production is unchanged.
 
+**Written approval:** The SQLite concurrency-fixture correction in section
+7.6, using file-backed private-cache Approach A, and this complete written
+specification were explicitly approved on 2026-07-28.
+
 **Original finding:** The pre-fix idempotency wrapper read before the business
 action, ran the action in a separate transaction, inserted the replay record
 afterward, and ignored insertion errors. Concurrent requests could therefore

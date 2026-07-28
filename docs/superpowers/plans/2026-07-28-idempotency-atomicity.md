@@ -6,7 +6,7 @@
 
 **Architecture:** The existing unique index on `(idem_key, operator_id, path)` is the serialization point. A wrapper-owned GORM transaction inserts an uncommitted JSON `null` claim, passes the same `*gorm.DB` to the business callback, writes a non-nil successful JSON object into that row, and commits both units together. MySQL startup verifies that every table participating in these transactions uses InnoDB; isolated MySQL 8.4 acceptance exercises real unique-index contention.
 
-**Task 4 approved revision (2026-07-28):** The historical four-connection SQLite concurrency fixture uses a file-backed database under `t.TempDir()` with private-cache behavior, `_pragma=busy_timeout(5000)`, and `_txlock=immediate`. The earlier shared-memory `_txlock=immediate` proposal was rejected by a 19/20 failure reproduction of `SQLITE_LOCKED_SHAREDCACHE` at transaction start; the file-backed diagnostic passed 20/20 and 50/50. This is test-only; MySQL and application DSNs remain unchanged.
+**Task 4 user-approved revision (2026-07-28):** The historical four-connection SQLite concurrency fixture uses a file-backed database under `t.TempDir()` with private-cache behavior, `_pragma=busy_timeout(5000)`, and `_txlock=immediate`. The earlier shared-memory `_txlock=immediate` proposal was rejected by a 19/20 failure reproduction of `SQLITE_LOCKED_SHAREDCACHE` at transaction start; the file-backed diagnostic passed 20/20 and 50/50. This is test-only; MySQL and application DSNs remain unchanged.
 
 **Task 6 review revision (2026-07-28):** The transferable source package is
 generated locally from immutable `HEAD` objects with `git ls-tree` and
@@ -26,6 +26,11 @@ required.
 
 **Local status (2026-07-28):** Code-side implemented and locally verified;
 isolated MySQL 8.4 test-server review pending; production unchanged.
+
+**Written specification approval (2026-07-28):** The user explicitly approved
+the complete F-15 SQLite file-backed private-cache Approach A specification.
+This approval does not authorize another server run and does not change the
+test-server or production status.
 
 **Tech Stack:** Go 1.22, Gin 1.10, GORM 1.30 with `TranslateError`, `glebarez/sqlite`, MySQL 8.4, Docker Compose, Bash.
 
