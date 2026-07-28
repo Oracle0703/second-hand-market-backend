@@ -1,0 +1,357 @@
+# F-15 Atomic Idempotency Design
+
+**Date:** 2026-07-28
+
+**Branch:** `codex/f15-idempotency-atomicity`
+
+**Status:** Architecture, failure semantics, and Approach A approved; written specification awaiting review
+
+**Finding:** The current idempotency wrapper reads before the business action,
+runs the action in a separate transaction, inserts the replay record afterward,
+and ignores insertion errors. Concurrent requests can therefore execute the same
+side effect more than once, and a successful response can be returned without a
+durable replay record.
+
+## 1. Goal
+
+For the scope `(Idempotency-Key, operator_id, path)`, execute a successful write
+at most once and durably replay only its successful terminal result. Couple the
+business mutation and replay record in one database transaction so neither can
+commit without the other.
+
+The approved failure contract is:
+
+1. Only successful terminal results are replayed.
+2. A callback, serialization, or terminal-record failure before commit rolls
+   back the claim and all transactional business writes, so the same request
+   can retry.
+3. Once a scope has a committed successful result, reusing it with a different
+   request hash returns HTTP 409 and business code `10011` without executing the
+   second action.
+
+## 2. Authority And Current Defect
+
+`docs/backend-api-checklist.md` defines the scope and requires one execution,
+first-result replay, and `10011` for different parameters. The existing
+`runWithIdempotency` sequence violates that contract in three ways:
+
+- read-before-write allows two concurrent misses;
+- the business callback owns an independent transaction;
+- replay-record creation occurs after the business commit and discards errors.
+
+The existing unique key `uk_idem_scope(idem_key, operator_id, path)` is already
+the correct serialization primitive. F-15 changes transaction ownership rather
+than adding another lock service.
+
+## 3. Scope
+
+F-15 covers the current five idempotent write call sites:
+
+- merchant intent transition to `CONTACTED`;
+- merchant intent transition to `CLOSED`;
+- product status changes;
+- order completion and closure;
+- buyer intent creation.
+
+It also covers the shared helper, focused SQLite tests, opt-in MySQL 8.4
+concurrency tests, acceptance automation, and status/evidence documentation.
+
+## 4. Non-Goals
+
+- Do not introduce Redis, an external lock service, or an in-process mutex.
+- Do not replay failed responses or persist failed claims.
+- Do not make the existing in-memory rate-limit counters transactional. They
+  remain admission controls rather than database business writes.
+- Do not change `Idempotency-Key` scope, request hashing, response envelopes,
+  existing business error codes, or domain state-machine rules.
+- Do not add a TTL, lease, cleanup worker, `PENDING` column, or `SUCCEEDED`
+  column. Successful records retain the existing long-lived replay behavior.
+- Do not modify `0001_init` or add an F-15 migration. F-12 retains the reserved
+  `0010` migration number and F-15 introduces no numbering conflict.
+- Do not execute production SQL, deploy production code, or modify production
+  data, containers, sessions, or idempotency rows.
+
+## 5. Approaches Considered
+
+### 5.1 Adopted: transaction-scoped insert claim using the existing schema
+
+Insert a placeholder replay row inside the same transaction that receives every
+business write. The unique index serializes contenders. The row is finalized
+with the successful response before commit. Any callback, serialization, or
+pre-commit database error rolls back both the placeholder and business writes.
+
+An uncommitted placeholder is never a replayable state. Other transactions
+cannot observe it as a terminal result; they wait on the unique-key conflict
+until the first transaction commits or rolls back.
+
+### 5.2 Rejected: persisted `PENDING` / `SUCCEEDED` state with TTL
+
+Persisted claims require leases, stale-owner recovery, cleanup ownership, and a
+definition for requests that outlive the lease. They also change the existing
+long-lived replay contract and require a migration. None of that is needed to
+satisfy the approved failure semantics.
+
+### 5.3 Rejected: external or process-local locks
+
+Process-local locks do not coordinate multiple API instances. External locks
+still cannot atomically commit the MySQL business mutation and replay record,
+and introduce a second availability and recovery domain.
+
+## 6. API And Transaction Contract
+
+The callback becomes transaction-aware:
+
+```go
+type idempotentOperation func(tx *gorm.DB) (map[string]interface{}, error)
+
+func (s *Server) runWithIdempotency(
+    c *gin.Context,
+    payload interface{},
+    fn idempotentOperation,
+) (map[string]interface{}, error)
+```
+
+A successful callback must return a non-nil JSON-object map. An empty map is a
+valid success result; a nil map is an internal contract error and rolls back.
+
+The wrapper owns the only transaction around the callback. Callers must use the
+provided `tx` for every read, lock, mutation, and operation-log write. They must
+not call `s.DB.Transaction` or use `s.DB` from inside the callback.
+
+Requests without an `Idempotency-Key` still run the callback in one transaction.
+This preserves the atomicity previously supplied by four caller-owned
+transactions and adds the missing transaction around buyer-intent creation.
+
+## 7. Data Flow
+
+### 7.1 Request preparation
+
+1. Resolve the header key without changing its current semantics.
+2. If the key is empty, skip payload serialization and hashing and use the
+   no-key execution path.
+3. For a keyed request, resolve the current actor; absence is an internal
+   contract failure.
+4. Serialize the payload and hash the exact JSON bytes with the existing
+   SHA-256 helper. Serialization failure returns the stable internal error
+   before the callback runs.
+5. Resolve `c.FullPath()` without changing the current scope semantics.
+
+### 7.2 No-key execution
+
+Run `fn(tx)` inside `s.DB.Transaction`. Callback errors roll back all writes and
+are returned unchanged. No idempotency record is created.
+
+### 7.3 Keyed execution and claim
+
+Inside `s.DB.Transaction`:
+
+1. Insert one `IdempotencyRecord` containing the scope, request hash,
+   `result_code=0`, and the JSON placeholder `null`. The placeholder is visible
+   only inside the uncommitted transaction and is distinct from every permitted
+   non-nil object result, including `{}`.
+2. If insertion succeeds, call `fn(tx)`.
+3. Reject a nil result map. Serialize the non-nil successful result;
+   serialization failure returns the internal error and rolls back the
+   transaction.
+4. Update exactly the inserted row with `result_code=0` and the serialized
+   response. An update error or `RowsAffected != 1` returns the internal error
+   and rolls back the transaction.
+5. Commit. Only this commit makes the business mutation and terminal replay
+   record visible together.
+
+The production database is opened with GORM `TranslateError: true`, so the
+claim insert identifies a scope collision with
+`errors.Is(err, gorm.ErrDuplicatedKey)` rather than matching database error
+strings. At that exact insertion point the wrapper converts the error to a
+private idempotency-claim sentinel before returning from the transaction. Only
+that sentinel enters contender resolution; a duplicate-key error from a
+business table or another callback operation remains a callback error and must
+not be mistaken for an idempotency replay.
+
+### 7.4 Contender resolution
+
+When the claim transaction returns the private idempotency-claim sentinel, the
+transaction is ended and the wrapper reads the committed record outside it:
+
+- different `request_hash`: return `common.ErrDuplicateSubmit` (`10011`);
+- same hash and a valid `result_code=0` JSON object: replay it and set
+  `idempotent=true` in the returned copy;
+- missing, corrupt, or non-success record: return the stable internal error.
+
+InnoDB unique-index locking provides the required ordering:
+
+- if the first transaction commits, a contender receives duplicate-key and
+  reads the terminal response;
+- if the first transaction rolls back, a waiting insert can acquire the scope
+  and execute the action itself;
+- a different-hash contender never executes after the successful first commit.
+
+Because a failed transaction leaves no record by design, there is no durable
+hash to compare after rollback. The next waiter or retry, whether it carries the
+same or a different hash, competes as a new first execution. This is the direct
+consequence of the approved rule that failures are not persisted. HTTP 409 /
+`10011` applies whenever a committed successful record already occupies the
+scope.
+
+There is no retry loop around arbitrary database errors. Deadlocks, lock
+timeouts, connection failures, and corrupt records return the internal error.
+A failure before the commit attempt proves that the enclosing transaction did
+not commit. A connection failure while `COMMIT` is in flight has an unknown
+outcome: the initial caller receives the internal error, and a later same-key
+retry safely converges by replaying the record if commit succeeded or acquiring
+the claim and executing if it did not.
+
+### 7.5 Transactional storage prerequisite
+
+Approach A requires transactional tables. On MySQL startup, after migrations,
+the server queries `information_schema.tables` and fails closed unless
+`idempotency_records`, `buyer_intents`, `products`, `orders`, `order_events`,
+and `operation_logs` all exist with `ENGINE=InnoDB`. SQLite startup skips this
+MySQL-specific check.
+
+The isolated MySQL 8.4 gate records the same six-table engine result. Production
+engine inspection and deployment remain separate, explicitly authorized work;
+F-15 implementation and isolated acceptance do not query production.
+
+## 8. Caller Conversion
+
+Each existing callback is flattened so it uses the supplied transaction:
+
+```go
+data, err := s.runWithIdempotency(c, payload, func(tx *gorm.DB) (map[string]interface{}, error) {
+    // All reads, row locks, mutations, and logs use tx.
+})
+```
+
+The conversion must preserve every current response field and domain error.
+Existing same-target business behavior may still return `idempotent=true`; the
+shared wrapper independently sets that field to true for a stored replay.
+
+Buyer-intent prechecks that protect the mutation move inside the supplied
+transaction. The handler performs no transaction-external product status
+precheck: the callback loads and locks the product row with the supplied `tx`,
+then its status and merchant ID determine the insert. This also lets an already
+committed same-key result replay even if the product status later changes. The
+database open-intent uniqueness constraint remains the final concurrency guard
+and is not weakened by F-15.
+
+Buyer-intent authentication, actor-type checks, JSON binding, and contact-field
+validation remain before the wrapper. Its three rate-limit checks move into the
+callback so a committed same-key replay does not consume quota or return
+`10009` instead of the stored success. Rate-limit counters are in-memory and
+therefore are not rolled back if a later transactional step fails; a retry is
+still subject to the documented admission limits.
+
+`writeOperationLog` changes to return the `insertOperationLog` error. Each of
+the four idempotent transition callbacks that writes logs must propagate that
+error through the supplied transaction. Other existing callers may continue to
+discard the returned error until their own separately scoped review; F-15 does
+not silently broaden their behavior.
+
+## 9. Error Semantics
+
+| Condition | Result | Durable claim | Business writes |
+| --- | --- | --- | --- |
+| First execution succeeds | Original success payload | Terminal success row | Committed once |
+| Same hash after success | Stored payload plus `idempotent=true` | Unchanged | Not executed |
+| Different hash after success | HTTP 409 / `10011` | Unchanged | Not executed |
+| Callback returns business error | Original business error | None | Rolled back |
+| Callback returns database/internal error | Stable internal error where already mapped | None | Rolled back |
+| New request after an earlier rollback | Executes as a new first attempt | Created only on success | Commits only on success |
+| Response serialization fails | Stable internal error | None | Rolled back |
+| Replay-row finalization fails | Stable internal error | None | Rolled back |
+| Connection loss during commit | Stable internal error; retry converges | Unknown until retry/read | Atomically all or none |
+| Stored response is corrupt | Stable internal error | Unchanged for investigation | Not executed |
+
+The implementation must not log payloads, stored response bodies, credentials,
+tokens, buyer contact data, or database connection values as part of error
+handling or acceptance evidence.
+
+## 10. Test Strategy
+
+### 10.1 Focused helper tests
+
+Tests must first fail against the old implementation and then prove:
+
+1. a successful request persists one replay row and a repeat does not call the
+   callback;
+2. after a successful first request, a different payload under the same scope
+   returns `10011` without a second callback;
+3. a callback that writes and then fails leaves neither business data nor a
+   replay row, and the same request can subsequently succeed;
+4. an empty object result succeeds and replays, while a nil map or JSON `null`
+   terminal result fails closed;
+5. response serialization failure rolls back callback writes and the claim;
+6. forced replay-row update failure rolls back callback writes and the claim;
+7. an operation-log insert failure rolls back the protected business write and
+   claim;
+8. a business-table duplicate-key error is not treated as an idempotency claim
+   collision;
+9. a no-key callback still runs transactionally and rolls back on error;
+10. corrupt stored JSON fails closed without executing the callback;
+11. retry resolution handles both possible outcomes of an unknown commit by
+    replaying an existing success or executing when no claim exists.
+
+### 10.2 Caller regression tests
+
+Cover all five call sites through focused handler or integration tests. The
+tests must prove response compatibility and that a forced terminal-record
+failure cannot leave each protected business mutation committed.
+
+### 10.3 MySQL 8.4 concurrency gate
+
+An opt-in test in an isolated MySQL 8.4 database must run concurrent same-scope
+requests and prove:
+
+- same hash: exactly one callback side effect and all successful callers receive
+  identical stored business fields; the original execution reports its original
+  `idempotent` value and each replay reports `idempotent=true`;
+- different hash: exactly one hash wins, the other receives `10011`, and only
+  one side effect exists;
+- first callback failure: its writes and claim are absent, then a waiting or
+  retried same request can succeed exactly once;
+- terminal-record write failure: the business side effect is absent;
+- all six transaction-participating tables report `ENGINE=InnoDB`.
+
+The acceptance project must use a dedicated directory and Compose project,
+verify source manifests, retain sanitized evidence, and compare only the allowed
+production container name/ID/state/restart-count snapshots. It must not run
+production SQL or inspect production logs, environment, mounts, or data.
+
+## 11. Documentation And Evidence
+
+The implementation plan, RED/GREEN commands, commit range, local full/race/vet
+results, isolated MySQL version and concurrency results, evidence hashes, and
+production snapshot equality must be recorded. Status reporting always
+separates:
+
+1. code-side closure;
+2. isolated test-server approval;
+3. production migration/deployment status.
+
+F-15 has no production migration. Production remains unchanged until a separate
+deployment authorization is executed and verified.
+
+## 12. Acceptance Criteria
+
+- The successful business mutation and terminal replay row commit atomically.
+- Concurrent same-scope/same-hash requests execute the callback exactly once.
+- Same scope with a committed successful result and a different hash returns
+  HTTP 409 / `10011` and does not run the second callback.
+- Every callback, serialization, log-write, and terminal-record failure before
+  commit rolls back the claim and transactional business writes and permits a
+  safe same-request retry.
+- An unknown commit outcome returns an internal error and a later same-key retry
+  converges without duplicating a committed business mutation.
+- Only successful terminal results replay; no persisted pending or failed state
+  exists.
+- All five callers use the wrapper-supplied transaction for protected work.
+- Existing response fields, business state transitions, and error codes do not
+  regress.
+- MySQL startup fails closed unless all six transaction-participating tables use
+  InnoDB; isolated acceptance records that verification.
+- Focused, full, race, and vet gates pass locally.
+- The isolated MySQL 8.4 concurrency gate passes with sanitized, hashed evidence
+  before test-server status is marked approved.
+- No production data, SQL, service, container, deployment, or idempotency row is
+  modified during implementation and isolated acceptance.
