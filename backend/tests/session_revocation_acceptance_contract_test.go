@@ -2,6 +2,8 @@ package tests
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -285,6 +287,468 @@ func sessionRevocationAcceptanceRepoDir(t *testing.T) string {
 		t.Fatalf("resolve repository directory: %v", err)
 	}
 	return repoDir
+}
+
+func TestSessionRevocationAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T) {
+	t.Run("valid package reaches Docker without Git metadata", func(t *testing.T) {
+		remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+		dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		output, err := runMetadataFreeSessionRevocationAcceptance(t,
+			remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+		if err == nil {
+			t.Fatal("fake Docker tripwire unexpectedly allowed acceptance to succeed")
+		}
+		if _, err := os.Stat(filepath.Join(remoteRepo, ".git")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("metadata-free fixture unexpectedly contains Git metadata")
+		}
+		if _, err := os.Stat(dockerMarker); err != nil {
+			t.Fatalf("valid metadata-free package did not progress to Docker: %v; output = %q", err, output)
+		}
+	})
+
+	tamperCases := []struct {
+		name   string
+		mutate func(*testing.T, string, string)
+		digest string
+	}{
+		{
+			name:   "wrong authorized digest",
+			digest: strings.Repeat("0", 64),
+		},
+		{
+			name: "changed received source",
+			mutate: func(t *testing.T, remoteRepo string, _ string) {
+				writeIdempotencyAcceptanceFixtureFile(t, remoteRepo, "Makefile", "fixture:\n\t@false\n", 0o600)
+			},
+		},
+		{
+			name: "changed package artifact",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				file, err := os.OpenFile(filepath.Join(packageDir, "source.tar"), os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatalf("open source archive for tamper: %v", err)
+				}
+				if _, err := file.Write([]byte("tampered")); err != nil {
+					_ = file.Close()
+					t.Fatalf("tamper source archive: %v", err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatalf("close tampered source archive: %v", err)
+				}
+			},
+		},
+		{
+			name: "missing package artifact",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				if err := os.Remove(filepath.Join(packageDir, "source.tar")); err != nil {
+					t.Fatalf("remove source archive: %v", err)
+				}
+			},
+		},
+		{
+			name: "received source symlink",
+			mutate: func(t *testing.T, remoteRepo string, _ string) {
+				makefile := filepath.Join(remoteRepo, "Makefile")
+				if err := os.Remove(makefile); err != nil {
+					t.Fatalf("remove received Makefile: %v", err)
+				}
+				if err := os.Symlink("backend/go.mod", makefile); err != nil {
+					t.Fatalf("replace received Makefile with symlink: %v", err)
+				}
+			},
+		},
+		{
+			name: "missing required source path",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				rewriteSessionRevocationSourceList(t, packageDir, func(paths []string) []string {
+					return removeSessionRevocationPath(paths, "Makefile")
+				})
+			},
+		},
+		{
+			name: "duplicate source path",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				rewriteSessionRevocationSourceList(t, packageDir, func(paths []string) []string {
+					return append(paths, paths[0])
+				})
+			},
+		},
+		{
+			name: "forbidden source path",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				rewriteSessionRevocationSourceList(t, packageDir, func(paths []string) []string {
+					return append(paths, "../escape")
+				})
+			},
+		},
+		{
+			name: "mismatched per-file hash",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				manifest := filepath.Join(packageDir, "source-sha256.txt")
+				if err := os.WriteFile(manifest,
+					[]byte(strings.Repeat("0", 64)+"  Makefile\n"), 0o600); err != nil {
+					t.Fatalf("write mismatched source manifest: %v", err)
+				}
+				rewriteSessionRevocationPackageManifest(t, packageDir)
+			},
+		},
+		{
+			name: "additional archive path",
+			mutate: func(t *testing.T, _ string, packageDir string) {
+				extraRoot := t.TempDir()
+				writeIdempotencyAcceptanceFixtureFile(t, extraRoot, "backend/unexpected.go", "package backend\n", 0o600)
+				command := exec.Command("tar", "-rf", filepath.Join(packageDir, "source.tar"),
+					"-C", extraRoot, "backend/unexpected.go")
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("append unexpected archive path: %v: %s", err, output)
+				}
+				rewriteSessionRevocationPackageManifest(t, packageDir)
+			},
+		},
+	}
+
+	for _, tc := range tamperCases {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+			if tc.mutate != nil {
+				tc.mutate(t, remoteRepo, packageDir)
+			}
+			dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+			stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+			var output []byte
+			var err error
+			if tc.digest == "" {
+				output, err = runMetadataFreeSessionRevocationAcceptance(t,
+					remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+			} else {
+				output, err = runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
+					remoteRepo, packageDir, remoteScript, stubDir, dockerMarker, tc.digest, nil)
+			}
+			if err == nil {
+				t.Fatalf("tampered metadata-free package unexpectedly succeeded: %q", output)
+			}
+			if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("tampered metadata-free package reached Docker; output = %q", output)
+			}
+			evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+			if _, err := os.Stat(evidenceDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("provenance preflight failure retained evidence")
+			}
+		})
+	}
+}
+
+func TestSessionRevocationAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
+	t.Run("existing evidence refuses before Docker", func(t *testing.T) {
+		remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+		evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+		if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
+			t.Fatalf("create pre-existing evidence: %v", err)
+		}
+		dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := writeIdempotencyAcceptanceDockerStub(t, "#!/bin/sh\n: >\"$DOCKER_CALLED\"\nexit 99\n")
+		if output, err := runMetadataFreeSessionRevocationAcceptance(t,
+			remoteRepo, packageDir, remoteScript, stubDir, dockerMarker); err == nil {
+			t.Fatalf("pre-existing evidence unexpectedly succeeded: %q", output)
+		}
+		if _, err := os.Stat(dockerMarker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("pre-existing evidence reached Docker")
+		}
+	})
+
+	for _, resource := range []string{"container", "volume", "network"} {
+		t.Run("existing "+resource, func(t *testing.T) {
+			remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+			composeMarker := filepath.Join(t.TempDir(), "compose-called")
+			stub := "#!/bin/sh\n" +
+				"case \"$1 $2\" in\n" +
+				"  \"" + resource + " ls\") printf 'existing-resource\\n'; exit 0 ;;\n" +
+				"  \"compose \"*) : >\"$COMPOSE_CALLED\"; exit 99 ;;\n" +
+				"esac\nexit 0\n"
+			stubDir := writeIdempotencyAcceptanceDockerStub(t, stub)
+			output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
+				remoteRepo, packageDir, remoteScript, stubDir, filepath.Join(t.TempDir(), "docker-called"),
+				sessionRevocationPackageDigest(t, packageDir), []string{"COMPOSE_CALLED=" + composeMarker})
+			if err == nil || !strings.Contains(string(output), "refusing to reuse existing secondhand-session-revocation-acceptance resources") {
+				t.Fatalf("existing %s did not fail with stable collision: %v: %q", resource, err, output)
+			}
+			if _, err := os.Stat(composeMarker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("existing %s reached Compose", resource)
+			}
+		})
+	}
+}
+
+func TestSessionRevocationAcceptanceRetainsSanitizedFailureEvidence(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, `#!/bin/sh
+: >>"$DOCKER_CALLED"
+args=" $* "
+case "$args" in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect --type container "*) exit 1 ;;
+  *" compose "*" stop "*|*" compose "*" up "*|*" compose "*" build "*) exit 0 ;;
+  *" compose "*" exec "*)
+    case "$args" in *"SELECT VERSION()"*) printf '8.4.0\n' ;; esac
+    exit 0
+    ;;
+  *" compose "*" run "*)
+    printf 'Authorization: Bearer raw-session-secret\n' >&2
+    exit 42
+    ;;
+esac
+exit 0
+`)
+	output, err := runMetadataFreeSessionRevocationAcceptance(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker)
+	if err == nil {
+		t.Fatal("controlled focused-test failure unexpectedly succeeded")
+	}
+	if _, err := os.Stat(dockerMarker); err != nil {
+		t.Fatalf("controlled failure did not exercise fake Docker: %v", err)
+	}
+
+	evidenceDir := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence", "session-access-revocation")
+	entries, err := os.ReadDir(evidenceDir)
+	if err != nil {
+		t.Fatalf("read retained failure evidence: %v; output = %q", err, output)
+	}
+	allowed := map[string]bool{
+		"acceptance-results.txt": true,
+		"evidence-leak-scan.txt": true,
+		"evidence-sha256.txt":    true,
+		"failure-status.txt":     true,
+		"production-before.txt":  true,
+		"production-after.txt":   true,
+	}
+	var retained bytes.Buffer
+	for _, entry := range entries {
+		if entry.IsDir() || !allowed[entry.Name()] {
+			t.Fatalf("retained failure evidence contains unexpected entry %q", entry.Name())
+		}
+		raw, err := os.ReadFile(filepath.Join(evidenceDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read retained failure evidence %q: %v", entry.Name(), err)
+		}
+		retained.Write(raw)
+	}
+	for _, required := range []string{
+		"classification=acceptance_failure|result=FAIL|stage=session_auto_migrate_false|count=1",
+		"classification=source_package|result=PASS|count=",
+		"classification=mysql_version|result=PASS|count=1",
+		"classification=migration_chain|result=PASS|count=1",
+		"classification=evidence_scan|result=PASS|count=0",
+	} {
+		if !strings.Contains(retained.String(), required) {
+			t.Fatalf("retained failure evidence omitted %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Authorization", "Bearer", "raw-session-secret", "TestSessionRevocation"} {
+		if strings.Contains(retained.String(), forbidden) {
+			t.Fatalf("retained failure evidence leaked %q", forbidden)
+		}
+	}
+	before, err := os.ReadFile(filepath.Join(evidenceDir, "production-before.txt"))
+	if err != nil {
+		t.Fatalf("read production-before snapshot: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(evidenceDir, "production-after.txt"))
+	if err != nil {
+		t.Fatalf("read production-after snapshot: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("failure production snapshots differ: before=%q after=%q", before, after)
+	}
+	hashCheck := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
+	hashCheck.Dir = evidenceDir
+	if output, err := hashCheck.CombinedOutput(); err != nil {
+		t.Fatalf("verify retained failure evidence hashes: %v: %s", err, output)
+	}
+}
+
+func TestSessionRevocationAcceptancePreservesRuntimeGateOrder(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	stateDir := t.TempDir()
+	dockerLog := filepath.Join(stateDir, "docker.log")
+	projectStarted := filepath.Join(stateDir, "project-started")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, `#!/bin/sh
+printf '%s\n' "$*" >>"$DOCKER_LOG"
+args=" $* "
+case "$args" in
+  *" container ls "*)
+    [ -f "$PROJECT_STARTED" ] && printf 'isolated-container\n'
+    exit 0
+    ;;
+  *" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect --type container "*) exit 1 ;;
+  *" compose "*" up "*) : >"$PROJECT_STARTED"; exit 0 ;;
+  *" compose "*" exec "*)
+    case "$args" in *"SELECT VERSION()"*) printf '8.4.0\n' ;; esac
+    exit 0
+    ;;
+  *" compose "*" run "*"TestSessionRevocationMySQLAcceptance"*)
+    printf '%s\n' '--- PASS: TestSessionRevocationMySQLAcceptance (0.01s)' 'PASS' 'ok  fixture/tests 0.01s'
+    exit 0
+    ;;
+  *" compose "*" run "*"go test ./..."*) printf 'ok  fixture/all 0.01s\n'; exit 0 ;;
+  *" compose "*" run "*"go vet ./..."*) exit 0 ;;
+  *" compose "*) exit 0 ;;
+esac
+exit 0
+`)
+	output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
+		remoteRepo, packageDir, remoteScript, stubDir, filepath.Join(stateDir, "docker-called"),
+		sessionRevocationPackageDigest(t, packageDir), []string{
+			"DOCKER_LOG=" + dockerLog,
+			"PROJECT_STARTED=" + projectStarted,
+		})
+	if err != nil {
+		t.Fatalf("run complete stubbed session revocation matrix: %v: %s", err, output)
+	}
+	rawLog, err := os.ReadFile(dockerLog)
+	if err != nil {
+		t.Fatalf("read Docker command log: %v", err)
+	}
+	logText := string(rawLog)
+	requireOrderedSessionSnippets(t, logText, []string{
+		"0009_buyer_intent_open_uniqueness.postflight.sql",
+		"AUTO_MIGRATE=false",
+		"0009_buyer_intent_open_uniqueness.postflight.sql",
+		"AUTO_MIGRATE=true",
+		"go test ./... -count=1",
+		"go vet ./...",
+		" stop",
+	})
+	for _, forbidden := range []string{" down", " prune", "secondhand-market-api stop", "secondhand-market-web stop", "secondhand-market-mysql stop"} {
+		if strings.Contains(logText, forbidden) {
+			t.Fatalf("runtime used forbidden Docker operation %q: %s", forbidden, logText)
+		}
+	}
+}
+
+func prepareMetadataFreeSessionRevocationAcceptance(t *testing.T) (string, string, string) {
+	t.Helper()
+	fixtureRepo, fixtureScript := newSessionRevocationAcceptanceFixtureRepo(t)
+	remoteRepo := t.TempDir()
+	packageDir := filepath.Join(remoteRepo, ".session-revocation-source")
+	exportCmd := exec.Command("/bin/bash", fixtureScript)
+	exportCmd.Dir = fixtureRepo
+	exportCmd.Env = []string{
+		"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + packageDir,
+		"PATH=" + os.Getenv("PATH"),
+	}
+	if output, err := exportCmd.CombinedOutput(); err != nil {
+		t.Fatalf("prepare metadata-free session revocation package: %v: %s", err, output)
+	}
+	extractIdempotencyAcceptanceTar(t, filepath.Join(packageDir, "source.tar"), remoteRepo)
+	writeIdempotencyAcceptanceFixtureFile(t, remoteRepo, "deploy/acceptance/.env",
+		"MYSQL_DATABASE=second_hand_market_acceptance\n", 0o600)
+	return remoteRepo, packageDir,
+		filepath.Join(remoteRepo, "deploy", "acceptance", "session-revocation-smoke.sh")
+}
+
+func runMetadataFreeSessionRevocationAcceptance(
+	t *testing.T,
+	remoteRepo string,
+	packageDir string,
+	remoteScript string,
+	stubDir string,
+	dockerMarker string,
+) ([]byte, error) {
+	t.Helper()
+	return runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker,
+		sessionRevocationPackageDigest(t, packageDir), nil)
+}
+
+func runMetadataFreeSessionRevocationAcceptanceWithDigest(
+	t *testing.T,
+	remoteRepo string,
+	packageDir string,
+	remoteScript string,
+	stubDir string,
+	dockerMarker string,
+	manifestDigest string,
+	extraEnv []string,
+) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("/bin/bash", remoteScript)
+	cmd.Dir = remoteRepo
+	cmd.Env = append([]string{
+		"SESSION_REVOCATION_ACCEPTANCE_CONFIRM=I_UNDERSTAND_THIS_WRITES_ONLY_ISOLATED_SESSION_REVOCATION_DATA",
+		"ACCEPTANCE_DB_ENGINE=mysql8.4",
+		"COMPOSE_PROJECT_NAME=secondhand-session-revocation-acceptance",
+		"SESSION_REVOCATION_SOURCE_PACKAGE_DIR=" + packageDir,
+		"SESSION_REVOCATION_SOURCE_PACKAGE_MANIFEST_SHA256=" + manifestDigest,
+		"DOCKER_CALLED=" + dockerMarker,
+		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+	}, extraEnv...)
+	return cmd.CombinedOutput()
+}
+
+func sessionRevocationPackageDigest(t *testing.T, packageDir string) string {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(packageDir, "package-sha256.txt"))
+	if err != nil {
+		t.Fatalf("read session package manifest: %v", err)
+	}
+	digest := sha256.Sum256(manifest)
+	return hex.EncodeToString(digest[:])
+}
+
+func rewriteSessionRevocationSourceList(
+	t *testing.T,
+	packageDir string,
+	rewrite func([]string) []string,
+) {
+	t.Helper()
+	listPath := filepath.Join(packageDir, "source-files.z")
+	raw, err := os.ReadFile(listPath)
+	if err != nil {
+		t.Fatalf("read session source list: %v", err)
+	}
+	paths := rewrite(splitNULPaths(t, raw))
+	var output bytes.Buffer
+	for _, path := range paths {
+		output.WriteString(path)
+		output.WriteByte(0)
+	}
+	if err := os.WriteFile(listPath, output.Bytes(), 0o600); err != nil {
+		t.Fatalf("rewrite session source list: %v", err)
+	}
+	rewriteSessionRevocationPackageManifest(t, packageDir)
+}
+
+func removeSessionRevocationPath(paths []string, remove string) []string {
+	filtered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != remove {
+			filtered = append(filtered, path)
+		}
+	}
+	return filtered
+}
+
+func rewriteSessionRevocationPackageManifest(t *testing.T, packageDir string) {
+	t.Helper()
+	var manifest strings.Builder
+	for _, name := range []string{"source-files.z", "source-sha256.txt", "source.tar"} {
+		raw, err := os.ReadFile(filepath.Join(packageDir, name))
+		if err != nil {
+			t.Fatalf("read package artifact %q: %v", name, err)
+		}
+		digest := sha256.Sum256(raw)
+		manifest.WriteString(hex.EncodeToString(digest[:]))
+		manifest.WriteString("  ")
+		manifest.WriteString(name)
+		manifest.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "package-sha256.txt"),
+		[]byte(manifest.String()), 0o600); err != nil {
+		t.Fatalf("rewrite package checksum manifest: %v", err)
+	}
 }
 
 func TestSessionRevocationAcceptanceRejectsUnsafeEnvironmentBeforeDocker(t *testing.T) {
