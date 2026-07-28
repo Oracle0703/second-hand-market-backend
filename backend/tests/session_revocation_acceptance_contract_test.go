@@ -296,6 +296,141 @@ exec /bin/mkdir "$@"
 			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
 		}
 	})
+
+	t.Run("acquired destination replacement remains untouched", func(t *testing.T) {
+		repo, script := newSessionRevocationAcceptanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "destination-swapped")
+		stubDir := t.TempDir()
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "git", `#!/bin/sh
+case " $* " in
+  *" ls-tree "*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+      /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+      printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_GIT=" + sessionRevocationCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through a replaced acquired destination unexpectedly succeeded: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("replacement destination was changed or removed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("replacement destination received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("identity observation replacement cannot redirect artifacts", func(t *testing.T) {
+		repo, script := newSessionRevocationAcceptanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "identity-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "identity-swapped")
+		stubDir := t.TempDir()
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "stat", `#!/bin/sh
+last=
+for arg in "$@"; do last=$arg; done
+if [ ! -e "$SWAP_MARKER" ]; then
+	  if [ "$last" = "$EXPORT_DESTINATION" ] || { [ "$last" = . ] && [ "$PWD" = "$EXPORT_DESTINATION" ]; }; then
+	    : >"$SWAP_MARKER" || exit $?
+	    /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+	    /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+	    printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+  fi
+fi
+exec "$REAL_STAT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_STAT=" + sessionRevocationCommandPath(t, "stat"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through identity replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("identity replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("identity replacement marker changed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("identity replacement received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("cleanup replacement cannot recursively delete new owner", func(t *testing.T) {
+		repo, script := newSessionRevocationAcceptanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "cleanup-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "cleanup-swapped")
+		rmCount := filepath.Join(t.TempDir(), "rm-count")
+		stubDir := t.TempDir()
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case "$*" in
+  *source-files.z*) exit 73 ;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+		writeIdempotencyAcceptanceFixtureFile(t, stubDir, "rm", `#!/bin/sh
+count=0
+if [ -f "$RM_COUNT_FILE" ]; then read count <"$RM_COUNT_FILE"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$RM_COUNT_FILE" || exit $?
+if [ "$count" -eq 2 ] && [ ! -e "$SWAP_MARKER" ]; then
+  : >"$SWAP_MARKER" || exit $?
+  /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+  /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+  printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+fi
+exec /bin/rm "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"SESSION_REVOCATION_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"RM_COUNT_FILE=" + rmCount,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export cleanup replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("cleanup replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("cleanup replacement marker changed or was removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func requiredSessionRevocationAcceptancePaths() []string {
@@ -769,6 +904,76 @@ exit "$status"
 	}
 }
 
+func TestSessionRevocationAcceptanceSignalStatusSurvivesPublicationFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal string
+		status int
+	}{
+		{name: "interrupt", signal: "INT", status: 130},
+		{name: "terminate", signal: "TERM", status: 143},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+			dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+			signalMarker := filepath.Join(t.TempDir(), "signal-sent")
+			snapshotFailureMarker := filepath.Join(t.TempDir(), "snapshot-failed")
+			publicationFailureMarker := filepath.Join(t.TempDir(), "publication-failed")
+			dockerStub := strings.ReplaceAll(`#!/bin/sh
+: >>"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-"*)
+    if [ ! -e "$SIGNAL_SENT" ]; then
+      : >"$SIGNAL_SENT" || exit $?
+      kill -__SIGNAL__ "$SIGNAL_TARGET"
+      exit 0
+    fi
+    : >"$SNAPSHOT_FAILED" || exit $?
+    exit 71 ;;
+esac
+exit 0
+`, "__SIGNAL__", tc.signal)
+			stubDir := writeIdempotencyAcceptanceDockerStub(t, dockerStub)
+			signalLauncher := filepath.Join(stubDir, "signal-launcher")
+			writeIdempotencyAcceptanceFixtureFile(t, stubDir, "signal-launcher", `#!/bin/bash
+export SIGNAL_TARGET=$$
+exec /bin/bash "$SESSION_REVOCATION_SCRIPT"
+`, 0o700)
+			writeIdempotencyAcceptanceFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+case " $* " in
+  *".session-access-revocation.publish.lock"*)
+    : >"$PUBLICATION_FAILED" || exit $?
+    exit 73 ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+
+			output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
+				remoteRepo, packageDir, signalLauncher, stubDir, dockerMarker,
+				sessionRevocationPackageDigest(t, packageDir), []string{
+					"SESSION_REVOCATION_SCRIPT=" + remoteScript,
+					"SIGNAL_SENT=" + signalMarker,
+					"SNAPSHOT_FAILED=" + snapshotFailureMarker,
+					"PUBLICATION_FAILED=" + publicationFailureMarker,
+				})
+			for name, marker := range map[string]string{
+				"signal mutation":     signalMarker,
+				"snapshot failure":    snapshotFailureMarker,
+				"publication failure": publicationFailureMarker,
+			} {
+				if _, markerErr := os.Stat(marker); markerErr != nil {
+					t.Fatalf("%s marker missing: %v; output=%q", name, markerErr, output)
+				}
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != tc.status {
+				t.Fatalf("%s exit = %v, want status %d; output=%q", tc.signal, err, tc.status, output)
+			}
+		})
+	}
+}
+
 func TestSessionRevocationAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1047,6 +1252,56 @@ printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acce
 		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
 	}
 	assertSessionRevocationAmbiguousPublicationPreserved(t, remoteRepo, output)
+}
+
+func TestSessionRevocationAcceptanceEvidenceParentReplacementCannotRedirectPublication(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeSessionRevocationAcceptance(t)
+	dockerMarker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := writeIdempotencyAcceptanceDockerStub(t, sessionRevocationControlledFailureDockerStub)
+	evidenceParent := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence")
+	acquiredParent := evidenceParent + ".acquired"
+	externalTarget := t.TempDir()
+	swapMarker := filepath.Join(t.TempDir(), "parent-swapped")
+	writeIdempotencyAcceptanceFixtureFile(t, stubDir, "mktemp", `#!/bin/sh
+case " $* " in
+  *"session-access-revocation.publish.XXXXXX"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EVIDENCE_PARENT" "$ACQUIRED_PARENT" || exit $?
+      /bin/ln -s "$EXTERNAL_TARGET" "$EVIDENCE_PARENT" || exit $?
+    fi
+    created="$("$REAL_MKTEMP" "$@")" || exit $?
+    resolved="$(cd "$created" && pwd -P)" || exit $?
+    external_resolved="$(cd "$EXTERNAL_TARGET" && pwd -P)" || exit $?
+    case "$resolved" in "$external_resolved"/*) : >"$EXTERNAL_REACHED";; esac
+    printf '%s\n' "$created"
+    exit 0 ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`, 0o700)
+	output, err := runMetadataFreeSessionRevocationAcceptanceWithDigest(t,
+		remoteRepo, packageDir, remoteScript, stubDir, dockerMarker,
+		sessionRevocationPackageDigest(t, packageDir), []string{
+			"EVIDENCE_PARENT=" + evidenceParent,
+			"ACQUIRED_PARENT=" + acquiredParent,
+			"EXTERNAL_TARGET=" + externalTarget,
+			"EXTERNAL_REACHED=" + filepath.Join(externalTarget, "publication-reached"),
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_MKTEMP=" + sessionRevocationCommandPath(t, "mktemp"),
+		})
+	if err == nil {
+		t.Fatalf("evidence publication through a replaced parent unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("evidence-parent replacement mutation did not run: %v", err)
+	}
+	if info, err := os.Lstat(evidenceParent); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("replacement evidence-parent symlink was changed or removed: %v, %v", info, err)
+	}
+	entries, err := os.ReadDir(externalTarget)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("evidence publication reached replacement parent target: %v, %v", entries, err)
+	}
 }
 
 func TestSessionRevocationAcceptancePreservesPublicationLockReleaseFailure(t *testing.T) {

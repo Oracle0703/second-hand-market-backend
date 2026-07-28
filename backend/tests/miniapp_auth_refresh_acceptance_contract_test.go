@@ -293,6 +293,141 @@ exec /bin/mkdir "$@"
 			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
 		}
 	})
+
+	t.Run("acquired destination replacement remains untouched", func(t *testing.T) {
+		repo, script := newMiniappAuthRefreshFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "destination-swapped")
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "git", `#!/bin/sh
+case " $* " in
+  *" ls-tree "*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+      /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+      printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_GIT=" + miniappAuthRefreshCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through a replaced acquired destination unexpectedly succeeded: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("replacement destination was changed or removed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("replacement destination received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("identity observation replacement cannot redirect artifacts", func(t *testing.T) {
+		repo, script := newMiniappAuthRefreshFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "identity-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "identity-swapped")
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "stat", `#!/bin/sh
+last=
+for arg in "$@"; do last=$arg; done
+if [ ! -e "$SWAP_MARKER" ]; then
+	  if [ "$last" = "$EXPORT_DESTINATION" ] || { [ "$last" = . ] && [ "$PWD" = "$EXPORT_DESTINATION" ]; }; then
+	    : >"$SWAP_MARKER" || exit $?
+	    /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+	    /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+	    printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+  fi
+fi
+exec "$REAL_STAT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_STAT=" + miniappAuthRefreshCommandPath(t, "stat"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through identity replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("identity replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("identity replacement marker changed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("identity replacement received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("cleanup replacement cannot recursively delete new owner", func(t *testing.T) {
+		repo, script := newMiniappAuthRefreshFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "cleanup-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "cleanup-swapped")
+		rmCount := filepath.Join(t.TempDir(), "rm-count")
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case "$*" in
+  *source-files.z*) exit 73 ;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "rm", `#!/bin/sh
+count=0
+if [ -f "$RM_COUNT_FILE" ]; then read count <"$RM_COUNT_FILE"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$RM_COUNT_FILE" || exit $?
+if [ "$count" -eq 2 ] && [ ! -e "$SWAP_MARKER" ]; then
+  : >"$SWAP_MARKER" || exit $?
+  /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+  /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+  printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+fi
+exec /bin/rm "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"RM_COUNT_FILE=" + rmCount,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export cleanup replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("cleanup replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("cleanup replacement marker changed or was removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBeforeNPM(t *testing.T) {
@@ -722,6 +857,54 @@ exec /bin/mv "$@"
 		t.Fatalf("publication collision unexpectedly succeeded: %s", output)
 	}
 	assertMiniappAuthRefreshConcurrentPublicationPreserved(t, remoteRepo)
+}
+
+func TestMiniappAuthRefreshAcceptanceEvidenceParentReplacementCannotRedirectPublication(t *testing.T) {
+	remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
+	stubDir, marker, _ := writeMiniappAuthRefreshRuntimeStubs(t, "fail-ci")
+	evidenceParent := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence")
+	acquiredParent := evidenceParent + ".acquired"
+	externalTarget := t.TempDir()
+	swapMarker := filepath.Join(t.TempDir(), "parent-swapped")
+	writeMiniappAuthRefreshFixtureFile(t, stubDir, "mktemp", `#!/bin/sh
+case " $* " in
+  *"miniapp-auth-refresh.publish.XXXXXX"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EVIDENCE_PARENT" "$ACQUIRED_PARENT" || exit $?
+      /bin/ln -s "$EXTERNAL_TARGET" "$EVIDENCE_PARENT" || exit $?
+    fi
+    created="$("$REAL_MKTEMP" "$@")" || exit $?
+    resolved="$(cd "$created" && pwd -P)" || exit $?
+    external_resolved="$(cd "$EXTERNAL_TARGET" && pwd -P)" || exit $?
+    case "$resolved" in "$external_resolved"/*) : >"$EXTERNAL_REACHED";; esac
+    printf '%s\n' "$created"
+    exit 0 ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`, 0o700)
+	output, err := runMetadataFreeMiniappAuthRefreshWithEnv(t, remoteRepo, packageDir, remoteScript,
+		stubDir, marker, miniappAuthRefreshPackageDigest(t, packageDir), []string{
+			"EVIDENCE_PARENT=" + evidenceParent,
+			"ACQUIRED_PARENT=" + acquiredParent,
+			"EXTERNAL_TARGET=" + externalTarget,
+			"EXTERNAL_REACHED=" + filepath.Join(externalTarget, "publication-reached"),
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_MKTEMP=" + miniappAuthRefreshCommandPath(t, "mktemp"),
+		})
+	if err == nil {
+		t.Fatalf("evidence publication through a replaced parent unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("evidence-parent replacement mutation did not run: %v", err)
+	}
+	if info, err := os.Lstat(evidenceParent); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("replacement evidence-parent symlink was changed or removed: %v, %v", info, err)
+	}
+	entries, err := os.ReadDir(externalTarget)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("evidence publication reached replacement parent target: %v, %v", entries, err)
+	}
 }
 
 func TestMiniappAuthRefreshAcceptancePreservesPostRenamePublicationAmbiguity(t *testing.T) {

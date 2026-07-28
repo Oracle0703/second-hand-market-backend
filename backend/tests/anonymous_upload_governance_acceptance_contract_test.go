@@ -204,6 +204,141 @@ exec /bin/mkdir "$@"
 			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
 		}
 	})
+
+	t.Run("acquired destination replacement remains untouched", func(t *testing.T) {
+		repo, script := newAnonymousUploadGovernanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "destination-swapped")
+		stubDir := t.TempDir()
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "git", `#!/bin/sh
+case " $* " in
+  *" ls-tree "*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+      /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+      printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_GIT=" + anonymousUploadGovernanceCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through a replaced acquired destination unexpectedly succeeded: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("replacement destination was changed or removed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("replacement destination received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("identity observation replacement cannot redirect artifacts", func(t *testing.T) {
+		repo, script := newAnonymousUploadGovernanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "identity-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "identity-swapped")
+		stubDir := t.TempDir()
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "stat", `#!/bin/sh
+last=
+for arg in "$@"; do last=$arg; done
+if [ ! -e "$SWAP_MARKER" ]; then
+	  if [ "$last" = "$EXPORT_DESTINATION" ] || { [ "$last" = . ] && [ "$PWD" = "$EXPORT_DESTINATION" ]; }; then
+	    : >"$SWAP_MARKER" || exit $?
+	    /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+	    /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+	    printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+  fi
+fi
+exec "$REAL_STAT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_STAT=" + anonymousUploadGovernanceCommandPath(t, "stat"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through identity replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("identity replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("identity replacement marker changed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("identity replacement received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("cleanup replacement cannot recursively delete new owner", func(t *testing.T) {
+		repo, script := newAnonymousUploadGovernanceFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "cleanup-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "cleanup-swapped")
+		rmCount := filepath.Join(t.TempDir(), "rm-count")
+		stubDir := t.TempDir()
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case "$*" in
+  *package-sha256.txt*) exit 73 ;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+		writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "rm", `#!/bin/sh
+count=0
+if [ -f "$RM_COUNT_FILE" ]; then read count <"$RM_COUNT_FILE"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$RM_COUNT_FILE" || exit $?
+if [ "$count" -eq 2 ] && [ ! -e "$SWAP_MARKER" ]; then
+  : >"$SWAP_MARKER" || exit $?
+  /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+  /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+  printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+fi
+exec /bin/rm "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"RM_COUNT_FILE=" + rmCount,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export cleanup replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("cleanup replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("cleanup replacement marker changed or was removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func TestAnonymousUploadGovernanceAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T) {
@@ -626,6 +761,95 @@ exec /usr/bin/tar "$@"
 			t.Fatalf("build context mode = %q, %v; want 700", mode, err)
 		}
 	})
+}
+
+func TestAnonymousUploadGovernanceAcceptanceLateMySQLDiagnosticsStayPrivate(t *testing.T) {
+	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+: >"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" container ls "*"name=^/secondhand-market-"*) exit 0 ;;
+  *" compose "*" up -d --wait mysql "*) exit 0 ;;
+  *" compose "*" exec "*"SELECT VERSION()"*)
+    printf 'Authorization: Bearer f06-late-mysql-secret\n' >&2
+    exit 64 ;;
+  *" compose "*" stop "*) exit 0 ;;
+esac
+exit 0
+`)
+
+	output, err := runAnonymousUploadGovernanceAcceptance(t, remoteRepo, packageDir, script, stubDir, marker, "")
+	if err == nil {
+		t.Fatalf("late MySQL diagnostic failure unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("late MySQL diagnostic test did not reach Docker: %v", err)
+	}
+	for _, secret := range []string{"Authorization", "Bearer", "f06-late-mysql-secret"} {
+		if bytes.Contains(output, []byte(secret)) {
+			t.Fatalf("late MySQL diagnostic leaked %q to caller output: %q", secret, output)
+		}
+	}
+}
+
+func TestAnonymousUploadGovernanceAcceptanceUsesPrivateEnvSnapshot(t *testing.T) {
+	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+	originalEnv := filepath.Join(remoteRepo, "deploy", "acceptance", ".env")
+	acquiredEnv := originalEnv + ".acquired"
+	swapMarker := filepath.Join(t.TempDir(), "env-swapped")
+	verifiedMarker := filepath.Join(t.TempDir(), "env-snapshot-verified")
+	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+: >"$DOCKER_CALLED"
+case " $* " in
+  *" container ls "*"label=com.docker.compose.project="*)
+    if [ ! -e "$ENV_SWAP_MARKER" ]; then
+      : >"$ENV_SWAP_MARKER" || exit $?
+      /bin/mv "$ORIGINAL_ENV" "$ACQUIRED_ENV" || exit $?
+      printf 'MYSQL_DATABASE=replacement\n' >"$ORIGINAL_ENV" || exit $?
+    fi
+    exit 0 ;;
+  *" volume ls "*|*" network ls "*|*" container ls "*"name=^/secondhand-market-"*) exit 0 ;;
+  *" compose "*" up -d --wait mysql "*)
+    env_file=
+    last_compose_file=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --env-file) env_file=$2; shift 2 ;;
+        --file) last_compose_file=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -n "$env_file" ] && [ "$env_file" != "$ORIGINAL_ENV" ] || exit 71
+    runtime_dir=$(/usr/bin/dirname "$last_compose_file") || exit $?
+    [ "$(/usr/bin/dirname "$env_file")" = "$runtime_dir" ] || exit 72
+    [ -f "$env_file" ] && [ ! -L "$env_file" ] || exit 73
+    mode=$(/usr/bin/stat -f '%Lp' "$env_file" 2>/dev/null || /usr/bin/stat -c '%a' "$env_file") || exit $?
+    [ "$mode" = 600 ] || exit 74
+    /usr/bin/grep -Fx 'MYSQL_DATABASE=second_hand_market_acceptance' "$env_file" >/dev/null || exit 75
+    : >"$ENV_SNAPSHOT_VERIFIED" || exit $?
+    exit 64 ;;
+  *" compose "*" stop "*) exit 0 ;;
+esac
+exit 0
+`)
+
+	output, err := runAnonymousUploadGovernanceAcceptanceWithEnv(t, remoteRepo, packageDir, script,
+		stubDir, marker, "", []string{
+			"ORIGINAL_ENV=" + originalEnv,
+			"ACQUIRED_ENV=" + acquiredEnv,
+			"ENV_SWAP_MARKER=" + swapMarker,
+			"ENV_SNAPSHOT_VERIFIED=" + verifiedMarker,
+		})
+	if err == nil {
+		t.Fatalf("forced post-snapshot Compose failure unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("post-validation env replacement did not run: %v", err)
+	}
+	if _, err := os.Stat(verifiedMarker); err != nil {
+		t.Fatalf("Compose did not receive the private env snapshot: %v; output=%q", err, output)
+	}
 }
 
 func TestAnonymousUploadGovernanceAcceptanceRefusesEvidenceAndProjectReuse(t *testing.T) {
@@ -1127,6 +1351,69 @@ printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acce
 		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
 	}
 	assertAnonymousUploadGovernanceAmbiguousPublicationPreserved(t, remoteRepo)
+}
+
+func TestAnonymousUploadGovernanceAcceptanceEvidenceParentReplacementCannotRedirectPublication(t *testing.T) {
+	remoteRepo, packageDir, script := prepareAnonymousUploadGovernanceMetadataFreeRepo(t)
+	marker, stubDir := anonymousUploadGovernanceDockerTripwire(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0 ;;
+  *" inspect "*)
+    case "$*" in
+      *secondhand-market-api*) name=secondhand-market-api ;;
+      *secondhand-market-web*) name=secondhand-market-web ;;
+      *) name=secondhand-market-mysql ;;
+    esac
+    case "$*" in *" --format "*) printf '/%s|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|running|0\n' "$name" ;; esac
+    exit 0 ;;
+  *" compose "*" stop "*) exit 0 ;;
+  *" compose "*) exit 42 ;;
+esac
+exit 0
+`)
+	evidenceParent := filepath.Join(remoteRepo, "deploy", "acceptance", "evidence")
+	acquiredParent := evidenceParent + ".acquired"
+	externalTarget := t.TempDir()
+	swapMarker := filepath.Join(t.TempDir(), "parent-swapped")
+	writeAnonymousUploadGovernanceFixtureFile(t, stubDir, "mktemp", `#!/bin/sh
+case " $* " in
+  *"anonymous-upload-governance.publish.XXXXXX"*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EVIDENCE_PARENT" "$ACQUIRED_PARENT" || exit $?
+      /bin/ln -s "$EXTERNAL_TARGET" "$EVIDENCE_PARENT" || exit $?
+    fi
+    created="$("$REAL_MKTEMP" "$@")" || exit $?
+    resolved="$(cd "$created" && pwd -P)" || exit $?
+    external_resolved="$(cd "$EXTERNAL_TARGET" && pwd -P)" || exit $?
+    case "$resolved" in "$external_resolved"/*) : >"$EXTERNAL_REACHED";; esac
+    printf '%s\n' "$created"
+    exit 0 ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`, 0o700)
+	output, err := runAnonymousUploadGovernanceAcceptanceWithEnv(t, remoteRepo, packageDir, script,
+		stubDir, marker, "", []string{
+			"EVIDENCE_PARENT=" + evidenceParent,
+			"ACQUIRED_PARENT=" + acquiredParent,
+			"EXTERNAL_TARGET=" + externalTarget,
+			"EXTERNAL_REACHED=" + filepath.Join(externalTarget, "publication-reached"),
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_MKTEMP=" + anonymousUploadGovernanceCommandPath(t, "mktemp"),
+		})
+	if err == nil {
+		t.Fatalf("evidence publication through a replaced parent unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("evidence-parent replacement mutation did not run: %v", err)
+	}
+	if info, err := os.Lstat(evidenceParent); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("replacement evidence-parent symlink was changed or removed: %v, %v", info, err)
+	}
+	entries, err := os.ReadDir(externalTarget)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("evidence publication reached replacement parent target: %v, %v", entries, err)
+	}
 }
 
 func TestAnonymousUploadGovernanceAcceptancePreservesPublicationLockReleaseFailure(t *testing.T) {

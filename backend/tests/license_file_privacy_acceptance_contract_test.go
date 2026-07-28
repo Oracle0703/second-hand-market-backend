@@ -254,6 +254,135 @@ exec /bin/mkdir "$@"
 			t.Fatalf("concurrent destination was changed or removed: %q, %v", owner, err)
 		}
 	})
+
+	t.Run("acquired destination replacement remains untouched", func(t *testing.T) {
+		repo, script := newLicensePrivacyFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "destination-swapped")
+		stubDir := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, stubDir, "git", `#!/bin/sh
+case " $* " in
+  *" ls-tree "*)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+      /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+      printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+    fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_GIT=" + licensePrivacyCommandPath(t, "git"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through a replaced acquired destination unexpectedly succeeded: %s", output)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("replacement destination was changed or removed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("replacement destination received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("identity observation replacement cannot redirect artifacts", func(t *testing.T) {
+		repo, script := newLicensePrivacyFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "identity-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "identity-swapped")
+		stubDir := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, stubDir, "stat", `#!/bin/sh
+last=
+for arg in "$@"; do last=$arg; done
+if [ ! -e "$SWAP_MARKER" ]; then
+	  if [ "$last" = "$EXPORT_DESTINATION" ] || { [ "$last" = . ] && [ "$PWD" = "$EXPORT_DESTINATION" ]; }; then
+	    : >"$SWAP_MARKER" || exit $?
+	    /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+	    /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+	    printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+  fi
+fi
+exec "$REAL_STAT" "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"REAL_STAT=" + licensePrivacyCommandPath(t, "stat"),
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export through identity replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("identity replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("identity replacement marker changed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(destination)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "owner.txt" {
+			t.Fatalf("identity replacement received exporter artifacts: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("cleanup replacement cannot recursively delete new owner", func(t *testing.T) {
+		repo, script := newLicensePrivacyFixtureRepo(t)
+		destination := filepath.Join(t.TempDir(), "cleanup-replaced-package")
+		acquired := destination + ".acquired"
+		swapMarker := filepath.Join(t.TempDir(), "cleanup-swapped")
+		stubDir := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, stubDir, "chmod", `#!/bin/sh
+case "$*" in
+  *source-files.z*) exit 73 ;;
+esac
+exec /bin/chmod "$@"
+`, 0o700)
+		writeLicensePrivacyFixtureFile(t, stubDir, "rm", `#!/bin/sh
+if [ ! -e "$SWAP_MARKER" ]; then
+  : >"$SWAP_MARKER" || exit $?
+  /bin/mv "$EXPORT_DESTINATION" "$ACQUIRED_DESTINATION" || exit $?
+  /bin/mkdir "$EXPORT_DESTINATION" || exit $?
+  printf 'replacement-owner\n' >"$EXPORT_DESTINATION/owner.txt" || exit $?
+fi
+exec /bin/rm "$@"
+`, 0o700)
+		command := exec.Command("/bin/bash", script)
+		command.Dir = repo
+		command.Env = []string{
+			"LICENSE_FILE_PRIVACY_SOURCE_EXPORT_DIR=" + destination,
+			"EXPORT_DESTINATION=" + destination,
+			"ACQUIRED_DESTINATION=" + acquired,
+			"SWAP_MARKER=" + swapMarker,
+			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err == nil {
+			t.Fatalf("export cleanup replacement unexpectedly succeeded: %s", output)
+		}
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("cleanup replacement mutation did not run: %v", err)
+		}
+		owner, err := os.ReadFile(filepath.Join(destination, "owner.txt"))
+		if err != nil || string(owner) != "replacement-owner\n" {
+			t.Fatalf("cleanup replacement marker changed or was removed: %q, %v", owner, err)
+		}
+	})
 }
 
 func TestLicenseFilePrivacyAcceptanceMetadataFreePackageRefusesOrProgressesBeforeDocker(t *testing.T) {
@@ -680,7 +809,7 @@ exec /usr/bin/tar "$@"
 	})
 }
 
-func TestLicenseFilePrivacyAcceptanceRejectsStagedEvidenceTamper(t *testing.T) {
+func TestLicenseFilePrivacyAcceptanceRejectsFinalEvidenceTamper(t *testing.T) {
 	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
 	marker := filepath.Join(t.TempDir(), "docker-called")
 	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
@@ -698,18 +827,21 @@ for argument in "$@"; do
   [ "$previous" != -C ] || destination="$argument"
   previous="$argument"
 done
-case "$destination| $* " in
-  *license-file-privacy.publish.*'| '*' -xf - '*)
-    /usr/bin/tar "$@" || exit $?
-    printf 'unexpected staged evidence\n' >"$destination/unexpected.txt"
-    exit 0 ;;
+case "$PWD" in
+  */evidence/license-file-privacy)
+    case " $* " in
+      *" -C . -xf - "*)
+        /usr/bin/tar "$@" || exit $?
+        printf 'unexpected final evidence\n' >unexpected.txt
+        exit 0 ;;
+    esac ;;
 esac
 exec /usr/bin/tar "$@"
 `, 0o700)
 	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
-		t.Fatalf("staged evidence tamper unexpectedly succeeded: %s", output)
+		t.Fatalf("final evidence tamper unexpectedly succeeded: %s", output)
 	}
-	assertLicensePrivacyNoPublicationState(t, remote)
+	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
 }
 
 func TestLicenseFilePrivacyAcceptanceRejectsPublicationCollision(t *testing.T) {
@@ -723,23 +855,17 @@ case " $* " in
 esac
 exit 0
 `)
-	writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
-case " $* " in
-  *license-file-privacy.publish.*)
-    while [ "$#" -gt 0 ]; do
-      case "$1" in -n|--) shift ;; *) break ;; esac
-    done
-    source=$1
-    target=$2
-    case "$source|$target" in
-      *license-file-privacy.publish.*'|'*/license-file-privacy)
-        [ -d "${target}.publish.lock" ] || exit 91
-        mkdir "$target" || exit $?
-        printf 'concurrent-owner\n' >"$target/concurrent-owner.txt" || exit $?
-        exec /bin/mv "$source" "$target" ;;
-    esac ;;
+	writeLicensePrivacyFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+last=
+for argument in "$@"; do last=$argument; done
+case "$last" in
+  ./license-file-privacy)
+    [ -d "${last}.publish.lock" ] || exit 91
+    /bin/mkdir "$last" || exit $?
+    printf 'concurrent-owner\n' >"$last/concurrent-owner.txt" || exit $?
+    exit 73 ;;
 esac
-exec /bin/mv "$@"
+exec /bin/mkdir "$@"
 `, 0o700)
 	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
 		t.Fatalf("publication collision unexpectedly succeeded: %s", output)
@@ -747,7 +873,206 @@ exec /bin/mv "$@"
 	assertLicensePrivacyConcurrentPublicationPreserved(t, remote)
 }
 
-func TestLicenseFilePrivacyAcceptancePreservesPostRenamePublicationAmbiguity(t *testing.T) {
+func TestLicenseFilePrivacyAcceptanceEvidenceParentReplacementCannotRedirectPublication(t *testing.T) {
+	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+	marker := filepath.Join(t.TempDir(), "docker-called")
+	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+	evidenceParent := filepath.Join(remote, "deploy", "acceptance", "evidence")
+	acquiredParent := evidenceParent + ".acquired"
+	externalTarget := t.TempDir()
+	swapMarker := filepath.Join(t.TempDir(), "parent-swapped")
+	writeLicensePrivacyFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+last=
+for argument in "$@"; do last=$argument; done
+case "$last" in
+  ./license-file-privacy)
+    if [ ! -e "$SWAP_MARKER" ]; then
+      : >"$SWAP_MARKER" || exit $?
+      /bin/mv "$EVIDENCE_PARENT" "$ACQUIRED_PARENT" || exit $?
+      /bin/ln -s "$EXTERNAL_TARGET" "$EVIDENCE_PARENT" || exit $?
+    fi
+    exec /bin/mkdir "$@" ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+	output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, "", []string{
+		"EVIDENCE_PARENT=" + evidenceParent,
+		"ACQUIRED_PARENT=" + acquiredParent,
+		"EXTERNAL_TARGET=" + externalTarget,
+		"SWAP_MARKER=" + swapMarker,
+	})
+	if err == nil {
+		t.Fatalf("evidence publication through a replaced parent unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("evidence-parent replacement mutation did not run: %v", err)
+	}
+	if info, err := os.Lstat(evidenceParent); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("replacement evidence-parent symlink was changed or removed: %v, %v", info, err)
+	}
+	entries, err := os.ReadDir(externalTarget)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("evidence publication reached replacement parent target: %v, %v", entries, err)
+	}
+}
+
+func TestLicenseFilePrivacyAcceptancePublicationChildReplacementFailsClosed(t *testing.T) {
+	t.Run("staging replacement cannot redirect evidence copy", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+		externalTarget := t.TempDir()
+		externalOwner := filepath.Join(externalTarget, "external-owner.txt")
+		writeLicensePrivacyFixtureFile(t, externalTarget, "external-owner.txt", "external-owner\n", 0o600)
+		writeLicensePrivacyFixtureFile(t, stubDir, "mktemp", `#!/bin/sh
+case " $* " in
+  *"license-file-privacy.publish.XXXXXX"*)
+    created="$("$REAL_MKTEMP" "$@")" || exit $?
+    /bin/mv "$created" "${created}.acquired" || exit $?
+    /bin/ln -s "$EXTERNAL_TARGET" "$created" || exit $?
+    : >"$STAGING_SWAPPED" || exit $?
+    printf '%s\n' "$created"
+    exit 0 ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`, 0o700)
+		_, _ = runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, "", []string{
+			"EXTERNAL_TARGET=" + externalTarget,
+			"REAL_MKTEMP=" + licensePrivacyCommandPath(t, "mktemp"),
+			"STAGING_SWAPPED=" + filepath.Join(t.TempDir(), "staging-swapped"),
+		})
+		owner, err := os.ReadFile(externalOwner)
+		if err != nil || string(owner) != "external-owner\n" {
+			t.Fatalf("external staging owner changed: %q, %v", owner, err)
+		}
+		entries, err := os.ReadDir(externalTarget)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "external-owner.txt" {
+			t.Fatalf("evidence copy reached replacement staging target: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("final target symlink cannot receive evidence", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+		externalTarget := t.TempDir()
+		writeLicensePrivacyFixtureFile(t, externalTarget, "external-owner.txt", "external-owner\n", 0o600)
+		swapMarker := filepath.Join(t.TempDir(), "final-swapped")
+		writeLicensePrivacyFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+last=
+for argument in "$@"; do last=$argument; done
+case "$last" in
+  ./license-file-privacy|*/evidence/license-file-privacy)
+    [ -e "$last" ] || [ -L "$last" ] || /bin/ln -s "$EXTERNAL_TARGET" "$last" || exit $?
+    : >"$FINAL_SWAPPED" || exit $?
+    exit 73 ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+		writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
+previous=
+last=
+for argument in "$@"; do previous=$last; last=$argument; done
+case "$last" in
+  ./license-file-privacy|*/evidence/license-file-privacy)
+    [ -e "$last" ] || [ -L "$last" ] || /bin/ln -s "$EXTERNAL_TARGET" "$last" || exit $?
+    : >"$FINAL_SWAPPED" || exit $? ;;
+esac
+exec /bin/mv "$@"
+`, 0o700)
+		_, _ = runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, "", []string{
+			"EXTERNAL_TARGET=" + externalTarget,
+			"FINAL_SWAPPED=" + swapMarker,
+		})
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("final-target replacement mutation did not run: %v", err)
+		}
+		entries, err := os.ReadDir(externalTarget)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "external-owner.txt" {
+			t.Fatalf("evidence publication reached final-target symlink: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("lock replacement remains an ambiguity marker", func(t *testing.T) {
+		remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
+		marker := filepath.Join(t.TempDir(), "docker-called")
+		stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
+case " $* " in
+  *" container ls "*|*" volume ls "*|*" network ls "*) exit 0;;
+  *" compose "*" stop "*) exit 0;;
+  *" compose "*) exit 42;;
+esac
+exit 0
+`)
+		swapMarker := filepath.Join(t.TempDir(), "lock-swapped")
+		writeLicensePrivacyFixtureFile(t, stubDir, "mktemp", `#!/bin/sh
+case " $* " in
+  *"license-file-privacy.publish.XXXXXX"*)
+    if [ ! -e "$LOCK_SWAPPED" ]; then
+      /bin/mv ./license-file-privacy.publish.lock ./license-file-privacy.publish.lock.acquired || exit $?
+      /bin/mkdir ./license-file-privacy.publish.lock || exit $?
+      : >"$LOCK_SWAPPED" || exit $?
+    fi ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`, 0o700)
+		writeLicensePrivacyFixtureFile(t, stubDir, "mkdir", `#!/bin/sh
+last=
+for argument in "$@"; do last=$argument; done
+case "$last" in
+  ./license-file-privacy.publish.lock)
+    /bin/mkdir "$@" || exit $?
+    : >"$LOCK_ACQUIRED" || exit $?
+    exit 0 ;;
+  ./license-file-privacy)
+    if [ -e "$LOCK_ACQUIRED" ] && [ ! -e "$LOCK_SWAPPED" ]; then
+      /bin/mv ./license-file-privacy.publish.lock ./license-file-privacy.publish.lock.acquired || exit $?
+      /bin/mkdir ./license-file-privacy.publish.lock || exit $?
+      : >"$LOCK_SWAPPED" || exit $?
+    fi ;;
+esac
+exec /bin/mkdir "$@"
+`, 0o700)
+		_, _ = runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, "", []string{
+			"LOCK_ACQUIRED=" + filepath.Join(t.TempDir(), "lock-acquired"),
+			"LOCK_SWAPPED=" + swapMarker,
+			"REAL_MKTEMP=" + licensePrivacyCommandPath(t, "mktemp"),
+		})
+		if _, err := os.Stat(swapMarker); err != nil {
+			t.Fatalf("publication-lock replacement mutation did not run: %v", err)
+		}
+		lock := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy.publish.lock")
+		if info, err := os.Stat(lock); err != nil || !info.IsDir() {
+			t.Fatalf("replacement publication lock was removed: %v", err)
+		}
+		if info, err := os.Stat(lock + ".acquired"); err != nil || !info.IsDir() {
+			t.Fatalf("acquired publication lock was removed: %v", err)
+		}
+	})
+}
+
+func TestLicenseFilePrivacyAcceptancePreservesLockCommitPublicationAmbiguity(t *testing.T) {
 	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
 	marker := filepath.Join(t.TempDir(), "docker-called")
 	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
@@ -757,16 +1082,18 @@ case " $* " in
 esac
 exit 0
 `)
-	writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
-while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
-source=$1
-target=$2
-[ -d "${target}.publish.lock" ] || exit 91
-/bin/mv "$source" "$target" || exit $?
-printf 'classification=post_rename_tamper|result=PASS|count=1\n' >>"$target/acceptance-results.txt"
+	writeLicensePrivacyFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
+case "$1" in
+  ./license-file-privacy.publish.lock)
+    target=${1%.publish.lock}
+    [ -d "$target" ] || exit 91
+    printf 'classification=lock_commit_tamper|result=PASS|count=1\n' >>"$target/acceptance-results.txt" || exit $?
+    exec /bin/rmdir "$@" ;;
+esac
+exec /bin/rmdir "$@"
 `, 0o700)
 	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
-		t.Fatalf("post-rename mutation unexpectedly succeeded: %s", output)
+		t.Fatalf("lock-commit mutation unexpectedly succeeded: %s", output)
 	}
 	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
 }
@@ -807,7 +1134,7 @@ exec /bin/rmdir "$@"
 	}
 }
 
-func TestLicenseFilePrivacyAcceptancePreservesNestedMoveRemovalAmbiguity(t *testing.T) {
+func TestLicenseFilePrivacyAcceptancePreservesFinalReplacementAtLockCommit(t *testing.T) {
 	remote, packageDir, script := prepareMetadataFreeLicensePrivacyAcceptance(t)
 	marker := filepath.Join(t.TempDir(), "docker-called")
 	stubDir := licensePrivacyDockerStub(t, `#!/bin/sh
@@ -817,24 +1144,43 @@ case " $* " in
 esac
 exit 0
 `)
-	writeLicensePrivacyFixtureFile(t, stubDir, "mv", `#!/bin/sh
-while [ "$#" -gt 0 ]; do case "$1" in -n|--) shift;; *) break;; esac; done
-source=$1
-target=$2
-[ -d "${target}.publish.lock" ] || exit 91
-/bin/mkdir "$target" || exit $?
-exec /bin/mv "$source" "$target/"
-`, 0o700)
-	writeLicensePrivacyFixtureFile(t, stubDir, "rm", `#!/bin/sh
-case " $* " in
-  *"/license-file-privacy/"*"license-file-privacy.publish."*) exit 73;;
+	externalTarget := t.TempDir()
+	swapMarker := filepath.Join(t.TempDir(), "final-swapped")
+	writeLicensePrivacyFixtureFile(t, stubDir, "rmdir", `#!/bin/sh
+case "$1" in
+  ./license-file-privacy.publish.lock)
+    target=${1%.publish.lock}
+    /bin/mv "$target" "${target}.acquired" || exit $?
+    /bin/ln -s "$EXTERNAL_TARGET" "$target" || exit $?
+    : >"$FINAL_SWAPPED" || exit $?
+    exec /bin/rmdir "$@" ;;
 esac
-exec /bin/rm "$@"
+exec /bin/rmdir "$@"
 `, 0o700)
-	if output, err := runLicensePrivacyAcceptance(t, remote, packageDir, script, stubDir, marker, ""); err == nil {
-		t.Fatalf("nested move removal failure unexpectedly succeeded: %s", output)
+	output, err := runLicensePrivacyAcceptanceWithEnv(t, remote, packageDir, script, stubDir, marker, "", []string{
+		"EXTERNAL_TARGET=" + externalTarget,
+		"FINAL_SWAPPED=" + swapMarker,
+	})
+	if err == nil {
+		t.Fatalf("final replacement at lock commit unexpectedly succeeded: %s", output)
 	}
-	assertLicensePrivacyAmbiguousPublicationPreserved(t, remote)
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("final replacement mutation did not run: %v", err)
+	}
+	retained := filepath.Join(remote, "deploy", "acceptance", "evidence", "license-file-privacy")
+	if info, err := os.Lstat(retained); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("replacement final symlink was changed: %v, %v", info, err)
+	}
+	entries, readErr := os.ReadDir(externalTarget)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("replacement final target received evidence: %v, %v", entries, readErr)
+	}
+	if info, err := os.Stat(retained + ".acquired"); err != nil || !info.IsDir() {
+		t.Fatalf("acquired final evidence was removed: %v", err)
+	}
+	if info, err := os.Stat(retained + ".publish.lock"); err != nil || !info.IsDir() {
+		t.Fatalf("final replacement ambiguity lock was not retained: %v", err)
+	}
 }
 
 func TestLicenseFilePrivacyAcceptanceClassifiesInitialProductionSnapshotFailure(t *testing.T) {
@@ -1094,10 +1440,18 @@ func assertLicensePrivacyConcurrentPublicationPreserved(t *testing.T, remote str
 	if err != nil {
 		t.Fatal(err)
 	}
+	lockFound := false
 	for _, entry := range parentEntries {
-		if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") || entry.Name() == "license-file-privacy.publish.lock" {
+		if entry.Name() == "license-file-privacy.publish.lock" && entry.IsDir() {
+			lockFound = true
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "license-file-privacy.publish.") {
 			t.Fatalf("partial sibling publication state survived: %q", entry.Name())
 		}
+	}
+	if !lockFound {
+		t.Fatal("publication collision did not retain its ambiguity lock")
 	}
 }
 

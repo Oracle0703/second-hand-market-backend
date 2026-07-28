@@ -208,6 +208,21 @@ validate_archive_list() {
   cmp -s "$source_list" "$runtime/archive-source-files.z"
 }
 
+directory_identity() {
+  local path="$1" identity=""
+  if identity="$(stat -f '%d:%i' "$path" 2>/dev/null)" &&
+    [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  if identity="$(stat -c '%d:%i' "$path" 2>/dev/null)" &&
+    [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  return 1
+}
+
 export_head_source() (
   set -euo pipefail
   local export_dir="$1"
@@ -215,9 +230,17 @@ export_head_source() (
   local extracted=""
   local completed=0
   local export_dir_owned=0
+  local export_dir_identity=""
   local path
   local head_oid
   local -a archive_paths=()
+
+  export_dir_is_current() {
+    local identity=""
+    [[ "$export_dir_owned" -eq 1 && -d "$export_dir" && ! -L "$export_dir" ]] || return 1
+    identity="$(directory_identity "$export_dir")" || return 1
+    [[ -n "$export_dir_identity" && "$identity" == "$export_dir_identity" ]]
+  }
 
   cleanup_source_export() {
     local status="${1:-$?}"
@@ -225,7 +248,7 @@ export_head_source() (
     if [[ -n "$export_runtime" && -d "$export_runtime" ]]; then
       rm -r -- "$export_runtime"
     fi
-    if [[ "$completed" -ne 1 && "$export_dir_owned" -eq 1 && -d "$export_dir" ]]; then
+    if [[ "$completed" -ne 1 ]] && export_dir_is_current; then
       rm -r -- "$export_dir"
     fi
     exit "$status"
@@ -238,7 +261,7 @@ export_head_source() (
     echo "SESSION_REVOCATION_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2
     return 1
   }
-  for command in git sha256sum sort xargs mktemp tar chmod mkdir rm tr cmp find; do
+  for command in git sha256sum sort xargs mktemp tar chmod mkdir rm tr cmp find stat; do
     command -v "$command" >/dev/null || {
       echo "required source export command is unavailable: $command" >&2
       return 1
@@ -256,53 +279,38 @@ export_head_source() (
     echo "source export destination was concurrently acquired" >&2
     return 1
   }
+  export_dir_identity="$(directory_identity "$export_dir")" || {
+    echo "cannot bind source export destination identity" >&2
+    return 1
+  }
   export_dir_owned=1
   mkdir "$extracted"
-  chmod 700 "$export_dir" "$extracted"
-  write_source_file_list "$head_oid" >"$export_dir/source-files.z"
-  validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z" || {
-    echo "committed HEAD session revocation source list is invalid" >&2
+  chmod 700 "$extracted"
+  if ! (
+    cd "$export_dir" || exit 1
+    [[ "$(directory_identity .)" == "$export_dir_identity" ]] || exit 1
+    chmod 700 . || exit 1
+    write_source_file_list "$head_oid" >source-files.z || exit 1
+    validate_source_list source-files.z "$export_runtime/sorted-source-files.z" || exit 1
+    while IFS= read -r -d '' path; do archive_paths+=("$path"); done <source-files.z
+    [[ "${#archive_paths[@]}" -gt 0 ]] || exit 1
+    ( cd "$repo_dir"; git archive --format=tar "$head_oid" -- "${archive_paths[@]}" ) \
+      >source.tar 2>"$export_runtime/git-archive.raw" || exit 1
+    validate_archive_list . source-files.z "$export_runtime" || exit 1
+    tar -C "$extracted" -xf source.tar >"$export_runtime/archive-extract.raw" 2>&1 || exit 1
+    validate_received_source_files "$extracted" source-files.z || exit 1
+    write_context_file_list "$extracted" >"$export_runtime/archive-source-files.z" || exit 1
+    cmp -s source-files.z "$export_runtime/archive-source-files.z" || exit 1
+    exec 4<source-files.z || exit 1
+    ( cd "$extracted"; xargs -0 sha256sum <&4 ) >source-sha256.txt || exit 1
+    exec 4<&-
+    sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt || exit 1
+    chmod 600 source-files.z source-sha256.txt source.tar package-sha256.txt
+  ); then
+    echo "committed HEAD session revocation source export failed" >&2
     return 1
-  }
-  while IFS= read -r -d '' path; do
-    archive_paths+=("$path")
-  done <"$export_dir/source-files.z"
-  [[ "${#archive_paths[@]}" -gt 0 ]] || {
-    echo "committed HEAD session revocation source whitelist is empty" >&2
-    return 1
-  }
-  (
-    cd "$repo_dir"
-    git archive --format=tar --output="$export_dir/source.tar" "$head_oid" -- "${archive_paths[@]}"
-  ) >"$export_runtime/git-archive.raw" 2>&1 || {
-    echo "committed HEAD session revocation archive export failed" >&2
-    return 1
-  }
-  validate_archive_list "$export_dir" "$export_dir/source-files.z" "$export_runtime" || {
-    echo "committed HEAD session revocation archive preflight failed" >&2
-    return 1
-  }
-  tar -C "$extracted" -xf "$export_dir/source.tar" >"$export_runtime/archive-extract.raw" 2>&1 || {
-    echo "committed HEAD session revocation archive extraction failed" >&2
-    return 1
-  }
-  validate_received_source_files "$extracted" "$export_dir/source-files.z" || {
-    echo "committed HEAD session revocation archive contains a missing or unsafe file" >&2
-    return 1
-  }
-  write_context_file_list "$extracted" >"$export_runtime/archive-source-files.z"
-  cmp -s "$export_dir/source-files.z" "$export_runtime/archive-source-files.z" || {
-    echo "committed HEAD session revocation archive does not match its source list" >&2
-    return 1
-  }
-  write_directory_manifest "$extracted" "$export_dir/source-files.z" \
-    "$export_dir/source-sha256.txt"
-  (
-    cd "$export_dir"
-    sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt
-  )
-  chmod 600 "$export_dir/source-files.z" "$export_dir/source-sha256.txt" \
-    "$export_dir/source.tar" "$export_dir/package-sha256.txt"
+  fi
+  export_dir_is_current || { echo "source export destination identity changed" >&2; return 1; }
   completed=1
 )
 
@@ -337,7 +345,7 @@ fi
   echo "unexpected session revocation Compose project" >&2
   exit 1
 }
-for command in sha256sum sort find xargs mktemp grep cmp tar chmod mkdir rm mv cp; do
+for command in sha256sum sort find xargs mktemp grep cmp tar chmod mkdir rm mv cp stat; do
   command -v "$command" >/dev/null || {
     echo "required source package command is unavailable: $command" >&2
     exit 1
@@ -355,6 +363,9 @@ evidence_published=0
 evidence_eligible=0
 evidence_publish_tmp=""
 evidence_publish_lock=""
+evidence_parent_identity=""
+evidence_parent_cwd_active=0
+evidence_parent_return_dir=""
 docker_available=0
 project_may_exist=0
 current_stage="source_package"
@@ -491,46 +502,80 @@ evidence_parent_is_safe() {
   [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]]
 }
 
+evidence_parent_is_current() {
+  local identity=""
+  evidence_parent_is_safe || return 1
+  [[ -n "$evidence_parent_identity" ]] || return 1
+  identity="$(directory_identity "$evidence_parent")" || return 1
+  [[ "$identity" == "$evidence_parent_identity" ]]
+}
+
+enter_evidence_parent_capability() {
+  evidence_parent_is_current || return 1
+  evidence_parent_return_dir="$PWD"
+  cd "$evidence_parent" || return 1
+  if [[ "$(directory_identity .)" != "$evidence_parent_identity" ]]; then
+    cd "$evidence_parent_return_dir" || true
+    evidence_parent_return_dir=""
+    return 1
+  fi
+  evidence_parent_cwd_active=1
+}
+
+leave_evidence_parent_capability() {
+  local status="${1:-0}"
+  if [[ "$evidence_parent_cwd_active" -eq 1 ]]; then
+    cd "$evidence_parent_return_dir" || status=1
+  fi
+  evidence_parent_cwd_active=0
+  evidence_parent_return_dir=""
+  return "$status"
+}
+
 prepare_evidence_parent() {
   if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
-    evidence_parent_is_safe
-    return
+    evidence_parent_is_safe || return 1
+  else
+    mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+    evidence_parent_is_safe || return 1
   fi
-  mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
-  evidence_parent_is_safe
+  evidence_parent_identity="$(directory_identity "$evidence_parent")"
 }
 
 publish_evidence_directory() {
   local directory="$1" staging_name=""
-  evidence_parent_is_safe || return 1
-  [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || return 1
-  evidence_publish_lock="$evidence_parent/.session-access-revocation.publish.lock"
-  evidence_parent_is_safe || { evidence_publish_lock=""; return 1; }
+  local evidence_name="./${evidence_dir##*/}"
+  local lock_name="./.session-access-revocation.publish.lock"
+  enter_evidence_parent_capability || return 1
+  [[ ! -e "$evidence_name" && ! -L "$evidence_name" ]] || {
+    leave_evidence_parent_capability 1
+    return 1
+  }
+  evidence_publish_lock="$lock_name"
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   }
-  if [[ -e "$evidence_dir" || -L "$evidence_dir" ]]; then
+  if ! evidence_parent_is_current || [[ -e "$evidence_name" || -L "$evidence_name" ]]; then
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  evidence_parent_is_safe || {
+  if ! evidence_publish_tmp="$(mktemp -d "./.session-access-revocation.publish.XXXXXX")"; then
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
-    return 1
-  }
-  if ! evidence_publish_tmp="$(mktemp -d "$evidence_parent/.session-access-revocation.publish.XXXXXX")"; then
-    rmdir "$evidence_publish_lock" || true
-    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   staging_name="${evidence_publish_tmp##*/}"
-  if ! chmod 700 "$evidence_publish_tmp"; then
+  if ! evidence_parent_is_current || ! chmod 700 "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   if ! (cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw") |
@@ -539,51 +584,59 @@ publish_evidence_directory() {
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if ! validate_evidence_copy "$directory" "$evidence_publish_tmp"; then
+  if ! evidence_parent_is_current || ! validate_evidence_copy "$directory" "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if ! evidence_parent_is_safe; then
-    rm -r -- "$evidence_publish_tmp"
-    evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock" || true
-    evidence_publish_lock=""
-    return 1
-  fi
-  if ! mv -n -- "$evidence_publish_tmp" "$evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
+  if ! evidence_parent_is_current ||
+    ! mv -n -- "$evidence_publish_tmp" "$evidence_name" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
     [[ -e "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if [[ -d "$evidence_dir/$staging_name" ]]; then
+  if ! evidence_parent_is_current; then
     evidence_publish_tmp=""
-    if ! rm -r -- "$evidence_dir/$staging_name"; then
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if [[ -d "$evidence_name/$staging_name" ]]; then
+    evidence_publish_tmp=""
+    if ! rm -r -- "$evidence_name/$staging_name"; then
       evidence_publish_lock=""
+      leave_evidence_parent_capability 1
       return 1
     fi
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if ! validate_evidence_copy "$directory" "$evidence_dir"; then
+  if ! validate_evidence_copy "$directory" "$evidence_name"; then
     evidence_publish_tmp=""
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   evidence_publish_tmp=""
-  if ! rmdir "$evidence_publish_lock"; then
+  if ! evidence_parent_is_current || ! rmdir "$evidence_publish_lock"; then
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   evidence_publish_lock=""
+  leave_evidence_parent_capability 0 || return 1
   evidence_published=1
 }
 
@@ -659,7 +712,10 @@ on_exit() {
       publish_evidence "$status" || publication_status=$?
     fi
     if [[ "$publication_status" -ne 0 ]]; then
-      status=1
+      case "$status" in
+        130|143) ;;
+        *) status=1 ;;
+      esac
       success=0
     fi
   fi
@@ -672,11 +728,14 @@ on_exit() {
     fi
     "${compose[@]}" stop >"$runtime_dir/isolated-stop.raw" 2>&1 || true
   fi
-  if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
-    rm -r -- "$evidence_publish_tmp"
-  fi
-  if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
-    rmdir "$evidence_publish_lock" || true
+  if [[ "$evidence_parent_cwd_active" -eq 1 &&
+    "$(directory_identity . 2>/dev/null)" == "$evidence_parent_identity" ]]; then
+    if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
+      rm -r -- "$evidence_publish_tmp"
+    fi
+    if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
+      rmdir "$evidence_publish_lock" || true
+    fi
   fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
     rm -r -- "$runtime_dir"

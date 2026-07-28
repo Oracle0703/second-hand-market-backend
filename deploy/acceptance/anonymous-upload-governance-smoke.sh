@@ -10,7 +10,10 @@ evidence_parent="${retained_evidence_dir%/*}"
 evidence_dir=""
 evidence_publish_tmp=""
 evidence_publish_lock=""
-compose=(docker compose --project-name "$project_name" --env-file "$base_dir/.env" --file "$base_dir/docker-compose.yml")
+evidence_parent_identity=""
+evidence_parent_cwd_active=0
+evidence_parent_return_dir=""
+compose=()
 production_containers=(secondhand-market-api secondhand-market-web secondhand-market-mysql)
 runtime_dir=""
 evidence_forbidden_pattern='Authorization|Bearer[[:space:]]|access_token|refresh_token|file_token|token["=:]|password["=:]|DB_DSN=|MYSQL_(DATABASE|USER|PASSWORD|ROOT_PASSWORD)=|JWT_(ACCESS|REFRESH)_SECRET=|object_key|source_ip_hash|cleanup_claim_token|/var/lib/second-hand-market/uploads|injected-secret|TestUploadGovernance|000[0-9]_[[:alnum:]_-]+\.(preflight|up|postflight)\.sql|f06-historical-'
@@ -219,17 +222,70 @@ evidence_parent_is_safe() {
 
 prepare_evidence_parent() {
   if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
-    evidence_parent_is_safe
-    return
+    evidence_parent_is_safe || return 1
+  else
+    mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+    evidence_parent_is_safe || return 1
   fi
-  mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
-  evidence_parent_is_safe
+  evidence_parent_identity="$(directory_identity "$evidence_parent")"
+}
+
+directory_identity() {
+  local path="$1" identity=""
+  if identity="$(stat -f '%d:%i' "$path" 2>/dev/null)" &&
+    [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  if identity="$(stat -c '%d:%i' "$path" 2>/dev/null)" &&
+    [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  return 1
+}
+
+evidence_parent_is_current() {
+  local identity=""
+  evidence_parent_is_safe || return 1
+  [[ -n "$evidence_parent_identity" ]] || return 1
+  identity="$(directory_identity "$evidence_parent")" || return 1
+  [[ "$identity" == "$evidence_parent_identity" ]]
+}
+
+enter_evidence_parent_capability() {
+  evidence_parent_is_current || return 1
+  evidence_parent_return_dir="$PWD"
+  cd "$evidence_parent" || return 1
+  if [[ "$(directory_identity .)" != "$evidence_parent_identity" ]]; then
+    cd "$evidence_parent_return_dir" || true
+    evidence_parent_return_dir=""
+    return 1
+  fi
+  evidence_parent_cwd_active=1
+}
+
+leave_evidence_parent_capability() {
+  local status="${1:-0}"
+  if [[ "$evidence_parent_cwd_active" -eq 1 ]]; then
+    cd "$evidence_parent_return_dir" || status=1
+  fi
+  evidence_parent_cwd_active=0
+  evidence_parent_return_dir=""
+  return "$status"
 }
 
 export_head_source() (
   set -euo pipefail
-  local export_dir="$1" export_runtime="" extracted="" completed=0 export_dir_owned=0 path head_oid
+  local export_dir="$1" export_runtime="" extracted="" completed=0 export_dir_owned=0 export_dir_identity="" path head_oid
   local -a archive_paths=()
+
+  export_dir_is_current() {
+    local identity=""
+    [[ "$export_dir_owned" -eq 1 && -d "$export_dir" && ! -L "$export_dir" ]] || return 1
+    identity="$(directory_identity "$export_dir")" || return 1
+    [[ -n "$export_dir_identity" && "$identity" == "$export_dir_identity" ]]
+  }
 
   cleanup_source_export() {
     local status="${1:-$?}"
@@ -237,7 +293,7 @@ export_head_source() (
     if [[ -n "$export_runtime" && -d "$export_runtime" ]]; then
       rm -r -- "$export_runtime"
     fi
-    if [[ "$completed" -ne 1 && "$export_dir_owned" -eq 1 && -d "$export_dir" ]]; then
+    if [[ "$completed" -ne 1 ]] && export_dir_is_current; then
       rm -r -- "$export_dir"
     fi
     exit "$status"
@@ -250,7 +306,7 @@ export_head_source() (
     echo "ANONYMOUS_UPLOAD_GOVERNANCE_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2
     return 1
   }
-  for command in git sha256sum sort xargs mktemp tar chmod mkdir rm tr cmp find; do
+  for command in git sha256sum sort xargs mktemp tar chmod mkdir rm tr cmp find stat; do
     command -v "$command" >/dev/null || {
       echo "required source export command is unavailable: $command" >&2
       return 1
@@ -267,36 +323,40 @@ export_head_source() (
     echo "source export destination was concurrently acquired" >&2
     return 1
   }
+  export_dir_identity="$(directory_identity "$export_dir")" || {
+    echo "cannot bind source export destination identity" >&2
+    return 1
+  }
   export_dir_owned=1
   mkdir "$extracted"
-  chmod 700 "$export_dir" "$extracted"
-  write_source_file_list "$head_oid" >"$export_dir/source-files.z"
-  validate_source_list "$export_dir/source-files.z" "$export_runtime/sorted-source-files.z" || return 1
-  while IFS= read -r -d '' path; do archive_paths+=("$path"); done <"$export_dir/source-files.z"
-  [[ "${#archive_paths[@]}" -gt 0 ]] || return 1
-  (
-    cd "$repo_dir"
-    git archive --format=tar --output="$export_dir/source.tar" "$head_oid" -- "${archive_paths[@]}"
-  ) >"$export_runtime/git-archive.raw" 2>&1 || { echo "committed HEAD archive export failed" >&2; return 1; }
-  validate_archive_list "$export_dir" "$export_dir/source-files.z" "$export_runtime" || {
-    echo "committed HEAD archive preflight failed" >&2
+  chmod 700 "$extracted"
+  if ! (
+    cd "$export_dir" || exit 1
+    [[ "$(directory_identity .)" == "$export_dir_identity" ]] || exit 1
+    chmod 700 . || exit 1
+    write_source_file_list "$head_oid" >source-files.z || exit 1
+    validate_source_list source-files.z "$export_runtime/sorted-source-files.z" || exit 1
+    while IFS= read -r -d '' path; do archive_paths+=("$path"); done <source-files.z
+    [[ "${#archive_paths[@]}" -gt 0 ]] || exit 1
+    ( cd "$repo_dir"; git archive --format=tar "$head_oid" -- "${archive_paths[@]}" ) \
+      >source.tar 2>"$export_runtime/git-archive.raw" || exit 1
+    validate_archive_list . source-files.z "$export_runtime" || exit 1
+    tar -C "$extracted" -xf source.tar >"$export_runtime/archive-extract.raw" 2>&1 || exit 1
+    validate_received_source_files "$extracted" source-files.z || exit 1
+    write_context_file_list "$extracted" >"$export_runtime/archive-files.z" || exit 1
+    cmp -s source-files.z "$export_runtime/archive-files.z" || exit 1
+    exec 4<source-files.z || exit 1
+    ( cd "$extracted"; xargs -0 sha256sum <&4 ) >source-sha256.txt || exit 1
+    exec 4<&-
+    sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt || exit 1
+    chmod 600 source-files.z source-sha256.txt source.tar package-sha256.txt || exit 1
+    validate_package_artifact_list . || exit 1
+    validate_package_checksums . "$export_runtime/package-checksums.raw"
+  ); then
+    echo "committed HEAD source export failed" >&2
     return 1
-  }
-  tar -C "$extracted" -xf "$export_dir/source.tar" >"$export_runtime/archive-extract.raw" 2>&1 || {
-    echo "committed HEAD archive extraction failed" >&2
-    return 1
-  }
-  validate_received_source_files "$extracted" "$export_dir/source-files.z" || return 1
-  write_context_file_list "$extracted" >"$export_runtime/archive-files.z"
-  cmp -s "$export_dir/source-files.z" "$export_runtime/archive-files.z" || return 1
-  write_directory_manifest "$extracted" "$export_dir/source-files.z" "$export_dir/source-sha256.txt"
-  (
-    cd "$export_dir"
-    sha256sum source-files.z source-sha256.txt source.tar >package-sha256.txt
-  )
-  chmod 600 "$export_dir/source-files.z" "$export_dir/source-sha256.txt" "$export_dir/source.tar" "$export_dir/package-sha256.txt"
-  validate_package_artifact_list "$export_dir"
-  validate_package_checksums "$export_dir" "$export_runtime/package-checksums.raw"
+  fi
+  export_dir_is_current || { echo "source export destination identity changed" >&2; return 1; }
   rm -r -- "$export_runtime"
   export_runtime=""
   completed=1
@@ -340,7 +400,7 @@ fi
   echo "unexpected upload governance Compose project" >&2
   exit 1
 }
-for command in sha256sum sort xargs mktemp grep cmp tar chmod mkdir rm find wc tr cut cp mv; do
+for command in sha256sum sort xargs mktemp grep cmp tar chmod mkdir rm find wc tr cut cp mv stat; do
   command -v "$command" >/dev/null || {
     echo "required provenance command is unavailable: $command" >&2
     exit 1
@@ -456,6 +516,35 @@ prepare_evidence_parent || { echo "anonymous upload governance evidence parent i
   echo "run deploy/acceptance/prepare.sh first" >&2
   exit 1
 }
+compose_env_source_identity="$(directory_identity "$base_dir/.env")" || {
+  echo "cannot bind acceptance env identity" >&2
+  exit 1
+}
+[[ -f "$base_dir/.env" && ! -L "$base_dir/.env" &&
+  "$(directory_identity "$base_dir/.env")" == "$compose_env_source_identity" ]] || {
+  echo "acceptance env changed during validation" >&2
+  exit 1
+}
+compose_env_snapshot="$runtime_dir/compose.env"
+cp -P -- "$base_dir/.env" "$compose_env_snapshot" 2>"$runtime_dir/compose-env-copy.raw" || {
+  echo "cannot snapshot acceptance env" >&2
+  exit 1
+}
+[[ -f "$base_dir/.env" && ! -L "$base_dir/.env" &&
+  "$(directory_identity "$base_dir/.env")" == "$compose_env_source_identity" &&
+  -f "$compose_env_snapshot" && ! -L "$compose_env_snapshot" ]] || {
+  echo "acceptance env changed while being snapshotted" >&2
+  exit 1
+}
+chmod 600 "$compose_env_snapshot" 2>"$runtime_dir/compose-env-mode.raw" || {
+  echo "cannot secure acceptance env snapshot" >&2
+  exit 1
+}
+[[ -f "$compose_env_snapshot" && ! -L "$compose_env_snapshot" ]] || {
+  echo "acceptance env snapshot is unsafe" >&2
+  exit 1
+}
+compose=(docker compose --project-name "$project_name" --env-file "$compose_env_snapshot" --file "$base_dir/docker-compose.yml")
 for command in docker curl jq openssl sha256sum truncate base64 sort xargs mktemp tar chmod mkdir rm tr cmp find wc cut cat; do
   command -v "$command" >/dev/null || {
     echo "required command is unavailable: $command" >&2
@@ -560,87 +649,99 @@ snapshot_file_is_safe() {
 
 publish_evidence_directory() {
   local directory="$1" staging_name=""
-  evidence_parent_is_safe || return 1
-  [[ ! -e "$retained_evidence_dir" && ! -L "$retained_evidence_dir" ]] || return 1
-  evidence_publish_lock="${retained_evidence_dir}.publish.lock"
-  evidence_parent_is_safe || { evidence_publish_lock=""; return 1; }
+  local evidence_name="./${retained_evidence_dir##*/}"
+  local lock_name="${evidence_name}.publish.lock"
+  enter_evidence_parent_capability || return 1
+  [[ ! -e "$evidence_name" && ! -L "$evidence_name" ]] || {
+    leave_evidence_parent_capability 1
+    return 1
+  }
+  evidence_publish_lock="$lock_name"
   mkdir "$evidence_publish_lock" || {
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   }
-  if [[ -e "$retained_evidence_dir" || -L "$retained_evidence_dir" ]]; then
-    rmdir "$evidence_publish_lock"
-    evidence_publish_lock=""
-    return 1
-  fi
-  evidence_parent_is_safe || {
+  if ! evidence_parent_is_current || [[ -e "$evidence_name" || -L "$evidence_name" ]]; then
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
-  }
-  if ! evidence_publish_tmp="$(mktemp -d "${retained_evidence_dir}.publish.XXXXXX")"; then
-    rmdir "$evidence_publish_lock"
+  fi
+  if ! evidence_publish_tmp="$(mktemp -d "${evidence_name}.publish.XXXXXX")"; then
+    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   staging_name="${evidence_publish_tmp##*/}"
-  if ! chmod 700 "$evidence_publish_tmp"; then
+  if ! evidence_parent_is_current || ! chmod 700 "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock"
+    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   if ! (cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw") |
     tar -C "$evidence_publish_tmp" -xf - 2>>"$runtime_dir/evidence-copy-errors.raw"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock"
+    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if ! validate_evidence_staging_copy "$directory" "$evidence_publish_tmp"; then
-    rm -r -- "$evidence_publish_tmp"
-    evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock"
-    evidence_publish_lock=""
-    return 1
-  fi
-  if ! evidence_parent_is_safe; then
+  if ! evidence_parent_is_current || ! validate_evidence_staging_copy "$directory" "$evidence_publish_tmp"; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
     rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if ! mv -n -- "$evidence_publish_tmp" "$retained_evidence_dir" 2>>"$runtime_dir/evidence-publish-errors.raw" || [[ -e "$evidence_publish_tmp" ]]; then
+  if ! evidence_parent_is_current ||
+    ! mv -n -- "$evidence_publish_tmp" "$evidence_name" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
+    [[ -e "$evidence_publish_tmp" ]]; then
     rm -r -- "$evidence_publish_tmp"
     evidence_publish_tmp=""
-    rmdir "$evidence_publish_lock"
+    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if [[ -d "$retained_evidence_dir/$staging_name" ]]; then
+  if ! evidence_parent_is_current; then
     evidence_publish_tmp=""
-    if ! rm -r -- "$retained_evidence_dir/$staging_name"; then
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if [[ -d "$evidence_name/$staging_name" ]]; then
+    evidence_publish_tmp=""
+    if ! rm -r -- "$evidence_name/$staging_name"; then
       evidence_publish_lock=""
+      leave_evidence_parent_capability 1
       return 1
     fi
-    rmdir "$evidence_publish_lock"
+    rmdir "$evidence_publish_lock" || true
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
-  if ! validate_evidence_staging_copy "$directory" "$retained_evidence_dir"; then
+  if ! validate_evidence_staging_copy "$directory" "$evidence_name"; then
     evidence_publish_tmp=""
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   evidence_publish_tmp=""
-  if ! rmdir "$evidence_publish_lock"; then
+  if ! evidence_parent_is_current || ! rmdir "$evidence_publish_lock"; then
     evidence_publish_lock=""
+    leave_evidence_parent_capability 1
     return 1
   fi
   evidence_publish_lock=""
+  leave_evidence_parent_capability 0
 }
 
 validate_evidence_staging_copy() {
@@ -763,11 +864,14 @@ on_exit() {
   if [[ "$success" -ne 1 && "$evidence_eligible" -eq 1 && ! -e "$retained_evidence_dir" ]]; then
     retain_failure_evidence || true
   fi
-  if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
-    rm -r -- "$evidence_publish_tmp"
-  fi
-  if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
-    rmdir "$evidence_publish_lock" || true
+  if [[ "$evidence_parent_cwd_active" -eq 1 &&
+    "$(directory_identity . 2>/dev/null)" == "$evidence_parent_identity" ]]; then
+    if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
+      rm -r -- "$evidence_publish_tmp"
+    fi
+    if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
+      rmdir "$evidence_publish_lock" || true
+    fi
   fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
     rm -r -- "$runtime_dir"
@@ -845,18 +949,20 @@ compose+=(--file "$compose_override")
 
 mysql_sql() {
   local sql="$1"
+  local diagnostics="${2:-$runtime_dir/mysql-sql.raw}"
   "${compose[@]}" exec -T mysql sh -ec '
     MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --protocol=TCP -h 127.0.0.1 \
       -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch --skip-column-names --execute="$1"
-  ' sh "$sql"
+  ' sh "$sql" 2>>"$diagnostics"
 }
 
 mysql_file() {
   local container_path="$1"
+  local diagnostics="${2:-$runtime_dir/mysql-file.raw}"
   "${compose[@]}" exec -T mysql sh -ec '
     MYSQL_PWD="$MYSQL_PASSWORD" exec mysql --protocol=TCP -h 127.0.0.1 \
       -u"$MYSQL_USER" "$MYSQL_DATABASE" < "$1"
-  ' sh "$container_path"
+  ' sh "$container_path" 2>>"$diagnostics"
 }
 
 reset_schema() {
@@ -909,7 +1015,8 @@ expect_skipped_0007_failure() {
       mime_type,size_bytes,uploader_type,scan_status,DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s.%f')),256))
     FROM file_records WHERE id=860003;
   " >"$evidence_dir/skipped-0007-before.txt"
-  if mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql >"$evidence_dir/skipped-0007-error.txt" 2>&1; then
+  if mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql \
+    "$evidence_dir/skipped-0007-error.txt" >"$runtime_dir/skipped-0007-preflight-stdout.raw"; then
     echo "expected 0008 preflight to reject a skipped 0007 migration" >&2
     exit 1
   fi
@@ -958,7 +1065,7 @@ write_historical_files() {
       /var/lib/second-hand-market/uploads/product_image
     printf %s isolated-historical-license > /var/lib/second-hand-market/uploads/merchant_license/f06-historical-license.png
     printf %s isolated-historical-product > /var/lib/second-hand-market/uploads/product_image/f06-historical-product.png
-  ' >/dev/null
+  ' >/dev/null 2>>"$runtime_dir/historical-files-compose.raw"
 }
 
 capture_historical_rows() {
@@ -978,7 +1085,7 @@ capture_historical_files() {
   "${compose[@]}" --profile tools run --rm --no-deps --entrypoint /bin/sh bootstrap-admin -ec '
     printf "license=%s\n" "$(sha256sum /var/lib/second-hand-market/uploads/merchant_license/f06-historical-license.png | cut -d " " -f 1)"
     printf "product=%s\n" "$(sha256sum /var/lib/second-hand-market/uploads/product_image/f06-historical-product.png | cut -d " " -f 1)"
-  '
+  ' 2>>"$runtime_dir/historical-files-compose.raw"
 }
 
 setup_partial_0008() {
@@ -1010,7 +1117,8 @@ expect_0008_preflight_failure() {
   "$setup_function"
   capture_historical_rows >"$evidence_dir/$name-historical-before.txt"
   capture_historical_files >"$evidence_dir/$name-files-before.txt"
-  if mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql >"$evidence_dir/$name-error.txt" 2>&1; then
+  if mysql_file /acceptance/migrations/0008_anonymous_upload_governance.preflight.sql \
+    "$evidence_dir/$name-error.txt" >"$runtime_dir/$name-error-stdout.raw"; then
     echo "expected upload governance preflight failure for $name" >&2
     exit 1
   fi
@@ -1083,7 +1191,7 @@ cmp -s "$evidence_dir/historical-files-before.txt" "$evidence_dir/historical-fil
   echo "clean 0008 migration changed historical files" >&2
   exit 1
 }
-[[ "$(mysql_sql "SELECT COUNT(*) FROM file_records WHERE id IN (860001,860002) AND (source_ip_hash IS NOT NULL OR cleanup_after IS NOT NULL OR cleanup_claimed_at IS NOT NULL OR cleanup_claim_token IS NOT NULL)" 2>"$runtime_dir/historical-row-enrollment.raw")" == "0" ]] || {
+[[ "$(mysql_sql "SELECT COUNT(*) FROM file_records WHERE id IN (860001,860002) AND (source_ip_hash IS NOT NULL OR cleanup_after IS NOT NULL OR cleanup_claimed_at IS NOT NULL OR cleanup_claim_token IS NOT NULL)" "$runtime_dir/historical-row-enrollment.raw")" == "0" ]] || {
   echo "clean 0008 migration enrolled historical rows" >&2
   exit 1
 }
