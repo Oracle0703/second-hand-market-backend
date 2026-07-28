@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Modify only the F-11 MySQL metadata scan in `backend/internal/app/buyer_intent_schema.go` plus traceability/status documents after verified GREEN.
+- Modify only the F-11 MySQL metadata scans in `backend/internal/app/buyer_intent_schema.go` and `backend/tests/buyer_intent_mysql_test.go`, plus traceability/status documents after verified GREEN.
 - Do not loosen accepted column layouts, generated-marker semantics, index definitions, or row-state validation.
 - Do not modify `0008`, `0009`, models, business handlers, or SQLite behavior.
 - The real regression gate is `TestBuyerIntentMySQLAcceptance`; do not replace it with a source-text assertion or mock.
@@ -27,7 +27,7 @@
 **Files:**
 - Modify: `backend/internal/app/buyer_intent_schema.go`
 - Verify: `backend/internal/app/buyer_intent_schema_test.go`
-- Verify: `backend/tests/buyer_intent_mysql_test.go`
+- Modify: `backend/tests/buyer_intent_mysql_test.go`
 
 **Interfaces:**
 - Consumes: `mysqlBuyerIntentColumn`, `mysqlBuyerIntentIndexColumn`, and the existing strict validators.
@@ -93,6 +93,12 @@ ORDER BY index_name, seq_in_index
 Do not change index grouping, exact key order, lookalike rejection, or error
 messages.
 
+Apply the same explicit aliases to every selected field in the independent
+columns and statistics queries inside `assertBuyerIntentMySQLSchema`. This is a
+second real query-to-struct boundary, confirmed RED only after `NewServer`
+successfully passed the application query. Do not change its marker
+normalization or exact index assertions.
+
 - [ ] **Step 4: Run local focused GREEN and regressions**
 
 ```bash
@@ -111,7 +117,7 @@ explicit isolated flag and DSN.
 ```bash
 gofmt -w backend/internal/app/buyer_intent_schema.go
 git diff --check
-git add backend/internal/app/buyer_intent_schema.go
+git add backend/internal/app/buyer_intent_schema.go backend/tests/buyer_intent_mysql_test.go
 git commit -m "fix(buyer): stabilize MySQL metadata aliases"
 ```
 

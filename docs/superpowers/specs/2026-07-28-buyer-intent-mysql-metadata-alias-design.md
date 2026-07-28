@@ -4,9 +4,9 @@
 
 **Branch:** `codex/f11-buyer-intent-open-uniqueness`
 
-**Status:** Root cause confirmed in the isolated MySQL 8.4 project; implementation pending
+**Status:** Application metadata aliases implemented; isolated acceptance-helper metadata boundary confirmed RED
 
-**Scope:** F-11 startup verification in `inspectMySQLBuyerIntentSchema`
+**Scope:** F-11 startup verification in `inspectMySQLBuyerIntentSchema` and the real MySQL acceptance schema assertion
 
 ## 1. Problem And Evidence
 
@@ -39,10 +39,25 @@ The statistics query has the same latent problem for `index_name`,
 This is a runtime metadata-mapping defect, not migration drift. Production was
 not queried or changed while diagnosing it.
 
+After the application query was fixed, `NewServer` completed successfully in
+the isolated MySQL 8.4 project. The same test then reached
+`assertBuyerIntentMySQLSchema` and failed with:
+
+```text
+MySQL buyer intent open marker did not match the final generated schema
+```
+
+That assertion contains a second columns query and a second statistics query
+with the same implicit-label dependency. A read-only CLI query proved the
+retained schema is exact: `tinyint`, nullable, the normalized
+`CASE WHEN is_open = 1 THEN 1 ELSE NULL END` expression, and
+`STORED GENERATED`. The remaining RED is therefore the acceptance helper's
+metadata mapping, not application startup or schema drift.
+
 ## 2. Goals
 
-1. Make MySQL metadata labels stable and independent of driver/source-column
-   casing.
+1. Make all F-11 MySQL metadata labels stable and independent of
+   driver/source-column casing, including the real acceptance assertion.
 2. Preserve the existing strict column, generated-marker, index, and row-state
    validation.
 3. Keep SQLite behavior and all migration SQL unchanged.
@@ -88,7 +103,9 @@ the least code and no semantic expansion.
 
 ## 5. Detailed Design
 
-In `inspectMySQLBuyerIntentSchema`, the column query will select:
+In `inspectMySQLBuyerIntentSchema` and `assertBuyerIntentMySQLSchema`, the
+column queries will select every scanned field with an explicit lowercase
+alias. The application query will select:
 
 ```sql
 column_name AS column_name,
@@ -100,7 +117,7 @@ extra AS extra,
 ... AS is_generated
 ```
 
-The statistics query will select:
+Both statistics queries will select:
 
 ```sql
 index_name AS index_name,
@@ -112,6 +129,10 @@ column_name AS column_name
 The aliases are part of the query-to-struct interface. No validator condition,
 accepted layout, error message, or migration operation changes.
 
+The acceptance helper does not duplicate the application validator contract;
+it continues to assert the independently normalized final marker and exact
+index layout. Only its query-to-struct labels change.
+
 ## 6. Error Semantics
 
 Query errors retain their existing wrapped diagnostic categories. Correct
@@ -121,8 +142,10 @@ turn an empty scan into an accepted schema.
 
 ## 7. Verification
 
-The existing isolated MySQL test is the behavioral regression test. It already
-produced RED against the committed source before implementation. GREEN requires:
+The existing isolated MySQL test is the behavioral regression test. It produced
+two sequential RED boundaries against committed source: application startup
+before application aliases, then the independent schema assertion before
+acceptance-helper aliases. GREEN requires:
 
 1. `TestBuyerIntentMySQLAcceptance` passes with `AUTO_MIGRATE=false` and true in
    the fixed Compose project;
@@ -149,6 +172,9 @@ an F-11 release candidate.
   project.
 - Root-cause probe: correct CLI metadata plus empty GORM direct-field scans and
   a populated explicit `is_generated` alias.
+- Second RED source: `assertBuyerIntentMySQLSchema` after `NewServer` succeeded;
+  the retained CLI schema remained exact while the helper still used implicit
+  labels.
 - Implementation owner: the companion plan
   `docs/superpowers/plans/2026-07-28-buyer-intent-mysql-metadata-alias.md`.
 - Governing authorization: the approved F-11 direct iterative debugging plan,
