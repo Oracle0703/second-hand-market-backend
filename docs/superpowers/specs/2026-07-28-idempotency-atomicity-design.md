@@ -4,7 +4,7 @@
 
 **Branch:** `codex/f15-idempotency-atomicity`
 
-**Status:** Architecture, failure semantics, and Approach A approved; written specification awaiting review
+**Status:** Written specification approved on 2026-07-28; implementation planning in progress
 
 **Finding:** The current idempotency wrapper reads before the business action,
 runs the action in a separate transaction, inserts the replay record afterward,
