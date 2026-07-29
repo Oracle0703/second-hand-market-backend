@@ -1,18 +1,28 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 const (
 	appEnvDevelopment = "development"
 	appEnvTest        = "test"
 	appEnvProduction  = "production"
+
+	dbTargetLocal             = "local"
+	dbTargetRemoteDevelopment = "remote-development"
+
+	remoteDevelopmentDBAddr = "127.0.0.1:13307"
+	remoteDevelopmentDBName = "second_hand_market_dev"
+	remoteDevelopmentDBUser = "shm_dev_app"
 
 	buyerLoginModeMock     = "mock"
 	buyerLoginModeReal     = "real"
@@ -40,13 +50,18 @@ var knownUnsafeProductionJWTSecrets = map[string]struct{}{
 type Config struct {
 	AppEnv                     string
 	Addr                       string
+	DBTarget                   string
 	DBDriver                   string
 	DBDSN                      string
+	DBExpectedDatabase         string
+	DBExpectedServerUUID       string
+	DBExpectedUser             string
 	JWTAccessSecret            string
 	JWTRefreshSecret           string
 	AccessTTL                  time.Duration
 	RefreshTTL                 time.Duration
 	AutoMigrate                bool
+	SeedDefaults               bool
 	FileStorageProvider        string
 	FileUploadLocalDir         string
 	FilePublicBaseURL          string
@@ -72,13 +87,18 @@ func LoadConfig() Config {
 	cfg := Config{
 		AppEnv:                     strings.TrimSpace(os.Getenv("APP_ENV")),
 		Addr:                       getEnv("ADDR", ":8080"),
+		DBTarget:                   normalizeDBTarget(getEnv("DB_TARGET", dbTargetLocal)),
 		DBDriver:                   getEnv("DB_DRIVER", "mysql"),
-		DBDSN:                      getEnv("DB_DSN", "shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"),
+		DBDSN:                      getEnv("DB_DSN", ""),
+		DBExpectedDatabase:         getEnv("DB_EXPECTED_DATABASE", ""),
+		DBExpectedServerUUID:       getEnv("DB_EXPECTED_SERVER_UUID", ""),
+		DBExpectedUser:             getEnv("DB_EXPECTED_USER", ""),
 		JWTAccessSecret:            getEnv("JWT_ACCESS_SECRET", "dev-access-secret"),
 		JWTRefreshSecret:           getEnv("JWT_REFRESH_SECRET", "dev-refresh-secret"),
 		AccessTTL:                  2 * time.Hour,
 		RefreshTTL:                 7 * 24 * time.Hour,
-		AutoMigrate:                getEnvBool("AUTO_MIGRATE", true),
+		AutoMigrate:                false,
+		SeedDefaults:               false,
 		FileStorageProvider:        getEnv("FILE_STORAGE_PROVIDER", "local"),
 		FileUploadLocalDir:         getEnv("FILE_UPLOAD_LOCAL_DIR", "uploads"),
 		FilePublicBaseURL:          getEnv("FILE_PUBLIC_BASE_URL", ""),
@@ -97,6 +117,8 @@ func LoadConfig() Config {
 		BuyerDouyinCode2SessionURL: getEnv("BUYER_DOUYIN_CODE2SESSION_URL", douyinCode2SessionURL),
 		BuyerDouyinHTTPTimeout:     5 * time.Second,
 	}
+	cfg.loadRuntimeBool("AUTO_MIGRATE", &cfg.AutoMigrate)
+	cfg.loadRuntimeBool("SEED_DEFAULTS", &cfg.SeedDefaults)
 	if value := os.Getenv("ACCESS_TTL_SECONDS"); value != "" {
 		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
 			cfg.AccessTTL = time.Duration(seconds) * time.Second
@@ -114,6 +136,19 @@ func LoadConfig() Config {
 		cfg.loadProviderTimeout("BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS", &cfg.BuyerDouyinHTTPTimeout)
 	}
 	return cfg
+}
+
+func (c *Config) loadRuntimeBool(name string, target *bool) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		c.runtimeLoadErr = errors.Join(c.runtimeLoadErr, fmt.Errorf("%s must be a valid boolean", name))
+		return
+	}
+	*target = value
 }
 
 func (c *Config) loadProviderTimeout(name string, target *time.Duration) {
@@ -150,6 +185,30 @@ func (c Config) ValidateRuntime() error {
 	case appEnvDevelopment, appEnvTest, appEnvProduction:
 	default:
 		return fmt.Errorf("APP_ENV must be one of development, test, or production")
+	}
+
+	target := normalizeDBTarget(c.DBTarget)
+	switch target {
+	case dbTargetLocal, dbTargetRemoteDevelopment:
+	default:
+		return fmt.Errorf("DB_TARGET must be one of local or remote-development")
+	}
+
+	if (env == appEnvProduction || target == dbTargetRemoteDevelopment) && strings.TrimSpace(c.DBDSN) == "" {
+		return fmt.Errorf("DB_DSN is required when APP_ENV is production or DB_TARGET is remote-development")
+	}
+	if env == appEnvProduction || target == dbTargetRemoteDevelopment {
+		if c.AutoMigrate {
+			return fmt.Errorf("AUTO_MIGRATE must be false when APP_ENV is production or DB_TARGET is remote-development")
+		}
+		if c.SeedDefaults {
+			return fmt.Errorf("SEED_DEFAULTS must be false when APP_ENV is production or DB_TARGET is remote-development")
+		}
+	}
+	if target == dbTargetRemoteDevelopment {
+		if err := validateRemoteDevelopmentDatabase(c); err != nil {
+			return err
+		}
 	}
 
 	if err := validateBuyerLoginConfig(
@@ -197,8 +256,52 @@ func normalizeAppEnv(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+func normalizeDBTarget(value string) string {
+	target := strings.ToLower(strings.TrimSpace(value))
+	if target == "" {
+		return dbTargetLocal
+	}
+	return target
+}
+
 func normalizeBuyerLoginMode(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateRemoteDevelopmentDatabase(c Config) error {
+	if c.DBDriver != "mysql" {
+		return fmt.Errorf("DB_DRIVER must be mysql when DB_TARGET is remote-development")
+	}
+
+	dsn, err := mysqldriver.ParseDSN(c.DBDSN)
+	if err != nil {
+		return fmt.Errorf("DB_DSN must be a valid MySQL DSN for remote-development")
+	}
+	if dsn.Net != "tcp" || dsn.Addr != remoteDevelopmentDBAddr || dsn.DBName != remoteDevelopmentDBName {
+		return fmt.Errorf(
+			"DB_DSN must use tcp at %s with database %s for remote-development",
+			remoteDevelopmentDBAddr,
+			remoteDevelopmentDBName,
+		)
+	}
+	if dsn.MultiStatements ||
+		dsn.AllowAllFiles ||
+		dsn.AllowCleartextPasswords ||
+		dsn.AllowOldPasswords ||
+		dsn.AllowFallbackToPlaintext {
+		return fmt.Errorf("DB_DSN must not enable unsafe MySQL options for remote-development")
+	}
+
+	if c.DBExpectedDatabase != remoteDevelopmentDBName {
+		return fmt.Errorf("DB_EXPECTED_DATABASE must be %s for remote-development", remoteDevelopmentDBName)
+	}
+	if strings.TrimSpace(c.DBExpectedServerUUID) == "" {
+		return fmt.Errorf("DB_EXPECTED_SERVER_UUID must be non-empty for remote-development")
+	}
+	if c.DBExpectedUser != remoteDevelopmentDBUser {
+		return fmt.Errorf("DB_EXPECTED_USER must be %s for remote-development", remoteDevelopmentDBUser)
+	}
+	return nil
 }
 
 func validateProductionJWTSecret(name, value string) error {
@@ -306,16 +409,6 @@ func validateBuyerLoginConfig(
 func getEnv(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
-	}
-	return d
-}
-
-func getEnvBool(k string, d bool) bool {
-	if v := os.Getenv(k); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err == nil {
-			return b
-		}
 	}
 	return d
 }
