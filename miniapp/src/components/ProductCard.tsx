@@ -2,6 +2,7 @@ import React from 'react'
 import { Image, Text, View } from '@tarojs/components'
 import { BuyerProduct } from '../services/buyer'
 import { centToYuanText } from '../utils/price'
+import { resolveAssetURL } from '../utils/url'
 
 type Props = {
   product: BuyerProduct
@@ -13,7 +14,7 @@ export const ProductCard: React.FC<Props> = ({ product, onClick }) => {
 
   return (
     <View className="card list-item" onClick={onClick}>
-      {product.cover_url ? <Image src={product.cover_url} mode="aspectFill" style={{ width: '100%', height: '220rpx', borderRadius: '12rpx' }} /> : null}
+      {product.cover_url ? <Image src={resolveAssetURL(product.cover_url)} mode="aspectFill" style={{ width: '100%', height: '220rpx', borderRadius: '12rpx' }} /> : null}
       <View style={{ marginTop: '12rpx' }}>
         <Text>{product.title}</Text>
       </View>

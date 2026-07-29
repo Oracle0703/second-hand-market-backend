@@ -14,6 +14,7 @@ import { Alert, Button, Image, Space, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getStatusText, PRODUCT_CONDITION_META, PRODUCT_STATUS_META, type ProductCondition, type ProductStatus } from '@/constants/status'
 import { api } from '@/services/api'
+import { normalizeImageMIME } from '@/utils/imageMime'
 import { centToYuanNumber, yuanToCent } from '@/utils/price'
 import { resolveAssetURL } from '@/utils/url'
 
@@ -66,18 +67,6 @@ function categoryId(item: CategoryItem) {
 
 function categoryName(item: CategoryItem) {
   return item.Name ?? item.name ?? ''
-}
-
-function normalizeImageMIME(file: File) {
-  const raw = file.type?.toLowerCase()
-  if (raw === 'image/jpg') return 'image/jpeg'
-  if (raw) return raw
-  const name = file.name.toLowerCase()
-  if (name.endsWith('.png')) return 'image/png'
-  if (name.endsWith('.webp')) return 'image/webp'
-  if (name.endsWith('.heic')) return 'image/heic'
-  if (name.endsWith('.heif')) return 'image/heif'
-  return 'image/jpeg'
 }
 
 export function EditPage() {

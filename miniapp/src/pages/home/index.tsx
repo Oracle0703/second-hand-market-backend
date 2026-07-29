@@ -5,6 +5,7 @@ import { BuyerProduct, fetchBuyerProducts } from '../../services/buyer'
 import { hasStoreLocation, STORE_GUIDE_VIDEO, STORE_LOCATION } from '../../constants/store'
 import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
+import { resolveAssetURL } from '../../utils/url'
 
 const PAGE_SIZE = 10
 
@@ -150,7 +151,7 @@ export default function HomePage() {
               <SwiperItem key={item.id}>
                 <View className="home-swiper-slide" onClick={() => goDetail(item.id)}>
                   {item.cover_url ? (
-                    <Image className="home-swiper-image" src={item.cover_url} mode="aspectFill" />
+                    <Image className="home-swiper-image" src={resolveAssetURL(item.cover_url)} mode="aspectFill" />
                   ) : (
                     <View className="home-swiper-fallback">
                       <Text className="home-swiper-fallback-kicker">在售商品</Text>
@@ -236,7 +237,7 @@ export default function HomePage() {
             <View key={item.id} className="home-product-card">
               <View className="home-product-cover-wrap" onClick={() => goDetail(item.id)}>
                 {item.cover_url ? (
-                  <Image className="home-product-cover" src={item.cover_url} mode="aspectFill" />
+                  <Image className="home-product-cover" src={resolveAssetURL(item.cover_url)} mode="aspectFill" />
                 ) : (
                   <View className="home-product-placeholder">
                     <Text className="home-product-placeholder-text">暂无图片</Text>

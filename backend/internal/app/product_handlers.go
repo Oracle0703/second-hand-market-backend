@@ -218,10 +218,7 @@ func (s *Server) handleProductDetail(c *gin.Context) {
 			return
 		}
 		for _, file := range files {
-			url := strings.TrimSpace(file.URL)
-			if url == "" && strings.TrimSpace(file.ObjectKey) != "" {
-				url = s.publicFileURL(file.ObjectKey)
-			}
+			url := s.publicFileRecordURL(file)
 			if url != "" {
 				urlMap[file.ID] = url
 			}
