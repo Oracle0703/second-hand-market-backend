@@ -5,6 +5,9 @@ export const api = {
   login(payload: { login_type: LoginType; username: string; password: string }) {
     return http.post<APIResponse<LoginResponse>>('/auth/login', payload)
   },
+  logout() {
+    return http.post<APIResponse<{ success: boolean }>>('/auth/logout')
+  },
   register(payload: {
     merchant_name: string
     contact_name: string
