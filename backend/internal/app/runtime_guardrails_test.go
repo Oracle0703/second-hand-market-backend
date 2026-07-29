@@ -458,6 +458,7 @@ func TestProductionEnvExamplesEnableRuntimeGuardrails(t *testing.T) {
 			if values["BUYER_DOUYIN_CODE2SESSION_URL"] != douyinCode2SessionURL {
 				t.Fatalf("BUYER_DOUYIN_CODE2SESSION_URL = %q", values["BUYER_DOUYIN_CODE2SESSION_URL"])
 			}
+			assertDatabaseWriteFlagsDisabled(t, values)
 			if err := validateProductionJWTSecret("JWT_ACCESS_SECRET", values["JWT_ACCESS_SECRET"]); err == nil {
 				t.Fatal("the access-secret placeholder must remain fail-closed")
 			}
@@ -465,6 +466,27 @@ func TestProductionEnvExamplesEnableRuntimeGuardrails(t *testing.T) {
 				t.Fatal("the refresh-secret placeholder must remain fail-closed")
 			}
 		})
+	}
+}
+
+func TestDevelopmentEnvExampleDisablesDatabaseWrites(t *testing.T) {
+	values := readEnvExample(t, filepath.Join("..", "..", "configs", ".env.example"))
+	if values["APP_ENV"] != appEnvDevelopment {
+		t.Fatalf("APP_ENV = %q", values["APP_ENV"])
+	}
+	assertDatabaseWriteFlagsDisabled(t, values)
+}
+
+func assertDatabaseWriteFlagsDisabled(t *testing.T, values map[string]string) {
+	t.Helper()
+	if values["DB_TARGET"] != dbTargetLocal {
+		t.Fatalf("DB_TARGET = %q", values["DB_TARGET"])
+	}
+	if values["AUTO_MIGRATE"] != "false" {
+		t.Fatalf("AUTO_MIGRATE = %q", values["AUTO_MIGRATE"])
+	}
+	if values["SEED_DEFAULTS"] != "false" {
+		t.Fatalf("SEED_DEFAULTS = %q", values["SEED_DEFAULTS"])
 	}
 }
 

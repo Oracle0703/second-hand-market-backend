@@ -24,11 +24,16 @@
 | --- | --- | --- |
 | `APP_ENV` | 无 | 必须显式设置为 `development`、`test` 或 `production` |
 | `ADDR` | `:8080` | 服务监听地址 |
+| `DB_TARGET` | `local` | 数据库目标；远程开发链路使用 `remote-development` |
 | `DB_DRIVER` | `mysql` | 数据库驱动（默认 mysql） |
-| `DB_DSN` | `shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...` | 数据库连接串（写入 shell 环境文件时建议加引号） |
+| `DB_DSN` | 空 | 数据库连接串；生产及远程开发目标必须显式设置，错误不会回显其内容 |
+| `DB_EXPECTED_DATABASE` | 空 | 远程开发目标必须为 `second_hand_market_dev` |
+| `DB_EXPECTED_SERVER_UUID` | 空 | 远程开发目标必须设置为批准的 MySQL 实例 UUID |
+| `DB_EXPECTED_USER` | 空 | 远程开发目标必须为 `shm_dev_app` |
 | `JWT_ACCESS_SECRET` | `dev-access-secret` | Access Token 密钥；生产至少 32 字节 |
 | `JWT_REFRESH_SECRET` | `dev-refresh-secret` | Refresh Token 密钥；生产至少 32 字节且不能与 Access 密钥相同 |
-| `AUTO_MIGRATE` | `true` | 启动时自动迁移 |
+| `AUTO_MIGRATE` | `false` | 兼容门禁字段；生产及远程开发只允许 `false`，API 不执行迁移 |
+| `SEED_DEFAULTS` | `false` | 兼容门禁字段；生产及远程开发只允许 `false`，API 不执行 seed |
 | `FILE_STORAGE_PROVIDER` | `local` | 文件存储方式（当前支持 `local`，后续可扩展 OSS） |
 | `FILE_UPLOAD_LOCAL_DIR` | `uploads` | 本地上传落盘目录 |
 | `FILE_PUBLIC_BASE_URL` | 空 | 文件对外访问前缀；为空时默认 `/uploads` |
@@ -106,14 +111,43 @@ npm run dev:tt
 ```bash
 cd backend
 GOPROXY=https://goproxy.cn,direct go mod tidy
-APP_ENV=development CGO_ENABLED=0 go run ./cmd/server
+set -a && source configs/.env.example && set +a
+# 先把 DB_DSN 替换为本地开发数据库，并按下节执行显式初始化。
+CGO_ENABLED=0 go run ./cmd/server
 ```
+
+### 数据库显式初始化
+
+长驻 API 启动不会执行 DDL、创建管理员或写入默认分类。新数据库必须按顺序执行独立命令；三个命令都要求显式设置 `DB_DRIVER` 和 `DB_DSN`，不会回退到仓库内 SQLite 文件。
+
+```bash
+cd backend
+export DB_DRIVER=sqlite
+export DB_DSN='file:runtime/dev.db?cache=shared&_foreign_keys=on'
+
+# 1. 仅迁移 schema
+go run ./scripts/migrate
+
+# 2. 每次显式创建一个管理员；密码从无回显输入读取，不写入命令行或仓库
+export ADMIN_USERNAME=admin
+export ADMIN_DISPLAY_NAME='Admin'
+export ADMIN_ROLE=ADMIN
+read -r -s ADMIN_PASSWORD && export ADMIN_PASSWORD
+go run ./scripts/bootstrap_admin
+unset ADMIN_PASSWORD
+
+# 3. 仅写入默认分类，可幂等重复执行
+go run ./scripts/seed_categories
+```
+
+如需创建 `SUPER_ADMIN`，使用独立密码再次执行 bootstrap，并设置新的 `ADMIN_USERNAME`、`ADMIN_DISPLAY_NAME` 与 `ADMIN_ROLE=SUPER_ADMIN`。迁移账号、应用账号和管理员初始密码应分别管理；生产迁移仍需单独授权。
 
 生产环境（SQLite 示例）：
 ```bash
 cd backend
 cp configs/.env.production.sqlite.example .env
 # 修改被 .gitignore 排除的 .env：替换 DB_DSN 和两枚 JWT 密钥；F12 完成前保持登录 disabled
+# 首次部署先按“数据库显式初始化”使用批准的独立凭据执行一次性命令
 set -a && source .env && set +a
 CGO_ENABLED=0 go run ./cmd/server
 ```
@@ -123,6 +157,7 @@ CGO_ENABLED=0 go run ./cmd/server
 cd backend
 cp configs/.env.production.mysql.example .env
 # 修改被 .gitignore 排除的 .env：替换 DB_DSN 和两枚 JWT 密钥；F12 完成前保持登录 disabled
+# 首次部署先按“数据库显式初始化”使用批准的独立凭据执行一次性命令
 set -a && source .env && set +a
 CGO_ENABLED=0 go run ./cmd/server
 ```
@@ -130,6 +165,9 @@ CGO_ENABLED=0 go run ./cmd/server
 说明：
 - 在 macOS 未同意 Xcode License 时，`go run` 可能因为 cgo 失败；可用 `CGO_ENABLED=0` 启动。
 - `APP_ENV` 缺失或拼写错误时服务拒绝启动；Docker 镜像默认使用 `production`。
+- `APP_ENV=production` 或 `DB_TARGET=remote-development` 时，缺少 `DB_DSN`、开启 `AUTO_MIGRATE` 或开启 `SEED_DEFAULTS` 都会在连接数据库前失败。
+- `DB_TARGET=remote-development` 只允许 MySQL TCP `127.0.0.1:13307/second_hand_market_dev`，并在连接后、任何业务写入前核对数据库名、实例 UUID 和账号。
+- 生产环境从旧版自动迁移切换到显式命令需要独立上线授权，不得仅复制新模板后直接重启。
 - 生产环境拒绝两种平台的 `mock` 登录；`disabled` 可作为安全过渡，启用平台时再切为 `real`。
 - 现有 mock 买家完成后续 F12 身份迁移前，生产模板默认关闭两种登录，避免真实 OpenID 新建出重复账号。
 - `real` 模式必须配置对应 AppID、AppSecret、1–60 秒超时和代码内固定的官方 HTTPS 换码地址。
@@ -146,9 +184,7 @@ docker build -f backend/Dockerfile -t second-hand-market-backend .
 
 运行容器时应由部署环境注入不带 shell 引号的环境变量，并为上传目录（以及使用 SQLite 时的数据库目录）挂载持久卷。具体运行参数留到独立部署分支收口，避免把可供 `source` 的 `.env` 直接交给 Docker `--env-file`。
 
-默认管理员账号（初始化自动写入）：
-- `admin / Admin@123456`
-- `superadmin / Admin@123456`
+仓库不再提供或自动写入默认管理员密码。管理员必须通过 `scripts/bootstrap_admin` 逐个显式创建；已存在账号不会被该幂等命令重置密码。
 
 ### 前端
 ```bash
