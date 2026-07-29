@@ -16,9 +16,10 @@ cd /home/yu/services/secondhand-market-dev-db
 docker compose pull
 docker compose up -d
 ./verify.sh
+./render-local-env.sh
 ```
 
-The instance listens only on `127.0.0.1:3307`, uses database `second_hand_market_dev`, and creates application user `shm_dev_app`. The generated passwords stay under the ignored `secrets/` directory.
+The instance listens only on `127.0.0.1:3307`, uses database `second_hand_market_dev`, and creates application user `shm_dev_app`. The generated passwords and `backend.env.remote-dev` stay under the ignored `secrets/` directory. Transfer that generated environment file directly to the local ignored path `backend/.env.remote-dev`; do not print its contents.
 
 Routine operations:
 

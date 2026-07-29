@@ -11,14 +11,16 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" ||
 compose_file="$repo_root/deploy/remote-dev-db/docker-compose.yml"
 prepare_script="$repo_root/deploy/remote-dev-db/prepare-secrets.sh"
 verify_script="$repo_root/deploy/remote-dev-db/verify.sh"
+render_script="$repo_root/deploy/remote-dev-db/render-local-env.sh"
 runbook="$repo_root/deploy/remote-dev-db/README.md"
 
-for path in "$compose_file" "$prepare_script" "$verify_script" "$runbook"; do
+for path in "$compose_file" "$prepare_script" "$verify_script" "$render_script" "$runbook"; do
   [[ -f "$path" ]] || fail "missing ${path#$repo_root/}"
 done
 
 bash -n "$prepare_script" || fail "prepare-secrets.sh has invalid syntax"
 bash -n "$verify_script" || fail "verify.sh has invalid syntax"
+bash -n "$render_script" || fail "render-local-env.sh has invalid syntax"
 
 required_compose_text=(
   'name: secondhand-market-dev-db'
