@@ -77,7 +77,7 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 		if db != nil {
 			deps.closeDB(db)
 		}
-		return nil, err
+		return nil, errors.New("DATABASE_CONNECTION failed")
 	}
 	if err := deps.verifyDatabaseIdentity(db, cfg); err != nil {
 		deps.closeDB(db)

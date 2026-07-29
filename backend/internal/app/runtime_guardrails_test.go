@@ -249,8 +249,11 @@ func TestNewServerValidatesRuntimeBeforeDatabase(t *testing.T) {
 
 	t.Run("safe_configuration_reaches_database_probe", func(t *testing.T) {
 		_, err := NewServer(safeProductionRuntimeConfig())
-		if err == nil || !strings.Contains(err.Error(), "unsupported db driver: guardrail-probe") {
+		if err == nil || !strings.Contains(err.Error(), "DATABASE_CONNECTION") {
 			t.Fatalf("safe configuration did not reach the database probe: %v", err)
+		}
+		if strings.Contains(err.Error(), "guardrail-probe") {
+			t.Fatalf("database error leaked its driver value: %v", err)
 		}
 	})
 }
