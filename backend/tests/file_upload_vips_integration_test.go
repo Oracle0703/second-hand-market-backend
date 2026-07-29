@@ -134,7 +134,7 @@ func vipsHTTPFixture(t *testing.T, binary, mimeType string) []byte {
 		t.Fatalf("write vips HTTP source fixture: %v", err)
 	}
 	outputExt := ".webp"
-	if mimeType == "image/heif" {
+	if mimeType == "image/heic" || mimeType == "image/heif" {
 		outputExt = ".heic"
 	}
 	outputPath := filepath.Join(tmpDir, "fixture"+outputExt)
