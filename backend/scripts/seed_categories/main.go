@@ -13,12 +13,29 @@ import (
 	"second-hand-market-backend/backend/internal/model"
 )
 
-func openDB() (*gorm.DB, error) {
-	driver := os.Getenv("DB_DRIVER")
-	dsn := os.Getenv("DB_DSN")
+func databaseConfigFromEnv() (string, string, error) {
+	driver := strings.TrimSpace(os.Getenv("DB_DRIVER"))
 	if driver == "" {
-		driver = "sqlite"
-		dsn = "file:app.db?cache=shared&_foreign_keys=on"
+		return "", "", fmt.Errorf("DB_DRIVER is required")
+	}
+
+	dsn := strings.TrimSpace(os.Getenv("DB_DSN"))
+	if dsn == "" {
+		return "", "", fmt.Errorf("DB_DSN is required")
+	}
+
+	switch driver {
+	case "mysql", "sqlite":
+		return driver, dsn, nil
+	default:
+		return "", "", fmt.Errorf("unsupported DB_DRIVER %q", driver)
+	}
+}
+
+func openDB() (*gorm.DB, error) {
+	driver, dsn, err := databaseConfigFromEnv()
+	if err != nil {
+		return nil, err
 	}
 	if driver == "mysql" {
 		return gorm.Open(mysql.Open(dsn), &gorm.Config{})

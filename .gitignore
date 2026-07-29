@@ -123,14 +123,21 @@ dist
 /backend/*.db
 /backend/*.db-shm
 /backend/*.db-wal
+/backend/*.db-journal
 /backend/*.sqlite
 /backend/*.sqlite-shm
 /backend/*.sqlite-wal
+/backend/*.sqlite-journal
+/backend/*.sqlite3
+/backend/*.sqlite3-shm
+/backend/*.sqlite3-wal
+/backend/*.sqlite3-journal
 
 # Legacy application database and sidecars must never re-enter the tree
 /backend/app.db
 /backend/app.db-shm
 /backend/app.db-wal
+/backend/app.db-journal
 
 # Local deploy/runtime files (do not commit server-specific config)
 deploy/.env
