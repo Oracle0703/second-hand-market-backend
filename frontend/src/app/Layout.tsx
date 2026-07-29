@@ -10,7 +10,9 @@ import {
 } from '@ant-design/icons'
 import { ProLayout, type MenuDataItem } from '@ant-design/pro-components'
 import { Button } from 'antd'
+import { useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { api } from '../services/api'
 import { useAuthStore } from '../stores/auth-store'
 
 const adminMenus: MenuDataItem[] = [
@@ -31,12 +33,24 @@ export function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { clear, user } = useAuthStore()
+  const logoutStarted = useRef(false)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
   const isAdmin = String(user?.role || '').includes('ADMIN')
   const menuData = isAdmin ? adminMenus : merchantMenus
 
-  const logout = () => {
-    clear()
-    navigate('/login')
+  const logout = async () => {
+    if (logoutStarted.current) return
+    logoutStarted.current = true
+    setIsLoggingOut(true)
+
+    try {
+      await api.logout()
+    } catch {
+      // A server failure must not leave local credentials behind.
+    } finally {
+      clear()
+      navigate('/login')
+    }
   }
 
   return (
@@ -64,7 +78,14 @@ export function Layout() {
         <span key="role" className="topbar-role">
           {String(user?.role || '')}
         </span>,
-        <Button key="logout" type="link" icon={<LogoutOutlined />} onClick={logout}>
+        <Button
+          key="logout"
+          type="link"
+          icon={<LogoutOutlined />}
+          loading={isLoggingOut}
+          disabled={isLoggingOut}
+          onClick={() => void logout()}
+        >
           退出
         </Button>
       ]}
