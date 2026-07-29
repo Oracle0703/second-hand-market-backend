@@ -21,6 +21,7 @@ type apiResp struct {
 func newTestServer(t *testing.T) *app.Server {
 	t.Helper()
 	cfg := app.Config{
+		AppEnv:                   "test",
 		Addr:                     ":0",
 		DBDriver:                 "sqlite",
 		DBDSN:                    fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
@@ -34,6 +35,8 @@ func newTestServer(t *testing.T) *app.Server {
 		FileUploadMaxBytes:       40 * 1024 * 1024,
 		ImageCompressTargetBytes: 20 * 1024 * 1024,
 		ImageProcessorDriver:     "passthrough",
+		BuyerWechatLoginMode:     "mock",
+		BuyerDouyinLoginMode:     "mock",
 	}
 	srv, err := app.NewServer(cfg)
 	if err != nil {

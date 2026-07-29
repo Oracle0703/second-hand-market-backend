@@ -16,9 +16,10 @@
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
+| `APP_ENV` | 无（必填） | 运行环境：`development/test/production` |
 | `ADDR` | `:8080` | 服务监听地址 |
-| `DB_DRIVER` | `sqlite` | 数据库驱动 |
-| `DB_DSN` | `file:app.db?cache=shared&_foreign_keys=on` | 数据库连接串 |
+| `DB_DRIVER` | `mysql` | 数据库驱动 |
+| `DB_DSN` | 本机 MySQL `second_hand_market` 连接串 | 数据库连接串 |
 | `JWT_ACCESS_SECRET` | `dev-access-secret` | access token 密钥 |
 | `JWT_REFRESH_SECRET` | `dev-refresh-secret` | refresh token 密钥 |
 | `ACCESS_TTL_SECONDS` | `7200`（2h） | access token 时效 |
@@ -42,9 +43,10 @@
 ## 3. 微信登录真实联调前提（appid / secret / 配置）
 
 ## 3.1 当前代码现状（阻塞项）
-当前后端 `POST /api/v1/buyer/auth/wechat-login` 支持两种模式：
+当前后端 `POST /api/v1/buyer/auth/wechat-login` 支持三种模式：
 1. `BUYER_WECHAT_LOGIN_MODE=mock`：开发态 mock openid。
 2. `BUYER_WECHAT_LOGIN_MODE=real`：调用微信 `code2session` 获取 `openid/unionid`。
+3. `BUYER_WECHAT_LOGIN_MODE=disabled`：显式关闭微信登录。
 
 结论：代码层已具备真实接入能力，但**真实联调仍依赖 AppID/AppSecret、合法域名和真机验收完成**。
 
@@ -71,7 +73,7 @@
 # 终端 A：启动后端
 cd backend
 mkdir -p .cache/go/mod .cache/go/build
-GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build go run ./cmd/server
+APP_ENV=development GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build go run ./cmd/server
 
 # 终端 B：启动小程序 watch 构建（示例使用本机 8080）
 cd miniapp

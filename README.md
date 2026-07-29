@@ -22,11 +22,12 @@
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `APP_ENV` | 无 | 必须显式设置为 `development`、`test` 或 `production` |
 | `ADDR` | `:8080` | 服务监听地址 |
 | `DB_DRIVER` | `mysql` | 数据库驱动（默认 mysql） |
-| `DB_DSN` | `'shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...'` | 数据库连接串（建议带引号，便于 `source`） |
-| `JWT_ACCESS_SECRET` | `replace-access-secret` | Access Token 密钥 |
-| `JWT_REFRESH_SECRET` | `replace-refresh-secret` | Refresh Token 密钥 |
+| `DB_DSN` | `shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?...` | 数据库连接串（写入 shell 环境文件时建议加引号） |
+| `JWT_ACCESS_SECRET` | `dev-access-secret` | Access Token 密钥；生产至少 32 字节 |
+| `JWT_REFRESH_SECRET` | `dev-refresh-secret` | Refresh Token 密钥；生产至少 32 字节且不能与 Access 密钥相同 |
 | `AUTO_MIGRATE` | `true` | 启动时自动迁移 |
 | `FILE_STORAGE_PROVIDER` | `local` | 文件存储方式（当前支持 `local`，后续可扩展 OSS） |
 | `FILE_UPLOAD_LOCAL_DIR` | `uploads` | 本地上传落盘目录 |
@@ -35,16 +36,16 @@
 | `IMAGE_COMPRESS_TARGET_MB` | `20` | 服务端图片压缩目标大小（MB） |
 | `IMAGE_PROCESSOR_DRIVER` | `vips` | 图片处理驱动（`vips/passthrough`） |
 | `IMAGE_PROCESSOR_BIN` | `vips` | 图片处理命令路径 |
-| `BUYER_WECHAT_LOGIN_MODE` | `mock` | 买家微信登录模式（`mock/real`） |
+| `BUYER_WECHAT_LOGIN_MODE` | `mock` | 买家微信登录模式（`mock/real/disabled`） |
 | `BUYER_WECHAT_APP_ID` | 空 | `real` 模式必填，微信 AppID |
 | `BUYER_WECHAT_APP_SECRET` | 空 | `real` 模式必填，微信 AppSecret |
 | `BUYER_WECHAT_CODE2SESSION_URL` | 微信官方地址 | `code2session` 请求地址 |
-| `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | `5` | 微信接口超时时间（秒） |
-| `BUYER_DOUYIN_LOGIN_MODE` | `mock` | 买家抖音登录模式（`mock/real`） |
+| `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | `5` | 微信接口超时时间；`real` 模式允许 1–60 秒 |
+| `BUYER_DOUYIN_LOGIN_MODE` | `mock` | 买家抖音登录模式（`mock/real/disabled`） |
 | `BUYER_DOUYIN_APP_ID` | 空 | `real` 模式必填，抖音小程序 AppID |
 | `BUYER_DOUYIN_APP_SECRET` | 空 | `real` 模式必填，抖音小程序 AppSecret |
 | `BUYER_DOUYIN_CODE2SESSION_URL` | 抖音官方地址 | `code2session` 请求地址 |
-| `BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS` | `5` | 抖音接口超时时间（秒） |
+| `BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS` | `5` | 抖音接口超时时间；`real` 模式允许 1–60 秒 |
 
 生产（MySQL）可参考：`backend/configs/.env.production.mysql.example`  
 生产（SQLite，仅临时/单机）可参考：`backend/configs/.env.production.sqlite.example`
@@ -105,31 +106,34 @@ npm run dev:tt
 ```bash
 cd backend
 GOPROXY=https://goproxy.cn,direct go mod tidy
-CGO_ENABLED=0 go run ./cmd/server
+APP_ENV=development CGO_ENABLED=0 go run ./cmd/server
 ```
 
 生产环境（SQLite 示例）：
 ```bash
 cd backend
-cp configs/.env.production.sqlite.example .env.production
-# 修改 .env.production 里的 JWT 密钥与 DB_DSN 路径
-set -a && source .env.production && set +a
+cp configs/.env.production.sqlite.example .env
+# 修改被 .gitignore 排除的 .env：替换 DB_DSN 和两枚 JWT 密钥；F12 完成前保持登录 disabled
+set -a && source .env && set +a
 CGO_ENABLED=0 go run ./cmd/server
 ```
 
 生产环境（MySQL 推荐）：
 ```bash
 cd backend
-cp configs/.env.production.mysql.example .env.production
-# 修改 .env.production 里的 DB_DSN 和 JWT 密钥
-set -a && source .env.production && set +a
+cp configs/.env.production.mysql.example .env
+# 修改被 .gitignore 排除的 .env：替换 DB_DSN 和两枚 JWT 密钥；F12 完成前保持登录 disabled
+set -a && source .env && set +a
 CGO_ENABLED=0 go run ./cmd/server
 ```
 
 说明：
 - 在 macOS 未同意 Xcode License 时，`go run` 可能因为 cgo 失败；可用 `CGO_ENABLED=0` 启动。
-- 如需真实微信登录，需额外设置 `BUYER_WECHAT_LOGIN_MODE=real` 与微信密钥变量。
-- 如需真实抖音登录，需额外设置 `BUYER_DOUYIN_LOGIN_MODE=real` 与抖音密钥变量。
+- `APP_ENV` 缺失或拼写错误时服务拒绝启动；Docker 镜像默认使用 `production`。
+- 生产环境拒绝两种平台的 `mock` 登录；`disabled` 可作为安全过渡，启用平台时再切为 `real`。
+- 现有 mock 买家完成后续 F12 身份迁移前，生产模板默认关闭两种登录，避免真实 OpenID 新建出重复账号。
+- `real` 模式必须配置对应 AppID、AppSecret、1–60 秒超时和代码内固定的官方 HTTPS 换码地址。
+- 两枚生产 JWT 密钥必须独立生成、至少 32 字节；启动检查会拒绝示例值及明显低多样性或重复模式，但不能替代安全随机生成。可分别执行 `openssl rand -base64 48`。
 - 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过 `/uploads/<object_key>` 提供访问（可通过 `FILE_PUBLIC_BASE_URL` 切换到 CDN/OSS 域名）。
 - 当前支持 `jpg/jpeg/png/webp/heic/heif`，苹果 `Live Photo` 仅支持其中静态图，不支持配套 `mov`。
 - 原图大小上限为 `40MB`；后端会统一压缩，优先将图片控制在 `20MB` 内。
@@ -138,8 +142,9 @@ CGO_ENABLED=0 go run ./cmd/server
 ### 后端 Docker
 ```bash
 docker build -f backend/Dockerfile -t second-hand-market-backend .
-docker run --rm -p 8080:8080 --env-file backend/configs/.env.production.mysql.example second-hand-market-backend
 ```
+
+运行容器时应由部署环境注入不带 shell 引号的环境变量，并为上传目录（以及使用 SQLite 时的数据库目录）挂载持久卷。具体运行参数留到独立部署分支收口，避免把可供 `source` 的 `.env` 直接交给 Docker `--env-file`。
 
 默认管理员账号（初始化自动写入）：
 - `admin / Admin@123456`
@@ -175,7 +180,7 @@ npm run build
 
 # 3) 冒烟（另开终端先启动后端）
 cd ../backend
-GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build GOPROXY=https://proxy.golang.org,direct go run ./cmd/server
+APP_ENV=development GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build GOPROXY=https://proxy.golang.org,direct go run ./cmd/server
 
 # 4) 执行主链路冒烟
 cd ..

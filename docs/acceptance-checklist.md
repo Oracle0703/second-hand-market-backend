@@ -1,7 +1,7 @@
 # 收口阶段验收清单（PC / Mobile）
 
 ## 1. 预检
-- [ ] 后端可启动：`cd backend && ... go run ./cmd/server`
+- [ ] 后端可启动：`cd backend && APP_ENV=development ... go run ./cmd/server`
 - [ ] 前端可启动：`cd frontend && npm run dev`
 - [ ] 管理员账号可登录：`admin / Admin@123456`
 

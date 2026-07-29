@@ -32,6 +32,9 @@ type Server struct {
 }
 
 func NewServer(cfg Config) (*Server, error) {
+	if err := cfg.ValidateRuntime(); err != nil {
+		return nil, fmt.Errorf("runtime configuration rejected: %w", err)
+	}
 	if strings.TrimSpace(cfg.FileStorageProvider) == "" {
 		cfg.FileStorageProvider = "local"
 	}
