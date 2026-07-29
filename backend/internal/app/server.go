@@ -31,7 +31,25 @@ type Server struct {
 	imageProcessor media.Processor
 }
 
+type serverStartupDependencies struct {
+	openDB                 func(Config) (*gorm.DB, error)
+	verifyDatabaseIdentity func(*gorm.DB, Config) error
+	closeDB                func(*gorm.DB)
+	migrate                func(*gorm.DB) error
+	seedDefaults           func(*gorm.DB) error
+}
+
 func NewServer(cfg Config) (*Server, error) {
+	return newServer(cfg, serverStartupDependencies{
+		openDB:                 openDB,
+		verifyDatabaseIdentity: verifyConnectedDatabaseIdentity,
+		closeDB:                closeDatabase,
+		migrate:                migrate,
+		seedDefaults:           seedDefaults,
+	})
+}
+
+func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 	if err := cfg.ValidateRuntime(); err != nil {
 		return nil, fmt.Errorf("runtime configuration rejected: %w", err)
 	}
@@ -47,16 +65,20 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.ImageCompressTargetBytes <= 0 {
 		cfg.ImageCompressTargetBytes = media.DefaultTargetBytes
 	}
-	db, err := openDB(cfg)
+	db, err := deps.openDB(cfg)
 	if err != nil {
 		return nil, err
 	}
+	if err := deps.verifyDatabaseIdentity(db, cfg); err != nil {
+		deps.closeDB(db)
+		return nil, fmt.Errorf("database identity rejected: %w", err)
+	}
 	if cfg.AutoMigrate {
-		if err := migrate(db); err != nil {
+		if err := deps.migrate(db); err != nil {
 			return nil, err
 		}
 	}
-	if err := seedDefaults(db); err != nil {
+	if err := deps.seedDefaults(db); err != nil {
 		return nil, err
 	}
 	if err := ensureUploadStorage(cfg); err != nil {
@@ -77,6 +99,16 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	s.registerRoutes()
 	return s, nil
+}
+
+func closeDatabase(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	sqlDB, err := db.DB()
+	if err == nil {
+		_ = sqlDB.Close()
+	}
 }
 
 func (s *Server) SetImageProcessor(processor media.Processor) {

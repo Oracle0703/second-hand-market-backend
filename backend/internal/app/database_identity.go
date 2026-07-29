@@ -2,11 +2,17 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
+	"time"
+
+	"gorm.io/gorm"
 )
 
 const remoteDevelopmentIdentityQuery = "SELECT DATABASE(), @@GLOBAL.server_uuid, CURRENT_USER();"
+
+const remoteDevelopmentIdentityTimeout = 5 * time.Second
 
 type databaseIdentityRow interface {
 	Scan(dest ...any) error
@@ -14,6 +20,34 @@ type databaseIdentityRow interface {
 
 type databaseIdentityQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) databaseIdentityRow
+}
+
+type sqlDatabaseIdentityQuerier struct {
+	db *sql.DB
+}
+
+func (q sqlDatabaseIdentityQuerier) QueryRowContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) databaseIdentityRow {
+	return q.db.QueryRowContext(ctx, query, args...)
+}
+
+func verifyConnectedDatabaseIdentity(db *gorm.DB, cfg Config) error {
+	if normalizeDBTarget(cfg.DBTarget) != dbTargetRemoteDevelopment {
+		return nil
+	}
+	if db == nil {
+		return errors.New("DATABASE_IDENTITY connection unavailable")
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return errors.New("DATABASE_IDENTITY connection unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remoteDevelopmentIdentityTimeout)
+	defer cancel()
+	return verifyRemoteDevelopmentDatabaseIdentity(ctx, sqlDatabaseIdentityQuerier{db: sqlDB}, cfg)
 }
 
 func verifyRemoteDevelopmentDatabaseIdentity(
