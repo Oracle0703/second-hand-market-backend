@@ -55,4 +55,3 @@ volumes:
 networks:
   dev-db:
     name: secondhand-market-dev-db-net
-    internal: true

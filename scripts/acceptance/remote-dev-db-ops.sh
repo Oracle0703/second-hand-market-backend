@@ -47,6 +47,9 @@ grep -Fq -- 'mysql_app_password' "$compose_file" ||
   fail "compose does not mount the app password secret"
 grep -Fq -- 'mysql_root_password' "$compose_file" ||
   fail "compose does not mount the root password secret"
+if grep -Eq '^[[:space:]]*internal:[[:space:]]*true[[:space:]]*$' "$compose_file"; then
+  fail "an internal-only network prevents the required loopback port publication"
+fi
 
 grep -Fq -- '/deploy/remote-dev-db/secrets/*' "$repo_root/.gitignore" ||
   fail "remote database secrets are not ignored"
