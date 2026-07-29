@@ -239,6 +239,7 @@ API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mj
 ## 文档索引
 
 - [项目总览](docs/project-overview.md)
+- [Windows 远程开发数据库](docs/remote-development-database.md)
 - [产品规格](docs/specs.md)
 - [前端页面规划](docs/frontend-pages.md)
 - [后端接口清单](docs/backend-api-checklist.md)
