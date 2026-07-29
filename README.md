@@ -36,10 +36,10 @@
 | `SEED_DEFAULTS` | `false` | 兼容门禁字段；生产及远程开发只允许 `false`，API 不执行 seed |
 | `FILE_STORAGE_PROVIDER` | `local` | 文件存储方式（当前支持 `local`，后续可扩展 OSS） |
 | `FILE_UPLOAD_LOCAL_DIR` | `uploads` | 本地上传落盘目录 |
-| `FILE_PUBLIC_BASE_URL` | 空 | 文件对外访问前缀；为空时默认 `/uploads` |
+| `FILE_PUBLIC_BASE_URL` | 空 | 本地存储时必须为空；上传文件只能通过后端受控的 `/uploads` 路由读取 |
 | `FILE_UPLOAD_MAX_MB` | `40` | 图片原图上传上限（MB） |
 | `IMAGE_COMPRESS_TARGET_MB` | `20` | 服务端图片压缩目标大小（MB） |
-| `IMAGE_PROCESSOR_DRIVER` | `vips` | 图片处理驱动（`vips/passthrough`） |
+| `IMAGE_PROCESSOR_DRIVER` | `vips` | 图片处理驱动（`vips`；本地可用安全的 `passthrough`，仅支持 JPEG/PNG） |
 | `IMAGE_PROCESSOR_BIN` | `vips` | 图片处理命令路径 |
 | `BUYER_WECHAT_LOGIN_MODE` | `mock` | 买家微信登录模式（`mock/real/disabled`） |
 | `BUYER_WECHAT_APP_ID` | 空 | `real` 模式必填，微信 AppID |
@@ -86,11 +86,18 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 }
 ```
 
 说明：
 - 后端服务自身已经注册 `/api/v1/*` 路由，因此 `proxy_pass` 指向后端根地址即可，不要改成 `http://127.0.0.1:8080/api/`。
+- `/uploads/*` 必须反向代理到后端；不要用 Nginx `alias`、CDN 或对象存储静态映射直接暴露 `FILE_UPLOAD_LOCAL_DIR`。
 - 如果线上当前存在 `/api/api/v1/*`，需要同步调整 Nginx 或网关规则后再重新发布前端和小程序。
 
 微信构建：
@@ -172,10 +179,24 @@ CGO_ENABLED=0 go run ./cmd/server
 - 现有 mock 买家完成后续 F12 身份迁移前，生产模板默认关闭两种登录，避免真实 OpenID 新建出重复账号。
 - `real` 模式必须配置对应 AppID、AppSecret、1–60 秒超时和代码内固定的官方 HTTPS 换码地址。
 - 两枚生产 JWT 密钥必须独立生成、至少 32 字节；启动检查会拒绝示例值及明显低多样性或重复模式，但不能替代安全随机生成。可分别执行 `openssl rand -base64 48`。
-- 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过 `/uploads/<object_key>` 提供访问（可通过 `FILE_PUBLIC_BASE_URL` 切换到 CDN/OSS 域名）。
-- 当前支持 `jpg/jpeg/png/webp/heic/heif`，苹果 `Live Photo` 仅支持其中静态图，不支持配套 `mov`。
+- 图片上传后会落盘到 `FILE_UPLOAD_LOCAL_DIR`，并通过后端 `/uploads/<object_key>` 提供访问。本地存储配置只接受空的 `FILE_PUBLIC_BASE_URL`，防止 CDN、OSS 或静态目录绕过字节校验及安全响应头。
+- `vips` 驱动支持 `jpg/jpeg/png/webp/heic/heif`，苹果 `Live Photo` 仅支持其中静态图，不支持配套 `mov`。
+- HEIC 与通用 HEIF 声明按同一安全图片族处理；两类输入都会转换为规范的 `image/heic`/`.heic` 输出，上传响应和文件记录会返回转换后的对象键。
 - 原图大小上限为 `40MB`；后端会统一压缩，优先将图片控制在 `20MB` 内。
-- 本地如未安装 `vips/libheif`，可临时设置 `IMAGE_PROCESSOR_DRIVER=passthrough`；生产 Docker 应使用 `vips`。
+- 上传内容必须与声明 MIME 一致；文件名扩展不会被信任，落盘前会完整解码并重新编码。
+- 本地如未安装 `vips/libheif`，可临时设置 `IMAGE_PROCESSOR_DRIVER=passthrough`；该安全回退会重新编码 JPEG/PNG，并拒绝 WebP/HEIC/HEIF。生产 Docker 应使用 `vips`。
+- 后端切换前如果曾用静态服务器或 CDN 暴露上传目录，必须先下线直连路径并清除 CDN 缓存；历史不安全对象的物理清理按下面第 4 步完成。
+
+严格图片管线必须按以下顺序发布，不能先单独部署后端：
+
+1. 先发布带 `/uploads` 源站解析的新小程序版本，并完成微信/抖音审核和用户采用验证。
+2. 在同一个维护窗口内确认网关的 `/uploads/*` 已反向代理到后端，且没有 Nginx `alias`、CDN 或 OSS 直连上传目录。
+3. 紧接着部署本提交的后端，保持 `FILE_PUBLIC_BASE_URL=`；后端会忽略旧记录中的绝对 URL，统一返回受控 `/uploads` 地址。
+4. 受控路由生效后，物理清理历史 `.html`、扩展/MIME 不匹配及未重新编码的旧对象。旧版小程序不会解析相对 `/uploads`，因此颠倒第 1、3 步会导致存量客户端商品图不可见。
+
+HEIC/HEIF 会继续以 HEIC 交付；部分浏览器和小程序运行时不能直接预览该格式。
+上线验收需在目标管理端浏览器和微信/抖音真机各检查一张 HEIC 商品图；后续可另行
+增加 JPEG/WebP 展示衍生图，不在本次安全修复中静默改变原格式策略。
 
 ### 后端 Docker
 ```bash
@@ -201,6 +222,23 @@ make test
 当前已覆盖：
 - 状态机单元测试（`backend/internal/stateflow`）
 - 主流程集成测试（`backend/tests/integration_flow_test.go`）
+
+严格图片管线的服务器验收必须在干净工作区、安装了完整
+`vips/libheif` codec、Go 1.22+、Node.js 22.22.2、npm 10.9.7 以及
+前端/小程序依赖的环境执行，并绑定待验收提交：
+
+```bash
+EXPECTED_COMMIT_SHA=<40位提交SHA> \
+EVIDENCE_DIR=/tmp/strict-image-evidence \
+./scripts/acceptance/strict-image-pipeline.sh
+```
+
+该脚本的后端用例只使用内存 SQLite 测试数据，不连接或修改部署数据库；
+同时会基于两个 lockfile 分别执行干净的 `npm ci`，再运行管理端测试与
+构建、小程序测试以及微信/抖音双构建。任一必选子用例未运行、被跳过、
+codec 缺失或客户端构建失败都会失败。`EVIDENCE_DIR` 可省略；每次运行
+都会在该目录下创建绑定 commit SHA 的唯一证据子目录，失败时保留并打印
+实际路径，避免与旧验收结果混用。
 
 ## 发布前回归命令
 

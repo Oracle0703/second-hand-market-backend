@@ -51,6 +51,10 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 	if strings.TrimSpace(cfg.FileStorageProvider) == "" {
 		cfg.FileStorageProvider = "local"
 	}
+	if !strings.EqualFold(cfg.FileStorageProvider, "local") {
+		return nil, fmt.Errorf("unsupported file storage provider: %q", cfg.FileStorageProvider)
+	}
+	cfg.FileStorageProvider = "local"
 	if strings.TrimSpace(cfg.FileUploadLocalDir) == "" {
 		cfg.FileUploadLocalDir = "uploads"
 	}
@@ -60,8 +64,19 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 	if cfg.ImageCompressTargetBytes <= 0 {
 		cfg.ImageCompressTargetBytes = media.DefaultTargetBytes
 	}
+	if strings.EqualFold(cfg.FileStorageProvider, "local") &&
+		strings.TrimSpace(cfg.FilePublicBaseURL) != "" {
+		return nil, errors.New("FILE_PUBLIC_BASE_URL must be empty for local storage so /uploads security checks cannot be bypassed")
+	}
+	imageProcessor := buildImageProcessor(cfg)
+	if imageProcessor == nil {
+		return nil, fmt.Errorf("unsupported image processor driver: %q", cfg.ImageProcessorDriver)
+	}
 	db, err := deps.openDB(cfg)
 	if err != nil {
+		if db != nil {
+			deps.closeDB(db)
+		}
 		return nil, err
 	}
 	if err := deps.verifyDatabaseIdentity(db, cfg); err != nil {
@@ -69,20 +84,22 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 		return nil, fmt.Errorf("database identity rejected: %w", err)
 	}
 	if err := ensureUploadStorage(cfg); err != nil {
+		deps.closeDB(db)
 		return nil, err
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret))
-	if strings.EqualFold(cfg.FileStorageProvider, "local") {
-		r.Static("/uploads", cfg.FileUploadLocalDir)
-	}
 	s := &Server{
 		cfg:            cfg,
 		DB:             db,
 		Router:         r,
 		limiter:        newMemoryRateLimiter(),
-		imageProcessor: buildImageProcessor(cfg),
+		imageProcessor: imageProcessor,
+	}
+	if strings.EqualFold(cfg.FileStorageProvider, "local") {
+		r.GET("/uploads/*object_key", s.handlePublicUpload)
+		r.HEAD("/uploads/*object_key", s.handlePublicUpload)
 	}
 	s.registerRoutes()
 	return s, nil
@@ -117,7 +134,7 @@ func buildImageProcessor(cfg Config) media.Processor {
 	case "passthrough":
 		return media.NewPassthroughProcessor(policy)
 	default:
-		return media.NewPassthroughProcessor(policy)
+		return nil
 	}
 }
 

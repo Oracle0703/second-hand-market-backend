@@ -5,6 +5,7 @@ import { Button, Image, Text, View } from '@tarojs/components'
 import { BuyerProduct, fetchBuyerCategories, fetchBuyerProducts } from '../../services/buyer'
 import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
+import { resolveAssetURL } from '../../utils/url'
 
 const PAGE_SIZE = 10
 
@@ -208,7 +209,7 @@ export default function CategoryPage() {
                     <View key={item.id} className="category-product-row">
                       <View className="category-product-cover-wrap" onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.id}` })}>
                         {item.cover_url ? (
-                          <Image className="category-product-cover" src={item.cover_url} mode="aspectFill" />
+                          <Image className="category-product-cover" src={resolveAssetURL(item.cover_url)} mode="aspectFill" />
                         ) : (
                           <View className="category-product-placeholder">
                             <Text className="category-product-placeholder-text">暂无图片</Text>

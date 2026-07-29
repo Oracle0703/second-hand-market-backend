@@ -3,18 +3,7 @@ import { Alert, Button, Space, Typography, message } from 'antd'
 import { useRef, useState, type ChangeEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
-
-function normalizeImageMIME(file: File) {
-  const raw = file.type?.toLowerCase()
-  if (raw === 'image/jpg') return 'image/jpeg'
-  if (raw) return raw
-  const name = file.name.toLowerCase()
-  if (name.endsWith('.png')) return 'image/png'
-  if (name.endsWith('.webp')) return 'image/webp'
-  if (name.endsWith('.heic')) return 'image/heic'
-  if (name.endsWith('.heif')) return 'image/heif'
-  return 'image/jpeg'
-}
+import { normalizeImageMIME } from '@/utils/imageMime'
 
 export function RegisterPage() {
   const navigate = useNavigate()

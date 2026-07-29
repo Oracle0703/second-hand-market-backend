@@ -119,10 +119,7 @@ func (s *Server) loadProductCoverURLMap(productIDs []uint64) (map[uint64]string,
 			return nil, err
 		}
 		for _, file := range files {
-			url := strings.TrimSpace(file.URL)
-			if url == "" && strings.TrimSpace(file.ObjectKey) != "" {
-				url = s.publicFileURL(file.ObjectKey)
-			}
+			url := s.publicFileRecordURL(file)
 			if url == "" {
 				continue
 			}
@@ -158,10 +155,7 @@ func (s *Server) loadProductCoverURLMap(productIDs []uint64) (map[uint64]string,
 			return nil, err
 		}
 		for _, file := range files {
-			url := strings.TrimSpace(file.URL)
-			if url == "" && strings.TrimSpace(file.ObjectKey) != "" {
-				url = s.publicFileURL(file.ObjectKey)
-			}
+			url := s.publicFileRecordURL(file)
 			if url != "" {
 				fileURLMap[file.ID] = url
 			}
@@ -349,7 +343,7 @@ func (s *Server) handleBuyerProductDetail(c *gin.Context) {
 			return
 		}
 		for _, file := range files {
-			urlMap[file.ID] = file.URL
+			urlMap[file.ID] = s.publicFileRecordURL(file)
 		}
 	}
 	images := make([]string, 0, len(imgs))

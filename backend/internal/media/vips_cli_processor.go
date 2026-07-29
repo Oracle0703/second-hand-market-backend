@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 type VipsCLIProcessor struct {
 	Binary string
 	Policy UploadPolicy
+	runner func(ctx context.Context, binary string, args ...string) error
 }
 
 func NewVipsCLIProcessor(binary string, policy UploadPolicy) VipsCLIProcessor {
@@ -31,15 +33,18 @@ func (p VipsCLIProcessor) Process(ctx context.Context, req ProcessRequest) (Proc
 		return ProcessResult{}, err
 	}
 
-	detected := DetectImageMIME(req.Content, req.InputMIME, req.FileName)
-	if !IsAllowedImageMIME(detected) {
+	detected := DetectImageMIME(req.Content)
+	if !IsAllowedImageMIME(detected) || !ImageMIMEMatchesClaim(detected, req.InputMIME) {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	outputMIME := CanonicalImageMIME(detected)
+	if outputMIME == "" {
 		return ProcessResult{}, common.ErrInvalidUpload
 	}
 
-	best := ProcessResult{
-		OutputMIME: detected,
-		OutputExt:  MIMEExt(detected, req.FileName),
-		Content:    append([]byte(nil), req.Content...),
+	resultTemplate := ProcessResult{
+		OutputMIME: outputMIME,
+		OutputExt:  MIMEExt(outputMIME),
 	}
 
 	tmpDir, err := os.MkdirTemp("", "shm-vips-*")
@@ -48,19 +53,38 @@ func (p VipsCLIProcessor) Process(ctx context.Context, req ProcessRequest) (Proc
 	}
 	defer os.RemoveAll(tmpDir)
 
-	inputPath := filepath.Join(tmpDir, "input"+best.OutputExt)
+	inputPath := filepath.Join(tmpDir, "input"+resultTemplate.OutputExt)
 	if err := os.WriteFile(inputPath, req.Content, 0o600); err != nil {
 		return ProcessResult{}, common.ErrInternal
 	}
 
-	qualities := []int{82, 75, 68, 60, 55}
+	normalizedPath := filepath.Join(tmpDir, "normalized"+resultTemplate.OutputExt)
+	normalizeArgs := []string{"autorot", inputPath, buildOutputSpec(normalizedPath, outputMIME, 82)}
+	if err := p.run(ctx, normalizeArgs...); err != nil {
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || os.IsNotExist(err) || ctx.Err() != nil {
+			return ProcessResult{}, common.ErrInternal
+		}
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	normalized, err := os.ReadFile(normalizedPath)
+	if err != nil || len(normalized) == 0 || DetectImageMIME(normalized) != outputMIME {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	best := resultTemplate
+	best.Content = normalized
+	if p.Policy.TargetBytes <= 0 || int64(len(normalized)) <= p.Policy.TargetBytes {
+		return best, nil
+	}
+
+	qualities := []int{75, 68, 60, 55}
 	scales := []float64{1, 0.85, 0.7, 0.55}
 	var lastErr error
 	for _, scale := range scales {
 		for _, quality := range qualities {
-			outPath := filepath.Join(tmpDir, fmt.Sprintf("out-%.2f-%d%s", scale, quality, best.OutputExt))
-			args := buildVipsArgs(inputPath, outPath, detected, quality, scale)
-			if err := exec.CommandContext(ctx, p.Binary, args...).Run(); err != nil {
+			outPath := filepath.Join(tmpDir, fmt.Sprintf("out-%.2f-%d%s", scale, quality, resultTemplate.OutputExt))
+			args := buildVipsArgs(normalizedPath, outPath, outputMIME, quality, scale)
+			if err := p.run(ctx, args...); err != nil {
 				lastErr = err
 				continue
 			}
@@ -71,11 +95,18 @@ func (p VipsCLIProcessor) Process(ctx context.Context, req ProcessRequest) (Proc
 				}
 				continue
 			}
-			if len(output) < len(best.Content) {
-				best.Content = output
+			if detectedOutputMIME := DetectImageMIME(output); detectedOutputMIME != outputMIME {
+				lastErr = fmt.Errorf("vips output MIME mismatch: got %q want %q", detectedOutputMIME, outputMIME)
+				continue
 			}
-			if int64(len(best.Content)) <= p.Policy.TargetBytes {
-				return best, nil
+
+			candidate := resultTemplate
+			candidate.Content = output
+			if len(best.Content) == 0 || len(candidate.Content) < len(best.Content) {
+				best = candidate
+			}
+			if p.Policy.TargetBytes <= 0 || int64(len(candidate.Content)) <= p.Policy.TargetBytes {
+				return candidate, nil
 			}
 		}
 	}
@@ -84,9 +115,20 @@ func (p VipsCLIProcessor) Process(ctx context.Context, req ProcessRequest) (Proc
 		return best, nil
 	}
 	if lastErr != nil {
+		var execErr *exec.Error
+		if errors.As(lastErr, &execErr) || os.IsNotExist(lastErr) || ctx.Err() != nil {
+			return ProcessResult{}, common.ErrInternal
+		}
 		return ProcessResult{}, common.ErrInvalidUpload
 	}
-	return ProcessResult{}, common.ErrInternal
+	return ProcessResult{}, common.ErrInvalidUpload
+}
+
+func (p VipsCLIProcessor) run(ctx context.Context, args ...string) error {
+	if p.runner != nil {
+		return p.runner(ctx, p.Binary, args...)
+	}
+	return exec.CommandContext(ctx, p.Binary, args...).Run()
 }
 
 func defaultProcessorBinary(binary string) string {

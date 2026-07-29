@@ -5,6 +5,7 @@ import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/component
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
 import { promptAndCallStore } from '../../../utils/contact'
 import { centToYuanText } from '../../../utils/price'
+import { resolveAssetURL } from '../../../utils/url'
 
 export default function ProductDetailPage() {
   const router = useRouter()
@@ -36,7 +37,7 @@ export default function ProductDetailPage() {
   })
 
   const product = detail.data?.product
-  const imageURLs = (product?.images || []).filter(Boolean)
+  const imageURLs = (product?.images || []).map((url) => resolveAssetURL(url)).filter(Boolean)
   const originalPriceCent = product?.original_price_cent ?? product?.price_cent ?? 0
 
   useShareAppMessage(() => ({
@@ -81,7 +82,7 @@ export default function ProductDetailPage() {
             </Swiper>
           ) : product.cover_url ? (
             <Image
-              src={product.cover_url}
+              src={resolveAssetURL(product.cover_url)}
               mode="aspectFill"
               style={{ width: '100%', height: '420rpx', borderRadius: '12rpx', marginBottom: '12rpx' }}
             />

@@ -3,7 +3,9 @@ package media
 import (
 	"bytes"
 	"context"
-	"path/filepath"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
@@ -71,6 +73,9 @@ type Processor interface {
 	Process(ctx context.Context, req ProcessRequest) (ProcessResult, error)
 }
 
+// PassthroughProcessor keeps its historical name for configuration
+// compatibility. It never passes bytes through: JPEG and PNG inputs are fully
+// decoded and re-encoded, while formats that need libvips fail closed.
 type PassthroughProcessor struct {
 	policy UploadPolicy
 }
@@ -86,15 +91,46 @@ func (p PassthroughProcessor) Process(_ context.Context, req ProcessRequest) (Pr
 	if err := p.policy.ValidateOriginalSize(int64(len(req.Content))); err != nil {
 		return ProcessResult{}, err
 	}
-	detected := DetectImageMIME(req.Content, req.InputMIME, req.FileName)
-	if !IsAllowedImageMIME(detected) {
+
+	detected := DetectImageMIME(req.Content)
+	if !ImageMIMEMatchesClaim(detected, req.InputMIME) ||
+		(detected != "image/jpeg" && detected != "image/png") {
 		return ProcessResult{}, common.ErrInvalidUpload
 	}
-	content := append([]byte(nil), req.Content...)
+
+	decoded, format, err := image.Decode(bytes.NewReader(req.Content))
+	if err != nil || decoded.Bounds().Dx() <= 0 || decoded.Bounds().Dy() <= 0 {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+
+	var output bytes.Buffer
+	switch detected {
+	case "image/jpeg":
+		if format != "jpeg" {
+			return ProcessResult{}, common.ErrInvalidUpload
+		}
+		if err := jpeg.Encode(&output, decoded, &jpeg.Options{Quality: 82}); err != nil {
+			return ProcessResult{}, common.ErrInvalidUpload
+		}
+	case "image/png":
+		if format != "png" {
+			return ProcessResult{}, common.ErrInvalidUpload
+		}
+		encoder := png.Encoder{CompressionLevel: png.BestCompression}
+		if err := encoder.Encode(&output, decoded); err != nil {
+			return ProcessResult{}, common.ErrInvalidUpload
+		}
+	}
+	if output.Len() == 0 {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+
 	return ProcessResult{
 		OutputMIME: detected,
-		OutputExt:  MIMEExt(detected, req.FileName),
-		Content:    content,
+		OutputExt:  MIMEExt(detected),
+		Content:    output.Bytes(),
+		Width:      decoded.Bounds().Dx(),
+		Height:     decoded.Bounds().Dy(),
 	}, nil
 }
 
@@ -102,21 +138,70 @@ func IsAllowedImageMIME(mimeType string) bool {
 	return allowedImageMIMEs[normalizeMIME(mimeType)]
 }
 
-func DetectImageMIME(content []byte, inputMIME, fileName string) string {
-	if len(content) > 0 {
-		if mt, err := mimetype.DetectReader(bytes.NewReader(content)); err == nil && mt != nil {
-			normalized := normalizeMIME(mt.String())
-			if IsAllowedImageMIME(normalized) {
-				return normalized
-			}
-		}
+// CanonicalImageMIME returns the MIME emitted by the processing pipeline.
+// Generic HEIF input is normalized to HEIC because libvips/libheif otherwise
+// commonly writes an HEIC bitstream even when the input used the mif1 brand.
+func CanonicalImageMIME(mimeType string) string {
+	normalized := normalizeMIME(mimeType)
+	if !IsAllowedImageMIME(normalized) {
+		return ""
 	}
-
-	if normalized := normalizeMIME(inputMIME); IsAllowedImageMIME(normalized) {
-		return normalized
+	if normalized == "image/heif" {
+		return "image/heic"
 	}
+	return normalized
+}
 
-	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
+// ImageMIMEMatchesClaim treats HEIC and generic HEIF as safe aliases while
+// keeping every other declared MIME bound to the detected byte format.
+func ImageMIMEMatchesClaim(detectedMIME, claimedMIME string) bool {
+	detectedCanonical := CanonicalImageMIME(detectedMIME)
+	claimedCanonical := CanonicalImageMIME(claimedMIME)
+	return detectedCanonical != "" && detectedCanonical == claimedCanonical
+}
+
+// DetectImageMIME deliberately trusts only the uploaded bytes. The optional
+// arguments are retained for source compatibility with older callers, but a
+// client-provided MIME type or filename must never turn non-image content into
+// an accepted image.
+func DetectImageMIME(content []byte, _ ...string) string {
+	if len(content) == 0 {
+		return ""
+	}
+	mt, err := mimetype.DetectReader(bytes.NewReader(content))
+	if err != nil || mt == nil {
+		return ""
+	}
+	detected := normalizeMIME(mt.String())
+	if !IsAllowedImageMIME(detected) {
+		return ""
+	}
+	return detected
+}
+
+// MIMEExt returns a server-controlled extension for an allowed image MIME.
+// Optional filename arguments are intentionally ignored.
+func MIMEExt(mimeType string, _ ...string) string {
+	switch normalizeMIME(mimeType) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/heic":
+		return ".heic"
+	case "image/heif":
+		return ".heif"
+	default:
+		return ""
+	}
+}
+
+// MIMEForExt returns the image MIME that the server will send for a stored
+// object. Unknown and executable extensions are rejected by returning "".
+func MIMEForExt(ext string) string {
+	switch normalizeMIME(ext) {
 	case ".jpg", ".jpeg":
 		return "image/jpeg"
 	case ".png":
@@ -130,26 +215,6 @@ func DetectImageMIME(content []byte, inputMIME, fileName string) string {
 	default:
 		return ""
 	}
-}
-
-func MIMEExt(mimeType, fileName string) string {
-	switch normalizeMIME(mimeType) {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/webp":
-		return ".webp"
-	case "image/heic":
-		return ".heic"
-	case "image/heif":
-		return ".heif"
-	}
-	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName)))
-	if ext != "" {
-		return ext
-	}
-	return ""
 }
 
 func normalizeMIME(mimeType string) string {

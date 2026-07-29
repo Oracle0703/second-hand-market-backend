@@ -15,29 +15,23 @@ import (
 )
 
 type apiResp struct {
-	Code int                    `json:"code"`
-	Data map[string]interface{} `json:"data"`
+	Code       int                    `json:"code"`
+	Data       map[string]interface{} `json:"data"`
+	HTTPStatus int                    `json:"-"`
 }
 
 func newTestServer(t *testing.T) *app.Server {
 	t.Helper()
-	cfg := app.Config{
-		AppEnv:                   "test",
-		Addr:                     ":0",
-		DBDriver:                 "sqlite",
-		DBDSN:                    fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
-		JWTAccessSecret:          "test-access",
-		JWTRefreshSecret:         "test-refresh",
-		AccessTTL:                app.LoadConfig().AccessTTL,
-		RefreshTTL:               app.LoadConfig().RefreshTTL,
-		FileStorageProvider:      "local",
-		FileUploadLocalDir:       t.TempDir(),
-		FileUploadMaxBytes:       40 * 1024 * 1024,
-		ImageCompressTargetBytes: 20 * 1024 * 1024,
-		ImageProcessorDriver:     "passthrough",
-		BuyerWechatLoginMode:     "mock",
-		BuyerDouyinLoginMode:     "mock",
-	}
+	return newTestServerWithUploadDir(t, t.TempDir())
+}
+
+func newTestServerWithUploadDir(t *testing.T, uploadDir string) *app.Server {
+	t.Helper()
+	return newTestServerWithConfig(t, newTestConfig(t, uploadDir))
+}
+
+func newTestServerWithConfig(t *testing.T, cfg app.Config) *app.Server {
+	t.Helper()
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server error: %v", err)
@@ -57,6 +51,27 @@ func newTestServer(t *testing.T) *app.Server {
 		t.Fatalf("seed test categories: %v", err)
 	}
 	return srv
+}
+
+func newTestConfig(t *testing.T, uploadDir string) app.Config {
+	t.Helper()
+	return app.Config{
+		AppEnv:                   "test",
+		Addr:                     ":0",
+		DBDriver:                 "sqlite",
+		DBDSN:                    fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
+		JWTAccessSecret:          "test-access",
+		JWTRefreshSecret:         "test-refresh",
+		AccessTTL:                app.LoadConfig().AccessTTL,
+		RefreshTTL:               app.LoadConfig().RefreshTTL,
+		FileStorageProvider:      "local",
+		FileUploadLocalDir:       uploadDir,
+		FileUploadMaxBytes:       40 * 1024 * 1024,
+		ImageCompressTargetBytes: 20 * 1024 * 1024,
+		ImageProcessorDriver:     "passthrough",
+		BuyerWechatLoginMode:     "mock",
+		BuyerDouyinLoginMode:     "mock",
+	}
 }
 
 func newTestServerWithProcessor(t *testing.T, processor media.Processor) *app.Server {
@@ -83,6 +98,7 @@ func requestJSON(t *testing.T, h http.Handler, method, path string, body interfa
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response failed: %v, raw=%s", err, w.Body.String())
 	}
+	resp.HTTPStatus = w.Code
 	return resp
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 )
 
 const maxUploadSizeBytes int64 = media.DefaultMaxOriginalBytes
+const maxMultipartOverheadBytes int64 = 1 * 1024 * 1024
 
 var allowedMIMEs = map[string]bool{
 	"image/jpeg": true,
@@ -58,7 +60,7 @@ func (s *Server) handlePresign(c *gin.Context) {
 	}
 	bizType := strings.ToUpper(req.BizType)
 	mimeType := strings.ToLower(strings.TrimSpace(req.MIMEType))
-	if !allowedMIMEs[mimeType] || req.FileSize > s.uploadSizeLimit() {
+	if !allowedMIMEs[mimeType] || req.FileSize <= 0 || req.FileSize > s.uploadSizeLimit() {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
@@ -75,12 +77,10 @@ func (s *Server) handlePresign(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	ext := strings.ToLower(filepath.Ext(req.FileName))
+	ext := media.MIMEExt(mimeType)
 	if ext == "" {
-		ext = mimeExt(mimeType)
-	}
-	if ext == "" {
-		ext = ".bin"
+		common.Fail(c, common.ErrInvalidUpload)
+		return
 	}
 	objectKey := fmt.Sprintf("%s/%s%s", strings.ToLower(bizType), common.BuildBizNo("F"), ext)
 	file := model.FileRecord{
@@ -108,6 +108,17 @@ func (s *Server) handlePresign(c *gin.Context) {
 }
 
 func (s *Server) handleUploadFile(c *gin.Context) {
+	bodyLimit := s.uploadSizeLimit() + maxMultipartOverheadBytes
+	if c.Request.ContentLength > bodyLimit {
+		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(
+		c.Writer,
+		c.Request.Body,
+		bodyLimit,
+	)
+
 	fileID, err := strconv.ParseUint(strings.TrimSpace(c.PostForm("file_id")), 10, 64)
 	if err != nil || fileID == 0 {
 		common.Fail(c, common.ErrInvalidArgument)
@@ -165,12 +176,25 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	if len(processed.Content) == 0 || !media.IsAllowedImageMIME(processed.OutputMIME) {
+	outputMIME := strings.ToLower(strings.TrimSpace(processed.OutputMIME))
+	outputExt := media.MIMEExt(outputMIME)
+	expectedOutputMIME := media.CanonicalImageMIME(file.MimeType)
+	if len(processed.Content) == 0 ||
+		int64(len(processed.Content)) > limit ||
+		outputExt == "" ||
+		outputMIME != expectedOutputMIME ||
+		strings.ToLower(strings.TrimSpace(processed.OutputExt)) != outputExt ||
+		media.DetectImageMIME(processed.Content) != outputMIME {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
 
-	dstPath, err := s.localUploadPath(file.ObjectKey)
+	finalObjectKey, err := replaceObjectKeyExtension(file.ObjectKey, outputExt)
+	if err != nil {
+		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	dstPath, err := s.localUploadPath(finalObjectKey)
 	if err != nil {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
@@ -207,18 +231,20 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		return
 	}
 
-	url := s.publicFileURL(file.ObjectKey)
+	url := s.publicFileURL(finalObjectKey)
 	updates := map[string]interface{}{
+		"object_key":  finalObjectKey,
 		"url":         url,
 		"scan_status": model.FileScanPass,
-		"mime_type":   processed.OutputMIME,
+		"mime_type":   outputMIME,
 		"size_bytes":  int64(len(processed.Content)),
 	}
 	if err := s.DB.Model(&model.FileRecord{}).Where("id = ?", file.ID).Updates(updates).Error; err != nil {
+		_ = os.Remove(dstPath)
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, gin.H{"file_id": file.ID, "url": url, "object_key": file.ObjectKey, "status": model.FileScanPass})
+	common.Success(c, gin.H{"file_id": file.ID, "url": url, "object_key": finalObjectKey, "status": model.FileScanPass})
 }
 
 func (s *Server) handleConfirmUpload(c *gin.Context) {
@@ -236,22 +262,24 @@ func (s *Server) handleConfirmUpload(c *gin.Context) {
 		common.Fail(c, common.ErrInvalidArgument)
 		return
 	}
-	if strings.EqualFold(s.cfg.FileStorageProvider, "local") {
-		path, pathErr := s.localUploadPath(file.ObjectKey)
-		if pathErr != nil {
-			common.Fail(c, common.ErrInvalidUpload)
-			return
-		}
-		if stat, statErr := os.Stat(path); statErr != nil || stat.IsDir() {
-			common.Fail(c, common.ErrInvalidUpload)
-			return
-		}
-	}
-	url := s.publicFileURL(req.ObjectKey)
-	if err := s.DB.Model(&model.FileRecord{}).Where("id = ?", file.ID).Updates(map[string]interface{}{"url": url, "scan_status": model.FileScanPass}).Error; err != nil {
-		common.Fail(c, common.ErrInternal)
+	if !strings.EqualFold(s.cfg.FileStorageProvider, "local") || file.ScanStatus != model.FileScanPass {
+		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
+	if media.MIMEForExt(filepath.Ext(file.ObjectKey)) != strings.ToLower(strings.TrimSpace(file.MimeType)) {
+		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	path, pathErr := s.localUploadPath(file.ObjectKey)
+	if pathErr != nil {
+		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	if stat, statErr := os.Stat(path); statErr != nil || stat.IsDir() {
+		common.Fail(c, common.ErrInvalidUpload)
+		return
+	}
+	url := s.publicFileURL(file.ObjectKey)
 	common.Success(c, gin.H{"file_id": file.ID, "url": url, "status": model.FileScanPass})
 }
 
@@ -295,30 +323,72 @@ func (s *Server) localUploadPath(objectKey string) (string, error) {
 	return target, nil
 }
 
-func (s *Server) publicFileURL(objectKey string) string {
-	base := strings.TrimSpace(s.cfg.FilePublicBaseURL)
-	cleanKey := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+objectKey)), "/")
-	if base != "" {
-		return strings.TrimRight(base, "/") + "/" + cleanKey
+func replaceObjectKeyExtension(objectKey, ext string) (string, error) {
+	if media.MIMEForExt(ext) == "" {
+		return "", common.ErrInvalidUpload
 	}
+	currentExt := filepath.Ext(objectKey)
+	base := strings.TrimSuffix(objectKey, currentExt)
+	if currentExt == "" || base == "" {
+		return "", common.ErrInvalidUpload
+	}
+	return base + strings.ToLower(ext), nil
+}
+
+func (s *Server) handlePublicUpload(c *gin.Context) {
+	objectKey := strings.TrimPrefix(c.Param("object_key"), "/")
+	mimeType := media.MIMEForExt(filepath.Ext(objectKey))
+	if mimeType == "" {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	path, err := s.localUploadPath(objectKey)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil || !stat.Mode().IsRegular() {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	header := make([]byte, 3072)
+	n, readErr := file.Read(header)
+	if readErr != nil && readErr != io.EOF {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if media.DetectImageMIME(header[:n]) != mimeType {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	c.Header("Content-Type", mimeType)
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "sandbox; default-src 'none'")
+	http.ServeContent(c.Writer, c.Request, filepath.Base(objectKey), stat.ModTime(), file)
+}
+
+func (s *Server) publicFileURL(objectKey string) string {
+	cleanKey := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+objectKey)), "/")
 	return "/uploads/" + cleanKey
 }
 
-func mimeExt(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/webp":
-		return ".webp"
-	case "image/heic":
-		return ".heic"
-	case "image/heif":
-		return ".heif"
-	default:
+func (s *Server) publicFileRecordURL(file model.FileRecord) string {
+	if strings.TrimSpace(file.ObjectKey) == "" {
 		return ""
 	}
+	return s.publicFileURL(file.ObjectKey)
 }
 
 func (s *Server) uploadSizeLimit() int64 {

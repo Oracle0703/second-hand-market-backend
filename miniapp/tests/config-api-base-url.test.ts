@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { resolveAPIBaseURL } from '../config/index'
+import { resolveAPIBaseURL } from '../config/api-base-url'
 
 describe('小程序 API 基址选择', () => {
   test('微信小程序开发环境默认使用正式 API 地址', () => {

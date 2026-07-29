@@ -38,7 +38,8 @@ func TestNewServerVerifiesRemoteIdentityBeforeDatabaseWrites(t *testing.T) {
 
 	t.Run("successful_identity_check_does_not_run_database_writes", func(t *testing.T) {
 		cfg := validRemoteDevelopmentConfig()
-		cfg.FileStorageProvider = "probe"
+		cfg.FileStorageProvider = "local"
+		cfg.FileUploadLocalDir = t.TempDir()
 		cfg.ImageProcessorDriver = "passthrough"
 		calls := []string{}
 		deps := serverStartupDependencies{
