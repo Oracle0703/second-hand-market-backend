@@ -17,12 +17,35 @@ type RequestOptions<T> = {
   data?: Record<string, unknown>
   skipAuth?: boolean
   retrying?: boolean
+  expectedSession?: SessionIdentity
 }
 
 type UnknownRecord = Record<string, unknown>
+type SessionIdentity = {
+  accessToken: string
+  refreshToken: string
+}
+type RefreshOutcome =
+  | { status: 'refreshed'; owner: SessionIdentity; session: SessionIdentity }
+  | { status: 'failed'; owner: SessionIdentity }
+  | { status: 'stale'; owner: SessionIdentity }
+type RefreshFlight = {
+  owner: SessionIdentity
+  promise: Promise<RefreshOutcome>
+  outcome?: RefreshOutcome
+}
 
 const BASE_URL = (typeof __API_BASE_URL__ === 'string' && __API_BASE_URL__.trim()) || 'https://market.meaningful.ink/api/v1'
-let refreshingPromise: Promise<boolean> | null = null
+let refreshFlight: RefreshFlight | null = null
+
+export class AuthExpiredError extends Error {
+  readonly code = 10002
+
+  constructor() {
+    super('登录已过期，请重新登录')
+    this.name = 'AuthExpiredError'
+  }
+}
 
 function buildURL(path: string): string {
   if (path.startsWith('http')) return path
@@ -47,6 +70,43 @@ function isAPIResponse<T>(payload: unknown): payload is APIResponse<T> {
   return isRecord(payload) && typeof payload.code === 'number'
 }
 
+function isUnauthorized(statusCode: number, payload: unknown): boolean {
+  return statusCode === 401 || (isAPIResponse(payload) && payload.code === 10002)
+}
+
+function hasRefreshTokens(value: unknown): value is { access_token: string; refresh_token: string } {
+  return isRecord(value) &&
+    typeof value.access_token === 'string' && value.access_token.trim() !== '' &&
+    typeof value.refresh_token === 'string' && value.refresh_token.trim() !== ''
+}
+
+function sessionIdentity(): SessionIdentity {
+  const state = useSessionStore.getState()
+  return {
+    accessToken: state.accessToken,
+    refreshToken: state.refreshToken
+  }
+}
+
+function isSameSession(left: SessionIdentity, right: SessionIdentity): boolean {
+  return left.accessToken === right.accessToken && left.refreshToken === right.refreshToken
+}
+
+function clearSessionIfOwnedBy(owner: SessionIdentity): void {
+  const current = useSessionStore.getState()
+  if (isSameSession(current, owner)) {
+    current.clearSession()
+  }
+}
+
+function failOwnedRefresh(owner: SessionIdentity): RefreshOutcome {
+  if (!isSameSession(sessionIdentity(), owner)) {
+    return { status: 'stale', owner }
+  }
+  useSessionStore.getState().clearSession()
+  return { status: 'failed', owner }
+}
+
 function formatPayloadSummary(payload: unknown): string {
   if (typeof payload === 'string') {
     return `string:${payload.slice(0, 200)}`
@@ -65,42 +125,89 @@ function buildMalformedResponseError(res: Taro.request.SuccessCallbackResult<unk
   return new Error(detail)
 }
 
-async function refreshAccessToken(): Promise<boolean> {
-  const { refreshToken, clearSession, setSession, profile } = useSessionStore.getState()
-  if (!refreshToken) return false
+async function refreshAccessToken(owner: SessionIdentity): Promise<RefreshOutcome> {
   try {
     const res = await Taro.request<APIResponse<{ access_token: string; refresh_token: string }>>({
       url: buildURL('/buyer/auth/refresh'),
       method: 'POST',
-      data: { refresh_token: refreshToken },
+      data: { refresh_token: owner.refreshToken },
       header: {
         'Content-Type': 'application/json',
         'X-Device-Id': ensureDeviceID()
       }
     })
     const payload = res.data
-    if (!isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
+    if (res.statusCode < 200 || res.statusCode >= 300 ||
+      !isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
       if (__DEV_MODE__) {
         console.error('[miniapp-api] refresh malformed response', res.statusCode, res.header, res.data)
       }
-      clearSession()
-      return false
+      return failOwnedRefresh(owner)
     }
-    if (payload.code !== 0) {
-      clearSession()
-      return false
+    if (payload.code !== 0 || !hasRefreshTokens(payload.data)) {
+      return failOwnedRefresh(owner)
     }
-    setSession(payload.data.access_token, payload.data.refresh_token, profile)
-    return true
+
+    const current = useSessionStore.getState()
+    if (!isSameSession(current, owner)) {
+      return { status: 'stale', owner }
+    }
+
+    const refreshedSession = {
+      accessToken: payload.data.access_token,
+      refreshToken: payload.data.refresh_token
+    }
+    current.setSession(refreshedSession.accessToken, refreshedSession.refreshToken, current.profile)
+
+    // Zustand subscribers run synchronously. Re-check after setSession so a
+    // concurrent login/logout cannot be overwritten or used for the replay.
+    if (!isSameSession(sessionIdentity(), refreshedSession)) {
+      return { status: 'stale', owner }
+    }
+    return { status: 'refreshed', owner, session: refreshedSession }
   } catch {
-    clearSession()
-    return false
+    return failOwnedRefresh(owner)
   }
 }
 
+function refreshFor(owner: SessionIdentity): Promise<RefreshOutcome> {
+  const existing = refreshFlight
+  if (existing && isSameSession(existing.owner, owner)) {
+    const current = sessionIdentity()
+    if (!existing.outcome ||
+      existing.outcome.status === 'refreshed' ||
+      !isSameSession(current, owner)) {
+      return existing.promise
+    }
+  }
+  if (existing && !existing.outcome && !isSameSession(existing.owner, owner)) {
+    return existing.promise.then(() => refreshFor(owner))
+  }
+
+  if (!isSameSession(sessionIdentity(), owner)) {
+    return Promise.resolve({ status: 'stale', owner })
+  }
+
+  let flight!: RefreshFlight
+  const promise = refreshAccessToken(owner).then((outcome) => {
+    flight.outcome = outcome
+    return outcome
+  })
+  flight = { owner, promise }
+  refreshFlight = flight
+  return promise
+}
+
 export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
-  const state = useSessionStore.getState()
   const deviceID = ensureDeviceID()
+  const state = useSessionStore.getState()
+  const requestSession = {
+    accessToken: state.accessToken,
+    refreshToken: state.refreshToken
+  }
+  if (options.expectedSession && !isSameSession(requestSession, options.expectedSession)) {
+    throw new AuthExpiredError()
+  }
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Device-Id': deviceID
@@ -134,6 +241,25 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
     console.log('[miniapp-api] response', options.method, url, res.statusCode, res.header, payload)
   }
 
+  if (isUnauthorized(res.statusCode, payload) && !options.skipAuth) {
+    if (options.retrying || !requestSession.refreshToken) {
+      clearSessionIfOwnedBy(requestSession)
+      throw new AuthExpiredError()
+    }
+
+    const outcome = await refreshFor(requestSession)
+    if (outcome.status === 'refreshed' &&
+      isSameSession(outcome.owner, requestSession) &&
+      isSameSession(sessionIdentity(), outcome.session)) {
+      return apiRequest<T>({
+        ...options,
+        retrying: true,
+        expectedSession: outcome.session
+      })
+    }
+    throw new AuthExpiredError()
+  }
+
   if (res.statusCode < 200 || res.statusCode >= 300) {
     throw new Error(`request failed: status=${res.statusCode}, url=${url}, payload=${formatPayloadSummary(payload)}`)
   }
@@ -144,18 +270,6 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
 
   if (payload.code === 0) {
     return payload.data
-  }
-
-  if (payload.code === 10002 && !options.skipAuth && !options.retrying && state.refreshToken) {
-    if (!refreshingPromise) {
-      refreshingPromise = refreshAccessToken().finally(() => {
-        refreshingPromise = null
-      })
-    }
-    const ok = await refreshingPromise
-    if (ok) {
-      return apiRequest<T>({ ...options, retrying: true })
-    }
   }
 
   throw new Error(payload.message || `request failed: ${payload.code}`)
