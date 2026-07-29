@@ -10,6 +10,7 @@ evidence_parent="${evidence_dir%/*}"
 expected_node="v22.22.2"
 expected_npm="10.9.7"
 expected_commit_sha="${EXPECTED_COMMIT_SHA:-}"
+source_list_tree="${MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE:-HEAD}"
 evidence_publish_tmp=""
 evidence_publish_lock=""
 evidence_parent_identity=""
@@ -19,6 +20,33 @@ runtime_dir=""
 
 expected_commit_is_valid() {
   [[ "${#expected_commit_sha}" -eq 40 && "$expected_commit_sha" != *[!0-9a-f]* ]]
+}
+
+normalize_local_path() {
+  local path="$1"
+  if [[ "$path" =~ ^[A-Za-z]:\\ ]]; then
+    path="${path//\\//}"
+  fi
+  printf '%s\n' "$path"
+}
+
+local_path_is_absolute() {
+  [[ "$1" == /* ]] && return 0
+  case "${OSTYPE:-}:${MSYSTEM:-}" in
+    msys*:* | cygwin*:* | *:MINGW* | *:MSYS*)
+      [[ "$1" =~ ^[A-Za-z]:/ ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+file_sha256() {
+  local path="$1" diagnostics="${2:-/dev/null}" digest
+  digest="$(sha256sum --binary -- "$path" 2>>"$diagnostics" | cut -d ' ' -f1)" || return 1
+  [[ "${#digest}" -eq 64 && "$digest" != *[!0-9a-f]* ]] || return 1
+  printf '%s\n' "$digest"
 }
 
 source_path_is_allowed() {
@@ -83,9 +111,13 @@ write_directory_manifest() {
   local directory="$1"
   local source_list="$2"
   local output="$3"
+  local path digest
   (
     cd "$directory"
-    xargs -0 sha256sum <"$source_list"
+    while IFS= read -r -d '' path; do
+      digest="$(file_sha256 "$path")" || exit 1
+      printf '%s  %s\n' "$digest" "$path"
+    done <"$source_list"
   ) >"$output"
 }
 
@@ -175,7 +207,7 @@ validate_package_checksums() (
   while [[ "$line_count" -lt 3 ]]; do
     expected_name="${names[$line_count]}"
     IFS= read -r line <&3 || { exec 3<&-; return 1; }
-    actual_hash="$(sha256sum "$expected_name" 2>>"$diagnostics" | cut -d ' ' -f1)"
+    actual_hash="$(file_sha256 "$expected_name" "$diagnostics")" || { exec 3<&-; return 1; }
     [[ "$line" == "$actual_hash  $expected_name" ]] || { exec 3<&-; return 1; }
     line_count=$((line_count + 1))
   done
@@ -236,7 +268,7 @@ directory_identity() {
 
 export_head_source() (
   set -euo pipefail
-  local export_dir="$1"
+  local export_dir
   local export_parent=""
   local export_name=""
   local export_return_dir="$PWD"
@@ -247,9 +279,12 @@ export_head_source() (
   local export_child_cwd_active=0
   local export_parent_identity=""
   local export_child_identity=""
-  local path
+  local export_stage="preflight"
+  local path digest
   local head_oid
+  local info_attributes
   local -a archive_paths=()
+  export_dir="$(normalize_local_path "$1")"
 
   export_parent_is_current() {
     local identity=""
@@ -302,7 +337,7 @@ export_head_source() (
 
   export_parent="${export_dir%/*}"
   export_name="${export_dir##*/}"
-  [[ "$export_dir" == /* && "$export_dir" != "/" &&
+  local_path_is_absolute "$export_dir" && [[ "$export_dir" != "/" &&
     -n "$export_parent" && -n "$export_name" && "$export_name" != . && "$export_name" != .. &&
     -d "$export_parent" && ! -L "$export_parent" &&
     ! -e "$export_dir" && ! -L "$export_dir" ]] || {
@@ -329,6 +364,23 @@ export_head_source() (
   }
   [[ "$head_oid" == "$expected_commit_sha" ]] || {
     echo "committed HEAD does not match EXPECTED_COMMIT_SHA" >&2
+    return 1
+  }
+  info_attributes="$(
+    cd "$repo_dir"
+    path="$(git rev-parse --git-path info/attributes 2>"$export_runtime/info-attributes.raw")" || exit 1
+    path="$(normalize_local_path "$path")" || exit 1
+    if local_path_is_absolute "$path"; then
+      printf '%s\n' "$path"
+    else
+      printf '%s/%s\n' "$PWD" "$path"
+    fi
+  )" || {
+    echo "cannot resolve repository-local Git attributes path" >&2
+    return 1
+  }
+  [[ ! -e "$info_attributes" && ! -L "$info_attributes" ]] || {
+    echo "repository-local Git info/attributes must be absent for immutable export" >&2
     return 1
   }
   cd "$export_parent" || {
@@ -368,31 +420,51 @@ export_head_source() (
   }
   mkdir "$extracted"
   chmod 700 "$extracted"
+  printf 'identity\n' >"$export_runtime/export-stage"
   if ! (
     [[ "$(directory_identity .)" == "$export_child_identity" ]] || exit 1
     export_child_is_current || exit 1
     chmod 700 . || exit 1
+    printf 'source-list\n' >"$export_runtime/export-stage" || exit 1
     write_source_file_list "$head_oid" >source-files.z || exit 1
     validate_source_list source-files.z "$export_runtime/sorted-source-files.z" || exit 1
     while IFS= read -r -d '' path; do archive_paths+=("$path"); done <source-files.z
     [[ "${#archive_paths[@]}" -gt 0 ]] || exit 1
-    ( cd "$repo_dir"; git archive --format=tar "$head_oid" -- "${archive_paths[@]}" ) \
+    printf 'git-attributes\n' >"$export_runtime/export-stage" || exit 1
+    [[ ! -e "$info_attributes" && ! -L "$info_attributes" ]] || exit 1
+    printf 'git-archive\n' >"$export_runtime/export-stage" || exit 1
+    ( cd "$repo_dir"; GIT_ATTR_NOSYSTEM=1 git -c core.attributesFile= -c core.autocrlf=false -c core.eol=lf \
+      archive --format=tar "$head_oid" -- "${archive_paths[@]}" ) \
       >source.tar 2>"$export_runtime/git-archive.raw" || exit 1
+    [[ ! -e "$info_attributes" && ! -L "$info_attributes" ]] || exit 1
+    printf 'archive-list\n' >"$export_runtime/export-stage" || exit 1
     validate_archive_list . source-files.z "$export_runtime" 2>>"$export_runtime/archive-validation.raw" || exit 1
+    printf 'archive-extract\n' >"$export_runtime/export-stage" || exit 1
     tar -C "$extracted" -xf source.tar >"$export_runtime/archive-extract.raw" 2>&1 || exit 1
     validate_received_source_files "$extracted" source-files.z || exit 1
+    printf 'context-list\n' >"$export_runtime/export-stage" || exit 1
     write_context_file_list "$extracted" >"$export_runtime/archive-source-files.z" || exit 1
     cmp -s source-files.z "$export_runtime/archive-source-files.z" || exit 1
-    exec 4<source-files.z || exit 1
-    ( cd "$extracted"; xargs -0 sha256sum <&4 ) >source-sha256.txt || exit 1
-    exec 4<&-
+    printf 'source-manifest\n' >"$export_runtime/export-stage" || exit 1
+    write_directory_manifest "$extracted" "$PWD/source-files.z" source-sha256.txt || exit 1
+    printf 'package-manifest\n' >"$export_runtime/export-stage" || exit 1
     printf 'commit=%s\n' "$head_oid" >package-sha256.txt || exit 1
-    sha256sum source-files.z source-sha256.txt source.tar >>package-sha256.txt || exit 1
+    for path in source-files.z source-sha256.txt source.tar; do
+      digest="$(file_sha256 "$path")" || exit 1
+      printf '%s  %s\n' "$digest" "$path" >>package-sha256.txt || exit 1
+    done
+    printf 'artifact-validation\n' >"$export_runtime/export-stage" || exit 1
     validate_package_artifact_list . || exit 1
     validate_package_checksums . "$export_runtime/package-checksums.raw" || exit 1
+    printf 'permissions\n' >"$export_runtime/export-stage" || exit 1
     chmod 600 source-files.z source-sha256.txt source.tar package-sha256.txt
   ); then
-    echo "committed HEAD miniapp archive does not match its source list" >&2
+    IFS= read -r export_stage <"$export_runtime/export-stage" || export_stage="unknown"
+    case "$export_stage" in
+      identity|source-list|git-attributes|git-archive|archive-list|archive-extract|context-list|source-manifest|package-manifest|artifact-validation|permissions) ;;
+      *) export_stage="unknown" ;;
+    esac
+    printf 'committed HEAD miniapp source export failed at stage=%s\n' "$export_stage" >&2
     return 1
   fi
   export_child_is_current || { echo "source export destination identity changed" >&2; return 1; }
@@ -405,9 +477,23 @@ if [[ "${MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY:-0}" == "1" &&
   exit 1
 fi
 if [[ "${MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY:-0}" == "1" ]]; then
-  write_source_file_list
+  if [[ "$source_list_tree" != "HEAD" ]]; then
+    [[ "${#source_list_tree}" -eq 40 && "$source_list_tree" != *[!0-9a-f]* ]] || {
+      echo "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE must be a full lowercase Git tree SHA" >&2
+      exit 1
+    }
+    git -C "$repo_dir" cat-file -e "$source_list_tree^{tree}" 2>/dev/null || {
+      echo "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE does not identify a Git tree" >&2
+      exit 1
+    }
+  fi
+  write_source_file_list "$source_list_tree"
   exit 0
 fi
+[[ "$source_list_tree" == "HEAD" ]] || {
+  echo "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE is only valid in source-list mode" >&2
+  exit 1
+}
 if [[ -n "${MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR:-}" ]]; then
   export_head_source "$MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR"
   exit 0
@@ -429,8 +515,8 @@ for command in sha256sum sort xargs mktemp tar chmod mkdir rm rmdir mv cmp find 
   }
 done
 
-source_package_dir="${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR:-}"
-[[ "$source_package_dir" == /* && -d "$source_package_dir" && ! -L "$source_package_dir" ]] || {
+source_package_dir="$(normalize_local_path "${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR:-}")"
+local_path_is_absolute "$source_package_dir" && [[ -d "$source_package_dir" && ! -L "$source_package_dir" ]] || {
   echo "MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR must identify the transferred source package" >&2
   exit 1
 }
@@ -494,7 +580,7 @@ done
 authorized_package_manifest_sha256="${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256:-}"
 actual_package_manifest_sha256="$(
   cd "$source_package_snapshot"
-  sha256sum package-sha256.txt 2>>"$runtime_dir/package-manifest.raw" | cut -d ' ' -f1
+  file_sha256 package-sha256.txt "$runtime_dir/package-manifest.raw"
 )"
 [[ "${#authorized_package_manifest_sha256}" -eq 64 &&
   "$authorized_package_manifest_sha256" != *[!0-9a-f]* &&
@@ -511,11 +597,15 @@ source_files="$source_package_snapshot/source-files.z"
 source_manifest="$source_package_snapshot/source-sha256.txt"
 
 hash_evidence_directory() {
-  local directory="$1"
+  local directory="$1" path digest
   (
     cd "$directory"
     find . -type f ! -name 'evidence-sha256.txt' -print0 |
-      LC_ALL=C sort -z | xargs -0 sha256sum
+      LC_ALL=C sort -z |
+      while IFS= read -r -d '' path; do
+        digest="$(file_sha256 "$path")" || exit 1
+        printf '%s  %s\n' "$digest" "$path"
+      done
   ) >"$directory/evidence-sha256.txt"
 }
 

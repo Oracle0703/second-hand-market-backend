@@ -10,7 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -25,12 +27,14 @@ func TestMiniappAuthRefreshAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 	repoDir := miniappAuthRefreshAcceptanceRepoDir(t)
 	script := filepath.Join(repoDir, "deploy", "acceptance", "miniapp-auth-refresh-smoke.sh")
 	stubDir, marker := miniappAuthRefreshTripwires(t)
-	cmd := exec.Command("/bin/bash", script)
+	sourceTree, sourceTreeEnv := miniappAuthRefreshSourceListTree(t, repoDir)
+	cmd := miniappAuthRefreshBashCommand(t, script)
 	cmd.Dir = repoDir
 	cmd.Env = []string{
 		"MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY=1",
+		sourceTreeEnv,
 		"TRIPWIRE_MARKER=" + marker,
-		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -55,7 +59,7 @@ func TestMiniappAuthRefreshAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 		if !miniappAuthRefreshAllowedPath(path) {
 			t.Fatalf("source-list mode emitted path outside the miniapp whitelist: %q", path)
 		}
-		headCheck := exec.Command("git", "cat-file", "-e", "HEAD:"+path)
+		headCheck := exec.Command("git", "cat-file", "-e", sourceTree+":"+path)
 		headCheck.Dir = repoDir
 		if output, err := headCheck.CombinedOutput(); err != nil {
 			t.Fatalf("source-list path %q is not committed at HEAD: %v: %s", path, err, output)
@@ -90,7 +94,7 @@ func TestMiniappAuthRefreshAcceptanceSourceListContainsOnlyCommittedWhitelist(t 
 	}
 	writeMiniappAuthRefreshFixtureFile(t, fixtureRepo, "miniapp/src/dirty-only.ts", "dirty\n", 0o600)
 	runMiniappAuthRefreshGit(t, fixtureRepo, "add", "--", "miniapp/staged-only.ts")
-	fixtureCmd := exec.Command("/bin/bash", fixtureScript)
+	fixtureCmd := miniappAuthRefreshBashCommand(t, fixtureScript)
 	fixtureCmd.Dir = fixtureRepo
 	fixtureCmd.Env = []string{"MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY=1", "PATH=" + os.Getenv("PATH")}
 	fixtureOutput, err := fixtureCmd.Output()
@@ -119,13 +123,13 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 
 	stubDir, marker := miniappAuthRefreshTripwires(t)
 	exportDir := filepath.Join(t.TempDir(), "source-package")
-	cmd := exec.Command("/bin/bash", fixtureScript)
+	cmd := miniappAuthRefreshBashCommand(t, fixtureScript)
 	cmd.Dir = fixtureRepo
 	cmd.Env = []string{
 		"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + exportDir,
 		miniappAuthRefreshExpectedCommitEnv(t, fixtureRepo),
 		"TRIPWIRE_MARKER=" + marker,
-		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 	}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("export immutable HEAD miniapp package: %v: %s", err, output)
@@ -177,11 +181,77 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 	if _, err := os.Stat(filepath.Join(extracted, "miniapp", "staged-only.ts")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("source export included staged-only path")
 	}
-	manifestCheck := exec.Command("sha256sum", "-c", filepath.Join(exportDir, "source-sha256.txt"))
-	manifestCheck.Dir = extracted
-	if output, err := manifestCheck.CombinedOutput(); err != nil {
-		t.Fatalf("verify exported miniapp source manifest: %v: %s", err, output)
-	}
+	verifyMiniappAuthRefreshSHA256Manifest(t, extracted, filepath.Join(exportDir, "source-sha256.txt"))
+
+	t.Run("archive ignores checkout conversion and global attributes", func(t *testing.T) {
+		attributesFile := filepath.Join(t.TempDir(), "global-attributes")
+		if err := os.WriteFile(attributesFile, []byte("* text eol=crlf\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		configuredExport := filepath.Join(t.TempDir(), "configured-source-package")
+		command := miniappAuthRefreshBashCommand(t, fixtureScript)
+		command.Dir = fixtureRepo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + configuredExport,
+			miniappAuthRefreshExpectedCommitEnv(t, fixtureRepo),
+			"GIT_CONFIG_COUNT=3",
+			"GIT_CONFIG_KEY_0=core.autocrlf",
+			"GIT_CONFIG_VALUE_0=true",
+			"GIT_CONFIG_KEY_1=core.eol",
+			"GIT_CONFIG_VALUE_1=crlf",
+			"GIT_CONFIG_KEY_2=core.attributesFile",
+			"GIT_CONFIG_VALUE_2=" + attributesFile,
+			"PATH=" + os.Getenv("PATH"),
+		}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("export with hostile checkout conversion config: %v: %s", err, output)
+		}
+		for _, name := range []string{"source-files.z", "source-sha256.txt", "source.tar", "package-sha256.txt"} {
+			original, err := os.ReadFile(filepath.Join(exportDir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			configured, err := os.ReadFile(filepath.Join(configuredExport, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(original, configured) {
+				t.Fatalf("global checkout conversion changed immutable export artifact %q", name)
+			}
+		}
+	})
+
+	t.Run("repository-local attributes fail closed", func(t *testing.T) {
+		attributeRepo, attributeScript := newMiniappAuthRefreshFixtureRepo(t)
+		infoAttributes := miniappAuthRefreshGitOutput(t, attributeRepo, "rev-parse", "--git-path", "info/attributes")
+		if !filepath.IsAbs(infoAttributes) {
+			infoAttributes = filepath.Join(attributeRepo, infoAttributes)
+		}
+		if err := os.MkdirAll(filepath.Dir(infoAttributes), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(infoAttributes, []byte("* text eol=crlf\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(t.TempDir(), "local-attributes-package")
+		command := miniappAuthRefreshBashCommand(t, attributeScript)
+		command.Dir = attributeRepo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			miniappAuthRefreshExpectedCommitEnv(t, attributeRepo),
+			"PATH=" + os.Getenv("PATH"),
+		}
+		output, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("source export unexpectedly trusted repository-local attributes: %s", output)
+		}
+		if !strings.Contains(string(output), "repository-local Git info/attributes must be absent") {
+			t.Fatalf("source export reported the wrong local attributes failure: %s", output)
+		}
+		if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("rejected local attributes export created a destination: %v", err)
+		}
+	})
 
 	for _, tc := range []struct{ name, destination string }{
 		{"relative", "source-package"},
@@ -189,7 +259,7 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 		{"pre-existing", t.TempDir()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			command := exec.Command("/bin/bash", fixtureScript)
+			command := miniappAuthRefreshBashCommand(t, fixtureScript)
 			command.Dir = fixtureRepo
 			command.Env = []string{
 				"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + tc.destination,
@@ -201,7 +271,7 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 			}
 		})
 	}
-	command := exec.Command("/bin/bash", fixtureScript)
+	command := miniappAuthRefreshBashCommand(t, fixtureScript)
 	command.Dir = fixtureRepo
 	command.Env = []string{
 		"MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY=1",
@@ -221,7 +291,7 @@ func TestMiniappAuthRefreshAcceptanceSourceExportUsesImmutableHEAD(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			destination := filepath.Join(t.TempDir(), "unbound-package")
-			command := exec.Command("/bin/bash", fixtureScript)
+			command := miniappAuthRefreshBashCommand(t, fixtureScript)
 			command.Dir = fixtureRepo
 			command.Env = []string{
 				"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
@@ -246,15 +316,45 @@ esac
 exec /bin/chmod "$@"
 `, 0o700)
 		destination := filepath.Join(t.TempDir(), "interrupted-package")
-		command := exec.Command("/bin/bash", fixtureScript)
+		command := miniappAuthRefreshBashCommand(t, fixtureScript)
 		command.Dir = fixtureRepo
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
 			miniappAuthRefreshExpectedCommitEnv(t, fixtureRepo),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("source export unexpectedly survived final chmod failure: %s", output)
+		}
+		if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed source export retained incomplete destination: %v", err)
+		}
+	})
+
+	t.Run("package hash failure reports its exact stage", func(t *testing.T) {
+		stubDir := t.TempDir()
+		writeMiniappAuthRefreshFixtureFile(t, stubDir, "sha256sum", `#!/bin/sh
+if [ "$PWD" = "$EXPORT_DESTINATION" ] && [ "$*" = "--binary -- source-files.z" ]; then
+  exit 73
+fi
+exec "$REAL_SHA256SUM" "$@"
+`, 0o700)
+		destination := filepath.Join(t.TempDir(), "hash-failed-package")
+		command := miniappAuthRefreshBashCommand(t, fixtureScript)
+		command.Dir = fixtureRepo
+		command.Env = []string{
+			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
+			miniappAuthRefreshExpectedCommitEnv(t, fixtureRepo),
+			"EXPORT_DESTINATION=" + destination,
+			"REAL_SHA256SUM=" + miniappAuthRefreshCommandPath(t, "sha256sum"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
+		}
+		output, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("source export unexpectedly survived package hash failure: %s", output)
+		}
+		if !strings.Contains(string(output), "stage=package-manifest") {
+			t.Fatalf("source export reported the wrong failure stage: %s", output)
 		}
 		if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("failed source export retained incomplete destination: %v", err)
@@ -279,7 +379,7 @@ fi
 exec "$REAL_GIT" "$@"
 `, 0o700)
 		destination := filepath.Join(t.TempDir(), "moved-ref-package")
-		command := exec.Command("/bin/bash", movingScript)
+		command := miniappAuthRefreshBashCommand(t, movingScript)
 		command.Dir = movingRepo
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
@@ -287,7 +387,7 @@ exec "$REAL_GIT" "$@"
 			"MOVE_REPO=" + movingRepo,
 			"MOVE_TO_OID=" + movedOID,
 			"REAL_GIT=" + miniappAuthRefreshCommandPath(t, "git"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("export while HEAD moves: %v: %s", err, output)
@@ -315,13 +415,13 @@ if [ "$candidate" = "$RACE_DESTINATION" ] && [ ! -e "$RACE_DESTINATION" ]; then
 fi
 exec /bin/mkdir "$@"
 `, 0o700)
-		command := exec.Command("/bin/bash", raceScript)
+		command := miniappAuthRefreshBashCommand(t, raceScript)
 		command.Dir = raceRepo
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
 			miniappAuthRefreshExpectedCommitEnv(t, raceRepo),
 			"RACE_DESTINATION=" + destination,
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("export acquired a concurrently created destination: %s", output)
@@ -351,7 +451,7 @@ case " $* " in
 esac
 exec "$REAL_GIT" "$@"
 `, 0o700)
-		command := exec.Command("/bin/bash", script)
+		command := miniappAuthRefreshBashCommand(t, script)
 		command.Dir = repo
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
@@ -360,7 +460,7 @@ exec "$REAL_GIT" "$@"
 			"ACQUIRED_DESTINATION=" + acquired,
 			"SWAP_MARKER=" + swapMarker,
 			"REAL_GIT=" + miniappAuthRefreshCommandPath(t, "git"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("export through a replaced acquired destination unexpectedly succeeded: %s", output)
@@ -394,7 +494,7 @@ if [ ! -e "$SWAP_MARKER" ]; then
 fi
 exec "$REAL_STAT" "$@"
 `, 0o700)
-		command := exec.Command("/bin/bash", script)
+		command := miniappAuthRefreshBashCommand(t, script)
 		command.Dir = repo
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
@@ -403,7 +503,7 @@ exec "$REAL_STAT" "$@"
 			"ACQUIRED_DESTINATION=" + acquired,
 			"SWAP_MARKER=" + swapMarker,
 			"REAL_STAT=" + miniappAuthRefreshCommandPath(t, "stat"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("export through identity replacement unexpectedly succeeded: %s", output)
@@ -446,7 +546,7 @@ case " $* " in
 esac
 exec /bin/rm "$@"
 `, 0o700)
-		command := exec.Command("/bin/bash", script)
+		command := miniappAuthRefreshBashCommand(t, script)
 		command.Dir = repo
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + destination,
@@ -454,7 +554,7 @@ exec /bin/rm "$@"
 			"EXPORT_DESTINATION=" + destination,
 			"ACQUIRED_DESTINATION=" + acquired,
 			"SWAP_MARKER=" + swapMarker,
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		if output, err := command.CombinedOutput(); err == nil {
 			t.Fatalf("export cleanup replacement unexpectedly succeeded: %s", output)
@@ -478,7 +578,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
 		nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
-		cmd := exec.Command("/bin/bash", remoteScript)
+		cmd := miniappAuthRefreshBashCommand(t, remoteScript)
 		cmd.Dir = remoteRepo
 		cmd.Env = []string{
 			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
@@ -488,7 +588,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			"NPM_CALLED=" + marker,
 			"NPM_COMMAND_LOG=" + commandLog,
 			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		output, err := cmd.CombinedOutput()
 		if err == nil || !errors.Is(func() error { _, statErr := os.Stat(marker); return statErr }(), os.ErrNotExist) {
@@ -503,7 +603,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
 		nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
-		cmd := exec.Command("/bin/bash", remoteScript)
+		cmd := miniappAuthRefreshBashCommand(t, remoteScript)
 		cmd.Dir = remoteRepo
 		cmd.Env = []string{
 			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
@@ -514,7 +614,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			"NPM_CALLED=" + marker,
 			"NPM_COMMAND_LOG=" + commandLog,
 			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		output, err := cmd.CombinedOutput()
 		if err == nil {
@@ -532,7 +632,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
 		nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
-		cmd := exec.Command("/bin/bash", remoteScript)
+		cmd := miniappAuthRefreshBashCommand(t, remoteScript)
 		cmd.Dir = remoteRepo
 		cmd.Env = []string{
 			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
@@ -542,7 +642,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			"NPM_CALLED=" + marker,
 			"NPM_COMMAND_LOG=" + commandLog,
 			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		output, err := cmd.CombinedOutput()
 		if err == nil || !errors.Is(func() error { _, statErr := os.Stat(marker); return statErr }(), os.ErrNotExist) {
@@ -557,7 +657,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 		remoteRepo, packageDir, remoteScript := prepareMetadataFreeMiniappAuthRefresh(t)
 		stubDir, marker, commandLog := writeMiniappAuthRefreshRuntimeStubs(t, "success")
 		nodeMarker := miniappAuthRefreshNodeMarker(stubDir)
-		cmd := exec.Command("/bin/bash", remoteScript)
+		cmd := miniappAuthRefreshBashCommand(t, remoteScript)
 		cmd.Dir = remoteRepo
 		cmd.Env = []string{
 			"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
@@ -567,7 +667,7 @@ func TestMiniappAuthRefreshAcceptanceMetadataFreePackageRefusesOrProgressesBefor
 			"NPM_CALLED=" + marker,
 			"NPM_COMMAND_LOG=" + commandLog,
 			"NPM_STUB_MODE_FILE=" + filepath.Join(stubDir, "mode"),
-			"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+			"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 		}
 		output, err := cmd.CombinedOutput()
 		if err == nil || !errors.Is(func() error { _, statErr := os.Stat(marker); return statErr }(), os.ErrNotExist) {
@@ -761,7 +861,7 @@ func TestMiniappAuthRefreshAcceptanceRejectsMutableAndUnsafeSourceBoundaries(t *
 	t.Run("post-check package replacement cannot become authoritative", func(t *testing.T) {
 		fixture, fixtureScript := newMiniappAuthRefreshFixtureRepo(t)
 		packageA := filepath.Join(t.TempDir(), "package-a")
-		command := exec.Command("/bin/bash", fixtureScript)
+		command := miniappAuthRefreshBashCommand(t, fixtureScript)
 		command.Dir = fixture
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + packageA,
@@ -775,7 +875,7 @@ func TestMiniappAuthRefreshAcceptanceRejectsMutableAndUnsafeSourceBoundaries(t *
 		runMiniappAuthRefreshGit(t, fixture, "add", "--", "miniapp/package.json")
 		runMiniappAuthRefreshGit(t, fixture, "commit", "-q", "-m", "replacement package")
 		packageB := filepath.Join(t.TempDir(), "package-b")
-		command = exec.Command("/bin/bash", fixtureScript)
+		command = miniappAuthRefreshBashCommand(t, fixtureScript)
 		command.Dir = fixture
 		command.Env = []string{
 			"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + packageB,
@@ -1295,11 +1395,7 @@ func TestMiniappAuthRefreshAcceptanceRetainsSanitizedFailureEvidence(t *testing.
 			t.Fatalf("retained failure evidence leaked %q", forbidden)
 		}
 	}
-	hashCheck := exec.Command("sha256sum", "-c", "evidence-sha256.txt")
-	hashCheck.Dir = evidenceDir
-	if output, err := hashCheck.CombinedOutput(); err != nil {
-		t.Fatalf("verify retained evidence hashes: %v: %s", err, output)
-	}
+	verifyMiniappAuthRefreshSHA256Manifest(t, evidenceDir, filepath.Join(evidenceDir, "evidence-sha256.txt"))
 }
 
 func TestMiniappAuthRefreshAcceptancePreservesCommandMatrix(t *testing.T) {
@@ -1438,6 +1534,13 @@ func miniappAuthRefreshAllowedPath(path string) bool {
 
 func miniappAuthRefreshAcceptanceRepoDir(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Fatalf(
+			"miniapp auth refresh acceptance contract requires Linux; run it in WSL2 or on a Linux host "+
+				"because it verifies POSIX modes, symlinks, and atomic directory ownership (GOOS=%s)",
+			runtime.GOOS,
+		)
+	}
 	repoDir, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("resolve repository directory: %v", err)
@@ -1514,6 +1617,30 @@ func miniappAuthRefreshExpectedCommitEnv(t *testing.T, directory string) string 
 	return "EXPECTED_COMMIT_SHA=" + miniappAuthRefreshGitOutput(t, directory, "rev-parse", "HEAD")
 }
 
+func miniappAuthRefreshSourceListTree(t *testing.T, directory string) (string, string) {
+	t.Helper()
+	mergeHead := exec.Command("git", "rev-parse", "-q", "--verify", "MERGE_HEAD")
+	mergeHead.Dir = directory
+	if err := mergeHead.Run(); err != nil {
+		return "HEAD", "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE=HEAD"
+	}
+	tree := miniappAuthRefreshGitOutput(t, directory, "write-tree")
+	if len(tree) != 40 {
+		t.Fatalf("temporary merge index tree is not a full SHA: %q", tree)
+	}
+	return tree, "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE=" + tree
+}
+
+func miniappAuthRefreshBashCommand(t *testing.T, script string) *exec.Cmd {
+	t.Helper()
+	bash := miniappAuthRefreshCommandPath(t, "bash")
+	return exec.Command(bash, script)
+}
+
+func miniappAuthRefreshPrependPath(directory string) string {
+	return directory + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
 func miniappAuthRefreshCommandPath(t *testing.T, name string) string {
 	t.Helper()
 	path, err := exec.LookPath(name)
@@ -1532,7 +1659,7 @@ func splitMiniappAuthRefreshNULPaths(t *testing.T, raw []byte) []string {
 	paths := make([]string, 0, len(parts))
 	for _, part := range parts {
 		path := string(part)
-		if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path || strings.HasPrefix(path, "../") {
+		if path == "" || pathpkg.IsAbs(path) || pathpkg.Clean(path) != path || strings.HasPrefix(path, "../") {
 			t.Fatalf("source-list mode emitted unsafe path %q", path)
 		}
 		paths = append(paths, path)
@@ -1610,6 +1737,47 @@ func miniappAuthRefreshPackageDigest(t *testing.T, packageDir string) string {
 	}
 	digest := sha256.Sum256(manifest)
 	return hex.EncodeToString(digest[:])
+}
+
+func verifyMiniappAuthRefreshSHA256Manifest(t *testing.T, directory, manifestPath string) {
+	t.Helper()
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read SHA-256 manifest: %v", err)
+	}
+	if len(manifest) == 0 || manifest[len(manifest)-1] != '\n' {
+		t.Fatal("SHA-256 manifest must be non-empty and newline terminated")
+	}
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(string(manifest[:len(manifest)-1]), "\n") {
+		if len(line) < 67 || line[64:66] != "  " {
+			t.Fatalf("SHA-256 manifest line is not canonical: %q", line)
+		}
+		expected := line[:64]
+		if expected != strings.ToLower(expected) {
+			t.Fatalf("SHA-256 manifest digest is not lowercase: %q", expected)
+		}
+		if _, err := hex.DecodeString(expected); err != nil {
+			t.Fatalf("SHA-256 manifest digest is invalid: %q", expected)
+		}
+		name := line[66:]
+		if strings.HasPrefix(name, "./") {
+			name = strings.TrimPrefix(name, "./")
+		}
+		if name == "" || pathpkg.IsAbs(name) || pathpkg.Clean(name) != name ||
+			strings.HasPrefix(name, "../") || seen[name] {
+			t.Fatalf("SHA-256 manifest path is unsafe or duplicated: %q", name)
+		}
+		seen[name] = true
+		raw, err := os.ReadFile(filepath.Join(directory, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("read SHA-256 manifest path %q: %v", name, err)
+		}
+		actual := sha256.Sum256(raw)
+		if hex.EncodeToString(actual[:]) != expected {
+			t.Fatalf("SHA-256 manifest mismatch for %q", name)
+		}
+	}
 }
 
 func miniappAuthRefreshPackageCommit(t *testing.T, packageDir string) string {
@@ -1736,7 +1904,7 @@ func prepareMetadataFreeMiniappAuthRefresh(t *testing.T) (string, string, string
 	fixtureRepo, fixtureScript := newMiniappAuthRefreshFixtureRepo(t)
 	remoteRepo := t.TempDir()
 	packageDir := filepath.Join(remoteRepo, ".miniapp-auth-refresh-source")
-	exportCmd := exec.Command("/bin/bash", fixtureScript)
+	exportCmd := miniappAuthRefreshBashCommand(t, fixtureScript)
 	exportCmd.Dir = fixtureRepo
 	exportCmd.Env = []string{
 		"MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR=" + packageDir,
@@ -1788,7 +1956,8 @@ if [ "${1:-}" = "--version" ]; then
   exit 0
 fi
 : >"$NPM_CALLED"
-printf '%s|%s|%s\n' "$PWD" "$*" "${TARO_APP_API_BASE_URL:-}" >>"$NPM_COMMAND_LOG"
+working_directory="$(pwd -W 2>/dev/null || pwd -P)"
+printf '%s|%s|%s\n' "$working_directory" "$*" "${TARO_APP_API_BASE_URL:-}" >>"$NPM_COMMAND_LOG"
 mkdir -p node_modules/controlled dist
 printf 'Authorization: Bearer raw-miniapp-secret\n' >raw-command.log
 mode=$(cat "$NPM_STUB_MODE_FILE")
@@ -1926,7 +2095,7 @@ func runMetadataFreeMiniappAuthRefreshWithEnv(
 	t.Helper()
 	commandLog := filepath.Join(stubDir, "npm-commands")
 	stubMode := filepath.Join(stubDir, "mode")
-	cmd := exec.Command("/bin/bash", remoteScript)
+	cmd := miniappAuthRefreshBashCommand(t, remoteScript)
 	cmd.Dir = remoteRepo
 	cmd.Env = append([]string{
 		"MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM=" + miniappAuthRefreshConfirmation,
@@ -1938,19 +2107,40 @@ func runMetadataFreeMiniappAuthRefreshWithEnv(
 		"NPM_COMMAND_LOG=" + commandLog,
 		"NPM_STUB_MODE_FILE=" + stubMode,
 		"REAL_NODE=" + miniappAuthRefreshCommandPath(t, "node"),
-		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
+		"PATH=" + miniappAuthRefreshPrependPath(stubDir),
 	}, extraEnv...)
 	return cmd.CombinedOutput()
 }
 
 func miniappAuthRefreshDirectoryDigest(t *testing.T, directory string) string {
 	t.Helper()
-	cmd := exec.Command("/usr/bin/find", ".", "-type", "f", "-exec", "sha256sum", "{}", ";")
-	cmd.Dir = directory
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("hash source directory: %v", err)
+	var paths []string
+	if err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() {
+			relative, err := filepath.Rel(directory, path)
+			if err != nil {
+				return err
+			}
+			paths = append(paths, filepath.ToSlash(relative))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("list source directory: %v", err)
 	}
-	digest := sha256.Sum256(output)
-	return hex.EncodeToString(digest[:])
+	sort.Strings(paths)
+	digest := sha256.New()
+	for _, path := range paths {
+		raw, err := os.ReadFile(filepath.Join(directory, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatalf("read source directory file %q: %v", path, err)
+		}
+		_, _ = digest.Write([]byte(path))
+		_, _ = digest.Write([]byte{0})
+		_, _ = digest.Write(raw)
+		_, _ = digest.Write([]byte{0})
+	}
+	return hex.EncodeToString(digest.Sum(nil))
 }
