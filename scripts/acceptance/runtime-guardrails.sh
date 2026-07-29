@@ -24,23 +24,6 @@ actual_sha="$(git -C "$repo_root" rev-parse HEAD)"
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]] ||
   fail "worktree must be clean so the tested source matches the commit"
 
-go_semver="$(
-  env -i \
-    PATH="$PATH" \
-    GOENV=off \
-    GOWORK=off \
-    GOTOOLCHAIN=local \
-    go env GOVERSION
-)"
-if ! awk -v version="${go_semver#go}" '
-  BEGIN {
-    split(version, parts, ".")
-    exit((parts[1] > 1 || (parts[1] == 1 && parts[2] >= 22)) ? 0 : 1)
-  }
-'; then
-  fail "Go 1.22 or newer is required, found $go_semver"
-fi
-
 command_timeout="${ACCEPTANCE_COMMAND_TIMEOUT:-20m}"
 probe_timeout="${ACCEPTANCE_PROBE_TIMEOUT:-10s}"
 [[ "$command_timeout" =~ ^[1-9][0-9]*[smhd]$ ]] ||
@@ -81,6 +64,9 @@ mkdir -p -- \
 tool_env=(
   PATH="$PATH"
   TMPDIR="$build_dir/tmp"
+  GOTMPDIR="$build_dir/tmp"
+  TEMP="$build_dir/tmp"
+  TMP="$build_dir/tmp"
   GOCACHE="$build_dir/go-cache"
   GOMODCACHE="$module_cache"
   GOPATH="$build_dir/gopath"
@@ -113,23 +99,50 @@ cleanup() {
 }
 trap cleanup EXIT
 
+go_semver="$(env -i "${tool_env[@]}" go env GOVERSION)"
+if ! awk -v version="${go_semver#go}" '
+  BEGIN {
+    split(version, parts, ".")
+    exit((parts[1] > 1 || (parts[1] == 1 && parts[2] >= 22)) ? 0 : 1)
+  }
+'; then
+  fail "Go 1.22 or newer is required, found $go_semver"
+fi
+
 summary="$evidence_dir/summary.txt"
 test_log="$evidence_dir/go-test.json"
 server_bin="$build_dir/server"
 
 {
   printf 'commit=%s\n' "$actual_sha"
-  printf 'go=%s\n' "$(
-    env -i \
-      PATH="$PATH" \
-      GOENV=off \
-      GOWORK=off \
-      GOTOOLCHAIN=local \
-      go version
-  )"
+  printf 'go=%s\n' "$(env -i "${tool_env[@]}" go version)"
   printf 'external_database=none; tests=in-memory-sqlite; probes=unsupported-sentinel\n'
   printf 'external_identity_provider=none\n'
 } | tee "$summary"
+
+verify_isolated_temp_env() {
+  local expected_tmp="$build_dir/tmp"
+  local go_tmp
+
+  env -i "${tool_env[@]}" "$BASH" -c '
+    set -Eeuo pipefail
+    expected_tmp="$1"
+    for name in TMPDIR GOTMPDIR TEMP TMP; do
+      [[ "${!name-}" == "$expected_tmp" ]] || exit 1
+    done
+    probe_path="$GOTMPDIR/runtime-guardrails-write-probe"
+    : >"$probe_path"
+    rm -f -- "$probe_path"
+  ' runtime-guardrails-temp-check "$expected_tmp" ||
+    fail "isolated temporary directory environment is incomplete or not writable"
+
+  go_tmp="$(env -i "${tool_env[@]}" go env GOTMPDIR)"
+  [[ -n "$go_tmp" ]] ||
+    fail "Go did not receive the isolated GOTMPDIR"
+  printf 'isolated_go_tmp=verified\n' | tee -a "$summary"
+}
+
+verify_isolated_temp_env
 
 run_logged() {
   local name="$1"
