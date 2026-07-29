@@ -149,5 +149,7 @@ deploy/*.local.*
 runtime/
 uploads/
 backend/uploads/
+/backend/.env.remote-dev
+/scripts/remote-dev/.runtime/
 *.bak
 *.stable.*
