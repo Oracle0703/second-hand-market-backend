@@ -22,7 +22,9 @@ const (
 func safeProductionRuntimeConfig() Config {
 	return Config{
 		AppEnv:                     appEnvProduction,
+		DBTarget:                   "local",
 		DBDriver:                   "guardrail-probe",
+		DBDSN:                      "guardrail-probe-dsn",
 		JWTAccessSecret:            testProductionAccessSecret,
 		JWTRefreshSecret:           testProductionRefreshSecret,
 		BuyerWechatLoginMode:       buyerLoginModeReal,
@@ -255,6 +257,8 @@ func TestNewServerValidatesRuntimeBeforeDatabase(t *testing.T) {
 
 func TestLoadConfigProductionDefaultsFailClosed(t *testing.T) {
 	t.Setenv("APP_ENV", appEnvProduction)
+	t.Setenv("DB_TARGET", dbTargetLocal)
+	t.Setenv("DB_DSN", "production-test-dsn")
 	t.Setenv("JWT_ACCESS_SECRET", "dev-access-secret")
 	t.Setenv("JWT_REFRESH_SECRET", "dev-refresh-secret")
 	t.Setenv("BUYER_WECHAT_LOGIN_MODE", buyerLoginModeMock)
@@ -304,6 +308,50 @@ func TestLoadConfigIgnoresUnusedProviderTimeout(t *testing.T) {
 	if err := cfg.ValidateRuntime(); err != nil {
 		t.Fatalf("unused provider timeout was validated: %v", err)
 	}
+}
+
+func TestLoadConfigAutoMigrateIsStrictAndDefaultsOff(t *testing.T) {
+	t.Run("defaults_off", func(t *testing.T) {
+		unsetEnvForTest(t, "AUTO_MIGRATE")
+		t.Setenv("APP_ENV", appEnvTest)
+
+		cfg := LoadConfig()
+		if cfg.AutoMigrate {
+			t.Fatal("AUTO_MIGRATE defaulted to true")
+		}
+		if err := cfg.ValidateRuntime(); err != nil {
+			t.Fatalf("default AUTO_MIGRATE was rejected: %v", err)
+		}
+	})
+
+	t.Run("rejects_invalid_value_without_leaking_it", func(t *testing.T) {
+		const sentinel = "auto-migrate-invalid-sentinel"
+		t.Setenv("APP_ENV", appEnvTest)
+		t.Setenv("AUTO_MIGRATE", sentinel)
+
+		err := LoadConfig().ValidateRuntime()
+		if err == nil || !strings.Contains(err.Error(), "AUTO_MIGRATE") {
+			t.Fatalf("expected AUTO_MIGRATE error, got %v", err)
+		}
+		if strings.Contains(err.Error(), sentinel) {
+			t.Fatalf("AUTO_MIGRATE error leaked its value: %q", err)
+		}
+	})
+}
+
+func unsetEnvForTest(t *testing.T, name string) {
+	t.Helper()
+	original, existed := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatalf("unset %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(name, original)
+			return
+		}
+		_ = os.Unsetenv(name)
+	})
 }
 
 func TestDisabledProviderReturnsForbidden(t *testing.T) {
