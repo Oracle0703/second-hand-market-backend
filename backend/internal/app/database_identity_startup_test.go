@@ -25,14 +25,6 @@ func TestNewServerVerifiesRemoteIdentityBeforeDatabaseWrites(t *testing.T) {
 			closeDB: func(*gorm.DB) {
 				calls = append(calls, "close")
 			},
-			migrate: func(*gorm.DB) error {
-				calls = append(calls, "migrate")
-				return nil
-			},
-			seedDefaults: func(*gorm.DB) error {
-				calls = append(calls, "seed")
-				return nil
-			},
 		}
 
 		_, err := newServer(cfg, deps)
@@ -44,8 +36,10 @@ func TestNewServerVerifiesRemoteIdentityBeforeDatabaseWrites(t *testing.T) {
 		}
 	})
 
-	t.Run("successful_identity_check_precedes_current_seed_path", func(t *testing.T) {
+	t.Run("successful_identity_check_does_not_run_database_writes", func(t *testing.T) {
 		cfg := validRemoteDevelopmentConfig()
+		cfg.FileStorageProvider = "probe"
+		cfg.ImageProcessorDriver = "passthrough"
 		calls := []string{}
 		deps := serverStartupDependencies{
 			openDB: func(Config) (*gorm.DB, error) {
@@ -59,21 +53,16 @@ func TestNewServerVerifiesRemoteIdentityBeforeDatabaseWrites(t *testing.T) {
 			closeDB: func(*gorm.DB) {
 				calls = append(calls, "close")
 			},
-			migrate: func(*gorm.DB) error {
-				calls = append(calls, "migrate")
-				return nil
-			},
-			seedDefaults: func(*gorm.DB) error {
-				calls = append(calls, "seed")
-				return errors.New("seed probe")
-			},
 		}
 
-		_, err := newServer(cfg, deps)
-		if err == nil || !strings.Contains(err.Error(), "seed probe") {
-			t.Fatalf("expected seed probe, got %v", err)
+		srv, err := newServer(cfg, deps)
+		if err != nil {
+			t.Fatalf("new server failed: %v", err)
 		}
-		if !reflect.DeepEqual(calls, []string{"open", "identity", "seed"}) {
+		if srv == nil {
+			t.Fatal("new server returned nil")
+		}
+		if !reflect.DeepEqual(calls, []string{"open", "identity"}) {
 			t.Fatalf("startup calls = %v", calls)
 		}
 	})
