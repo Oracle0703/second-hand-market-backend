@@ -268,6 +268,7 @@ run_probe() {
   local expect_database="$3"
   shift 3
   local log_path="$evidence_dir/probe-$name.log"
+  local probe_bin="$build_dir/server-$name"
   local status
   local assignment
   local env_name
@@ -287,11 +288,16 @@ run_probe() {
     unique_env+=("${env_by_name[$env_name]}")
   done
 
+  # MSYS can briefly retain a lock after a Windows process exits. Each probe
+  # gets its own executable path so one launch cannot block the next.
+  cp -- "$server_bin" "$probe_bin" ||
+    fail "probe $name executable isolation failed"
+
   set +e
   timeout --foreground "$probe_timeout" env -i \
     PATH="$PATH" \
     "${unique_env[@]}" \
-    "$server_bin" >"$log_path" 2>&1
+    "$probe_bin" >"$log_path" 2>&1
   status=$?
   set -e
 
