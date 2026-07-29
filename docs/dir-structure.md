@@ -85,7 +85,8 @@ second-hand-market-backend/
 ## 5. 初始化脚本约定
 1. `backend/scripts/bootstrap_admin`：初始化 `SUPER_ADMIN` 与基础管理员。
 2. `backend/scripts/seed_categories`：导入一级/二级分类字典。
-3. 初始化脚本需要幂等，可重复执行。
+3. 初始化脚本必须显式设置 `DB_DRIVER` 和 `DB_DSN`，不得回退到仓库内的本地数据库文件。
+4. 初始化脚本需要幂等，可重复执行。
 
 ## 6. 测试目录与约定
 1. 单元测试与源代码同目录：`*_test.go`。
