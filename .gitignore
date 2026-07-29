@@ -149,6 +149,8 @@ deploy/*.local.*
 runtime/
 uploads/
 backend/uploads/
+/backend/.env.remote-dev
+/scripts/remote-dev/.runtime/
 /deploy/remote-dev-db/secrets/*
 *.bak
 *.stable.*
