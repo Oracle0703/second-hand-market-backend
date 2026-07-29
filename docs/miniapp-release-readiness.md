@@ -6,9 +6,10 @@
 1. 买家页面与意向闭环：浏览、收藏、浏览记录、提交意向、状态回读。
 2. 商家后台意向处理闭环：`NEW -> CONTACTED -> CLOSED`。
 3. 页面级自动化冒烟脚本：`scripts/smoke-miniapp-page-e2e.mjs`。
-4. 买家微信登录后端支持 `mock/real` 双模式：
+4. 买家微信登录后端支持 `mock/real/disabled` 三种模式：
    - `BUYER_WECHAT_LOGIN_MODE=mock`：开发回归。
    - `BUYER_WECHAT_LOGIN_MODE=real`：调用微信 `code2session`。
+   - `BUYER_WECHAT_LOGIN_MODE=disabled`：显式关闭微信登录。
 5. 后端在当前机器可通过 `CGO_ENABLED=0` 启动（绕开 Xcode License 阻塞）。
 
 ## 2. 已自动验证通过项
@@ -18,10 +19,10 @@
 2. `cd miniapp && npm run test`：通过（4 files / 5 tests）。
 3. `cd miniapp && npm run build:weapp`：通过。
 4. `node --check scripts/smoke-miniapp-page-e2e.mjs`：通过。
-5. 后端启动验证：`CGO_ENABLED=0 ... BUYER_WECHAT_LOGIN_MODE=mock go run ./cmd/server` + `/healthz`：通过。
+5. 后端启动验证：`APP_ENV=development CGO_ENABLED=0 ... BUYER_WECHAT_LOGIN_MODE=mock go run ./cmd/server` + `/healthz`：通过。
 6. 页面级 smoke：`API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mjs`：通过。
 7. `real` 模式行为验证（占位凭据）：
-   - `ADDR=:8081 BUYER_WECHAT_LOGIN_MODE=real ... go run ./cmd/server`：启动通过。
+   - `APP_ENV=development ADDR=:8081 BUYER_WECHAT_LOGIN_MODE=real ... go run ./cmd/server`：启动通过。
    - 调用 `/buyer/auth/wechat-login`：返回 `10002 wechat login failed`（证明走到 real 分支，凭据无效）。
 
 ## 2.2 前序基线（已通过）
@@ -50,13 +51,13 @@
 2. 真机高风险项（分享落地、双端兼容、弱网）未完成最终签收。
 
 ## 5.3 达到可灰度/可发布的门槛
-1. 目标环境启用 `BUYER_WECHAT_LOGIN_MODE=real` 并验证成功。
+1. 完成 F12 买家身份迁移后，目标平台启用 `real` 并验证成功；迁移前两种平台保持 `disabled`，禁止用 `mock` 绕过。
 2. iOS/Android 真机完成登录、merge、提交意向、状态回读全链路。
 3. 真机分享落地通过。
 4. 页面 smoke 与基础回归全部再跑一轮并保留日志证据。
 
 ## 6. 上线前最后一轮检查项
-1. 后端环境变量核对：`BUYER_WECHAT_LOGIN_MODE/APP_ID/APP_SECRET`。
+1. 后端环境变量核对：`APP_ENV=production`，微信/抖音的 `LOGIN_MODE/APP_ID/APP_SECRET` 与 F12 迁移状态一致。
 2. 微信后台合法域名与证书核对。
 3. 启动后端并健康检查：`/healthz`。
 4. 执行页面 smoke：`scripts/smoke-miniapp-page-e2e.mjs`。

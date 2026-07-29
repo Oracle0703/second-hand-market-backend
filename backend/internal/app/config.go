@@ -1,12 +1,44 @@
 package app
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
+const (
+	appEnvDevelopment = "development"
+	appEnvTest        = "test"
+	appEnvProduction  = "production"
+
+	buyerLoginModeMock     = "mock"
+	buyerLoginModeReal     = "real"
+	buyerLoginModeDisabled = "disabled"
+
+	wechatCode2SessionURL = "https://api.weixin.qq.com/sns/jscode2session"
+	douyinCode2SessionURL = "https://developer.toutiao.com/api/apps/v2/jscode2session"
+
+	minProductionJWTSecretBytes         = 32
+	minProductionJWTSecretDistinctBytes = 12
+	maxProviderHTTPTimeout              = 60 * time.Second
+)
+
+var knownUnsafeProductionJWTSecrets = map[string]struct{}{
+	"dev-access-secret":                           {},
+	"dev-refresh-secret":                          {},
+	"replace-access-secret":                       {},
+	"replace-refresh-secret":                      {},
+	"replace-with-a-strong-access-secret":         {},
+	"replace-with-a-strong-refresh-secret":        {},
+	"replace-with-a-strong-random-access-secret":  {},
+	"replace-with-a-strong-random-refresh-secret": {},
+}
+
 type Config struct {
+	AppEnv                     string
 	Addr                       string
 	DBDriver                   string
 	DBDSN                      string
@@ -32,10 +64,13 @@ type Config struct {
 	BuyerDouyinAppSecret       string
 	BuyerDouyinCode2SessionURL string
 	BuyerDouyinHTTPTimeout     time.Duration
+
+	runtimeLoadErr error
 }
 
 func LoadConfig() Config {
 	cfg := Config{
+		AppEnv:                     strings.TrimSpace(os.Getenv("APP_ENV")),
 		Addr:                       getEnv("ADDR", ":8080"),
 		DBDriver:                   getEnv("DB_DRIVER", "mysql"),
 		DBDSN:                      getEnv("DB_DSN", "shm:Shm@123456@tcp(127.0.0.1:3306)/second_hand_market?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai"),
@@ -54,35 +89,218 @@ func LoadConfig() Config {
 		BuyerWechatLoginMode:       getEnv("BUYER_WECHAT_LOGIN_MODE", "mock"),
 		BuyerWechatAppID:           getEnv("BUYER_WECHAT_APP_ID", ""),
 		BuyerWechatAppSecret:       getEnv("BUYER_WECHAT_APP_SECRET", ""),
-		BuyerWechatCode2SessionURL: getEnv("BUYER_WECHAT_CODE2SESSION_URL", "https://api.weixin.qq.com/sns/jscode2session"),
+		BuyerWechatCode2SessionURL: getEnv("BUYER_WECHAT_CODE2SESSION_URL", wechatCode2SessionURL),
 		BuyerWechatHTTPTimeout:     5 * time.Second,
 		BuyerDouyinLoginMode:       getEnv("BUYER_DOUYIN_LOGIN_MODE", "mock"),
 		BuyerDouyinAppID:           getEnv("BUYER_DOUYIN_APP_ID", ""),
 		BuyerDouyinAppSecret:       getEnv("BUYER_DOUYIN_APP_SECRET", ""),
-		BuyerDouyinCode2SessionURL: getEnv("BUYER_DOUYIN_CODE2SESSION_URL", "https://developer.toutiao.com/api/apps/v2/jscode2session"),
+		BuyerDouyinCode2SessionURL: getEnv("BUYER_DOUYIN_CODE2SESSION_URL", douyinCode2SessionURL),
 		BuyerDouyinHTTPTimeout:     5 * time.Second,
 	}
-	if v := os.Getenv("ACCESS_TTL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.AccessTTL = time.Duration(n) * time.Second
+	if value := os.Getenv("ACCESS_TTL_SECONDS"); value != "" {
+		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+			cfg.AccessTTL = time.Duration(seconds) * time.Second
 		}
 	}
-	if v := os.Getenv("REFRESH_TTL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.RefreshTTL = time.Duration(n) * time.Second
+	if value := os.Getenv("REFRESH_TTL_SECONDS"); value != "" {
+		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+			cfg.RefreshTTL = time.Duration(seconds) * time.Second
 		}
 	}
-	if v := os.Getenv("BUYER_WECHAT_HTTP_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.BuyerWechatHTTPTimeout = time.Duration(n) * time.Second
-		}
+	if normalizeBuyerLoginMode(cfg.BuyerWechatLoginMode) == buyerLoginModeReal {
+		cfg.loadProviderTimeout("BUYER_WECHAT_HTTP_TIMEOUT_SECONDS", &cfg.BuyerWechatHTTPTimeout)
 	}
-	if v := os.Getenv("BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.BuyerDouyinHTTPTimeout = time.Duration(n) * time.Second
-		}
+	if normalizeBuyerLoginMode(cfg.BuyerDouyinLoginMode) == buyerLoginModeReal {
+		cfg.loadProviderTimeout("BUYER_DOUYIN_HTTP_TIMEOUT_SECONDS", &cfg.BuyerDouyinHTTPTimeout)
 	}
 	return cfg
+}
+
+func (c *Config) loadProviderTimeout(name string, target *time.Duration) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	maximumSeconds := int64(maxProviderHTTPTimeout / time.Second)
+	if err != nil || value <= 0 || value > maximumSeconds {
+		if c.runtimeLoadErr == nil {
+			c.runtimeLoadErr = fmt.Errorf(
+				"%s must be an integer between 1 and %d",
+				name,
+				maximumSeconds,
+			)
+		}
+		return
+	}
+	*target = time.Duration(value) * time.Second
+}
+
+func (c Config) IsProduction() bool {
+	return normalizeAppEnv(c.AppEnv) == appEnvProduction
+}
+
+func (c Config) ValidateRuntime() error {
+	if c.runtimeLoadErr != nil {
+		return c.runtimeLoadErr
+	}
+
+	env := normalizeAppEnv(c.AppEnv)
+	switch env {
+	case appEnvDevelopment, appEnvTest, appEnvProduction:
+	default:
+		return fmt.Errorf("APP_ENV must be one of development, test, or production")
+	}
+
+	if err := validateBuyerLoginConfig(
+		"BUYER_WECHAT",
+		c.BuyerWechatLoginMode,
+		c.BuyerWechatAppID,
+		c.BuyerWechatAppSecret,
+		c.BuyerWechatCode2SessionURL,
+		c.BuyerWechatHTTPTimeout,
+		wechatCode2SessionURL,
+		env == appEnvProduction,
+	); err != nil {
+		return err
+	}
+	if err := validateBuyerLoginConfig(
+		"BUYER_DOUYIN",
+		c.BuyerDouyinLoginMode,
+		c.BuyerDouyinAppID,
+		c.BuyerDouyinAppSecret,
+		c.BuyerDouyinCode2SessionURL,
+		c.BuyerDouyinHTTPTimeout,
+		douyinCode2SessionURL,
+		env == appEnvProduction,
+	); err != nil {
+		return err
+	}
+
+	if env != appEnvProduction {
+		return nil
+	}
+
+	if err := validateProductionJWTSecret("JWT_ACCESS_SECRET", c.JWTAccessSecret); err != nil {
+		return err
+	}
+	if err := validateProductionJWTSecret("JWT_REFRESH_SECRET", c.JWTRefreshSecret); err != nil {
+		return err
+	}
+	if c.JWTAccessSecret == c.JWTRefreshSecret {
+		return fmt.Errorf("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different in production")
+	}
+	return nil
+}
+
+func normalizeAppEnv(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeBuyerLoginMode(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateProductionJWTSecret(name, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if value != trimmed {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", name)
+	}
+	if len([]byte(trimmed)) < minProductionJWTSecretBytes {
+		return fmt.Errorf("%s must be at least %d bytes in production", name, minProductionJWTSecretBytes)
+	}
+	if _, unsafe := knownUnsafeProductionJWTSecrets[strings.ToLower(trimmed)]; unsafe {
+		return fmt.Errorf("%s must not use a default or example value in production", name)
+	}
+	secretBytes := []byte(trimmed)
+	if distinctByteCount(secretBytes) < minProductionJWTSecretDistinctBytes {
+		return fmt.Errorf(
+			"%s must contain at least %d distinct bytes in production",
+			name,
+			minProductionJWTSecretDistinctBytes,
+		)
+	}
+	if isRepeatedBytePattern(secretBytes) {
+		return fmt.Errorf("%s must not be a repeated byte pattern in production", name)
+	}
+	return nil
+}
+
+func distinctByteCount(value []byte) int {
+	distinct := map[byte]struct{}{}
+	for _, current := range value {
+		distinct[current] = struct{}{}
+	}
+	return len(distinct)
+}
+
+func isRepeatedBytePattern(value []byte) bool {
+	for patternLength := 1; patternLength <= len(value)/2; patternLength++ {
+		if len(value)%patternLength != 0 {
+			continue
+		}
+		repeated := true
+		for index := patternLength; index < len(value); index++ {
+			if value[index] != value[index%patternLength] {
+				repeated = false
+				break
+			}
+		}
+		if repeated {
+			return true
+		}
+	}
+	return false
+}
+
+func validateBuyerLoginConfig(
+	prefix string,
+	modeValue string,
+	appID string,
+	appSecret string,
+	endpoint string,
+	timeout time.Duration,
+	officialEndpoint string,
+	production bool,
+) error {
+	mode := normalizeBuyerLoginMode(modeValue)
+	switch mode {
+	case buyerLoginModeMock:
+		if production {
+			return fmt.Errorf("%s_LOGIN_MODE must not use mock in production", prefix)
+		}
+		return nil
+	case buyerLoginModeDisabled:
+		return nil
+	case buyerLoginModeReal:
+	default:
+		return fmt.Errorf("%s_LOGIN_MODE must be one of mock, real, or disabled", prefix)
+	}
+
+	if strings.TrimSpace(appID) == "" {
+		return fmt.Errorf("%s_APP_ID is required in real mode", prefix)
+	}
+	if strings.TrimSpace(appSecret) == "" {
+		return fmt.Errorf("%s_APP_SECRET is required in real mode", prefix)
+	}
+	if timeout < time.Second || timeout > maxProviderHTTPTimeout {
+		return fmt.Errorf(
+			"%s_HTTP_TIMEOUT_SECONDS must be between 1 and %d seconds in real mode",
+			prefix,
+			int64(maxProviderHTTPTimeout/time.Second),
+		)
+	}
+
+	trimmedEndpoint := strings.TrimSpace(endpoint)
+	parsed, err := url.Parse(trimmedEndpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s_CODE2SESSION_URL must be a valid HTTP(S) URL in real mode", prefix)
+	}
+	if production && trimmedEndpoint != officialEndpoint {
+		return fmt.Errorf("%s_CODE2SESSION_URL must use the official HTTPS endpoint in production", prefix)
+	}
+	return nil
 }
 
 func getEnv(k, d string) string {

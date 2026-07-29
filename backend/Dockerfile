@@ -18,6 +18,8 @@ WORKDIR /srv
 
 COPY --from=build /out/server /srv/server
 
+ENV APP_ENV=production
+
 EXPOSE 8080
 
 CMD ["/srv/server"]

@@ -5,9 +5,10 @@
 ## 1. 当前状态与阻塞结论
 
 ## 1.1 当前代码能力
-后端 `POST /api/v1/buyer/auth/wechat-login` 已支持两种模式：
+后端 `POST /api/v1/buyer/auth/wechat-login` 已支持三种模式：
 1. `mock`：`openid = mock_wx_<code>`（用于本地开发与自动化）。
 2. `real`：调用微信 `code2session` 获取 `openid/unionid`。
+3. `disabled`：显式关闭微信登录并返回 403。
 
 相关配置入口：`backend/internal/app/config.go`。
 
@@ -25,13 +26,13 @@
 
 | 变量 | 必填 | 示例 | 说明 |
 | --- | --- | --- | --- |
-| `BUYER_WECHAT_LOGIN_MODE` | 是 | `real` / `mock` | 登录模式，发布前必须切到 `real` |
+| `BUYER_WECHAT_LOGIN_MODE` | 是 | `real` / `mock` / `disabled` | 生产拒绝 `mock`；启用微信时必须使用 `real` |
 | `BUYER_WECHAT_APP_ID` | `real` 模式必填 | `wx123...` | 微信小程序 AppID |
 | `BUYER_WECHAT_APP_SECRET` | `real` 模式必填 | `abcdef...` | 微信小程序 AppSecret |
 | `BUYER_WECHAT_CODE2SESSION_URL` | 否 | `https://api.weixin.qq.com/sns/jscode2session` | 微信 code2session 地址 |
-| `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | 否 | `5` | 后端请求微信超时 |
+| `BUYER_WECHAT_HTTP_TIMEOUT_SECONDS` | 否 | `5` | 后端请求微信超时；`real` 模式允许 1–60 秒 |
 
-说明：`mock` 模式下 `APP_ID/APP_SECRET` 可为空；`real` 模式下为空会直接返回配置错误。
+说明：`mock` 仅用于开发/测试；`disabled` 不需要凭据；`real` 缺少凭据会在服务启动时失败。
 
 ## 2.2 微信公众平台配置（必做）
 1. 申请并确认小程序 `AppID` / `AppSecret`。
@@ -55,7 +56,7 @@
 ```bash
 # 后端
 cd backend
-CGO_ENABLED=0 GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build \
+APP_ENV=development CGO_ENABLED=0 GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build \
 BUYER_WECHAT_LOGIN_MODE=mock \
 go run ./cmd/server
 
@@ -71,7 +72,7 @@ TARO_APP_API_BASE_URL=http://<你的电脑IP>:8080/api/v1 npm run dev:weapp
 
 ```bash
 cd backend
-CGO_ENABLED=0 GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build \
+APP_ENV=development CGO_ENABLED=0 GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build \
 BUYER_WECHAT_LOGIN_MODE=real \
 BUYER_WECHAT_APP_ID=<真实appid> \
 BUYER_WECHAT_APP_SECRET=<真实secret> \

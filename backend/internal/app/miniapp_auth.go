@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -114,10 +113,13 @@ func (s *Server) resolveWechatIdentity(code string) (string, *string, error) {
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.BuyerWechatLoginMode))
-	if mode == "" || mode == "mock" {
+	if mode == buyerLoginModeMock {
 		return "mock_wx_" + trimmedCode, nil, nil
 	}
-	if mode != "real" {
+	if mode == buyerLoginModeDisabled {
+		return "", nil, common.NewBizError(common.CodeForbidden, "wechat login is disabled", http.StatusForbidden)
+	}
+	if mode != buyerLoginModeReal {
 		return "", nil, miniProgramLoginConfigError("invalid BUYER_WECHAT_LOGIN_MODE")
 	}
 
@@ -144,7 +146,7 @@ func (s *Server) resolveWechatIdentity(code string) (string, *string, error) {
 	client := &http.Client{Timeout: s.cfg.BuyerWechatHTTPTimeout}
 	resp, err := client.Get(u.String())
 	if err != nil {
-		return "", nil, miniProgramLoginConfigError(fmt.Sprintf("wechat code2session request failed: %v", err))
+		return "", nil, miniProgramLoginConfigError("wechat code2session request failed")
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -173,10 +175,13 @@ func (s *Server) resolveDouyinIdentity(code string) (string, *string, error) {
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.BuyerDouyinLoginMode))
-	if mode == "" || mode == "mock" {
+	if mode == buyerLoginModeMock {
 		return "mock_tt_" + trimmedCode, nil, nil
 	}
-	if mode != "real" {
+	if mode == buyerLoginModeDisabled {
+		return "", nil, common.NewBizError(common.CodeForbidden, "douyin login is disabled", http.StatusForbidden)
+	}
+	if mode != buyerLoginModeReal {
 		return "", nil, miniProgramLoginConfigError("invalid BUYER_DOUYIN_LOGIN_MODE")
 	}
 
@@ -207,7 +212,7 @@ func (s *Server) resolveDouyinIdentity(code string) (string, *string, error) {
 	client := &http.Client{Timeout: s.cfg.BuyerDouyinHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", nil, miniProgramLoginConfigError(fmt.Sprintf("douyin code2session request failed: %v", err))
+		return "", nil, miniProgramLoginConfigError("douyin code2session request failed")
 	}
 	defer func() {
 		_ = resp.Body.Close()
