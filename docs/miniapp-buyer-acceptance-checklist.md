@@ -16,7 +16,7 @@
 # 终端 A：启动后端
 cd backend
 mkdir -p .cache/go/mod .cache/go/build
-GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build go run ./cmd/server
+APP_ENV=development GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build go run ./cmd/server
 
 # 终端 B：执行页面链路 smoke
 cd ..
@@ -87,6 +87,6 @@ API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mj
 ---
 
 ## 4. 当前边界说明
-1. 当前后端已支持 `BUYER_WECHAT_LOGIN_MODE=mock/real` 两种模式。
+1. 当前后端已支持 `BUYER_WECHAT_LOGIN_MODE=mock/real/disabled` 三种模式。
 2. 在 `mock` 模式下可做流程自动化回归，但不能证明真实 `code2session` 正确性。
 3. 发布前必须在 `real` 模式完成真机登录验收（`wx.login -> code2session -> buyer session`）。

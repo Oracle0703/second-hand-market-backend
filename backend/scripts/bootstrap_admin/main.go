@@ -1,51 +1,62 @@
 package main
 
 import (
-	"fmt"
+	"errors"
+	"log"
 	"os"
+	"strings"
 
-	"github.com/glebarez/sqlite"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
-
+	"second-hand-market-backend/backend/internal/app"
+	"second-hand-market-backend/backend/internal/databasecmd"
 	"second-hand-market-backend/backend/internal/model"
 )
 
-func openDB() (*gorm.DB, error) {
-	driver := os.Getenv("DB_DRIVER")
-	dsn := os.Getenv("DB_DSN")
-	if driver == "" {
-		driver = "sqlite"
-		dsn = "file:app.db?cache=shared&_foreign_keys=on"
+func main() {
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
 	}
-	if driver == "mysql" {
-		return gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	}
-	return gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	log.Print("ADMIN_BOOTSTRAP PASS")
 }
 
-func main() {
-	db, err := openDB()
+func run() error {
+	databaseConfig, err := databasecmd.LoadConfig()
 	if err != nil {
-		panic(err)
+		return err
 	}
-	if err := db.AutoMigrate(&model.AdminUser{}); err != nil {
-		panic(err)
+	bootstrap, err := adminBootstrapFromEnv()
+	if err != nil {
+		return err
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte("Admin@123456"), bcrypt.DefaultCost)
-	admins := []model.AdminUser{
-		{Username: "superadmin", DisplayName: "Super Admin", Role: model.AdminRoleSuper, Status: model.AccountStatusActive, PasswordHash: string(hash)},
-		{Username: "admin", DisplayName: "Admin", Role: model.AdminRoleAdmin, Status: model.AccountStatusActive, PasswordHash: string(hash)},
+	db, err := databasecmd.OpenDatabase(databaseConfig)
+	if err != nil {
+		return err
 	}
-	for _, a := range admins {
-		var cnt int64
-		_ = db.Model(&model.AdminUser{}).Where("username = ?", a.Username).Count(&cnt).Error
-		if cnt == 0 {
-			if err := db.Create(&a).Error; err != nil {
-				panic(err)
-			}
-		}
+	defer databasecmd.CloseDatabase(db)
+	if err := app.BootstrapAdmin(db, bootstrap); err != nil {
+		return errors.New("ADMIN_BOOTSTRAP failed")
 	}
-	fmt.Println("bootstrap_admin done")
+	return nil
+}
+
+func adminBootstrapFromEnv() (app.AdminBootstrap, error) {
+	bootstrap := app.AdminBootstrap{
+		Username:    strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
+		DisplayName: strings.TrimSpace(os.Getenv("ADMIN_DISPLAY_NAME")),
+		Role:        strings.TrimSpace(os.Getenv("ADMIN_ROLE")),
+		Password:    os.Getenv("ADMIN_PASSWORD"),
+	}
+	if bootstrap.Username == "" {
+		return app.AdminBootstrap{}, errors.New("ADMIN_USERNAME is required")
+	}
+	if bootstrap.DisplayName == "" {
+		return app.AdminBootstrap{}, errors.New("ADMIN_DISPLAY_NAME is required")
+	}
+	if bootstrap.Role != model.AdminRoleAdmin && bootstrap.Role != model.AdminRoleSuper {
+		return app.AdminBootstrap{}, errors.New("ADMIN_ROLE must be ADMIN or SUPER_ADMIN")
+	}
+	if strings.TrimSpace(bootstrap.Password) == "" {
+		return app.AdminBootstrap{}, errors.New("ADMIN_PASSWORD is required")
+	}
+	return bootstrap, nil
 }

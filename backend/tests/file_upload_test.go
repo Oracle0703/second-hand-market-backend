@@ -490,10 +490,7 @@ func TestFileUploadRejectsOversizedMultipartBeforeParsing(t *testing.T) {
 
 	cfg := newTestConfig(t, uploadDir)
 	cfg.FileUploadMaxBytes = 1024
-	srv, err := app.NewServer(cfg)
-	if err != nil {
-		t.Fatalf("new size-limited server: %v", err)
-	}
+	srv := newTestServerWithConfig(t, cfg)
 	srv.Router.MaxMultipartMemory = 64
 
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{

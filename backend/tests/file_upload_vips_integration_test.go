@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/media"
 )
 
@@ -30,10 +29,7 @@ func TestStrictImageVipsHTTPIntegration(t *testing.T) {
 	cfg := newTestConfig(t, t.TempDir())
 	cfg.ImageProcessorDriver = "vips"
 	cfg.ImageProcessorBin = binary
-	srv, err := app.NewServer(cfg)
-	if err != nil {
-		t.Fatalf("start vips-backed test server: %v", err)
-	}
+	srv := newTestServerWithConfig(t, cfg)
 
 	formats := []struct {
 		name        string

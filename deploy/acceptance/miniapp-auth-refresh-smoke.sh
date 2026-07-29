@@ -1,0 +1,1039 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd -- "$base_dir/../.." && pwd)"
+evidence_dir="$base_dir/evidence/miniapp-auth-refresh"
+evidence_parent="${evidence_dir%/*}"
+expected_node="v22.22.2"
+expected_npm="10.9.7"
+expected_commit_sha="${EXPECTED_COMMIT_SHA:-}"
+source_list_tree="${MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE:-HEAD}"
+evidence_publish_tmp=""
+evidence_publish_lock=""
+evidence_parent_identity=""
+evidence_parent_cwd_active=0
+evidence_parent_return_dir=""
+runtime_dir=""
+
+expected_commit_is_valid() {
+  [[ "${#expected_commit_sha}" -eq 40 && "$expected_commit_sha" != *[!0-9a-f]* ]]
+}
+
+normalize_local_path() {
+  local path="$1"
+  if [[ "$path" =~ ^[A-Za-z]:\\ ]]; then
+    path="${path//\\//}"
+  fi
+  printf '%s\n' "$path"
+}
+
+local_path_is_absolute() {
+  [[ "$1" == /* ]] && return 0
+  case "${OSTYPE:-}:${MSYSTEM:-}" in
+    msys*:* | cygwin*:* | *:MINGW* | *:MSYS*)
+      [[ "$1" =~ ^[A-Za-z]:/ ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+file_sha256() {
+  local path="$1" diagnostics="${2:-/dev/null}" digest
+  digest="$(sha256sum --binary -- "$path" 2>>"$diagnostics" | cut -d ' ' -f1)" || return 1
+  [[ "${#digest}" -eq 64 && "$digest" != *[!0-9a-f]* ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+source_path_is_allowed() {
+  local path="$1"
+  case "$path" in
+    Makefile | miniapp/.nvmrc | miniapp/babel.config.js | miniapp/package.json | \
+      miniapp/package-lock.json | miniapp/project.config.json | \
+      miniapp/project.tt.json | miniapp/tsconfig.json | miniapp/vitest.config.mjs | \
+      deploy/acceptance/miniapp-auth-refresh-smoke.sh | miniapp/config/* | \
+      miniapp/src/* | miniapp/tests/*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+source_path_is_forbidden() {
+  local path="$1" lower component
+  local -a components=()
+  lower="$(printf '%s' "$path" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  [[ "$path" == "miniapp/project.private.config.json" ]] && return 0
+  case "$lower" in
+    *.db|*.db.*|*.sqlite|*.sqlite.*|*.sqlite3|*.sqlite3.*) return 0 ;;
+  esac
+  IFS=/ read -r -a components <<<"$lower"
+  for component in "${components[@]}"; do
+    case "$component" in
+      .env|.env.*|.git|.tmp|.cache|.swc|cache|caches|secret|secrets|database|databases|upload|uploads|evidence|backup|backups|node_modules|dist)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+source_path_is_portable() {
+  local path="$1" component
+  local -a components=()
+  [[ -n "$path" && "$path" != /* && "$path" != -* && "$path" != *//* &&
+    "$path" != *[!A-Za-z0-9_./-]* ]] || return 1
+  IFS=/ read -r -a components <<<"$path"
+  for component in "${components[@]}"; do
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || return 1
+  done
+}
+
+write_source_file_list() {
+  local commit="${1:-HEAD}"
+  (
+    cd "$repo_dir"
+    git ls-tree -r --name-only -z "$commit" -- Makefile miniapp \
+      deploy/acceptance/miniapp-auth-refresh-smoke.sh 2>/dev/null |
+      while IFS= read -r -d '' path; do
+        source_path_is_portable "$path" || continue
+        source_path_is_forbidden "$path" && continue
+        source_path_is_allowed "$path" && printf '%s\0' "$path"
+      done | LC_ALL=C sort -zu
+  )
+}
+
+write_directory_manifest() {
+  local directory="$1"
+  local source_list="$2"
+  local output="$3"
+  local path digest
+  (
+    cd "$directory"
+    while IFS= read -r -d '' path; do
+      digest="$(file_sha256 "$path")" || exit 1
+      printf '%s  %s\n' "$digest" "$path"
+    done <"$source_list"
+  ) >"$output"
+}
+
+write_context_file_list() {
+  local directory="$1"
+  (
+    cd "$directory"
+    find . -type f -print0 |
+      while IFS= read -r -d '' path; do
+        printf '%s\0' "${path#./}"
+      done | LC_ALL=C sort -zu
+  )
+}
+
+source_list_contains() {
+  local source_list="$1"
+  local required="$2"
+  local path
+  while IFS= read -r -d '' path; do
+    [[ "$path" == "$required" ]] && return 0
+  done <"$source_list"
+  return 1
+}
+
+validate_source_list() {
+  local source_list="$1"
+  local sorted_list="$2"
+  local path
+  local required
+  local count=0
+  local -a required_paths=(
+    Makefile
+    miniapp/.nvmrc
+    miniapp/package.json
+    miniapp/package-lock.json
+    miniapp/project.config.json
+    miniapp/project.tt.json
+    miniapp/src/services/request.ts
+    miniapp/tests/request-refresh.test.ts
+    deploy/acceptance/miniapp-auth-refresh-smoke.sh
+  )
+
+  LC_ALL=C sort -zu "$source_list" >"$sorted_list"
+  cmp -s "$source_list" "$sorted_list" || return 1
+  while IFS= read -r -d '' path; do
+    source_path_is_portable "$path" || return 1
+    source_path_is_forbidden "$path" && return 1
+    source_path_is_allowed "$path" || return 1
+    count=$((count + 1))
+  done <"$source_list"
+  [[ "$count" -gt 0 ]] || return 1
+  for required in "${required_paths[@]}"; do
+    source_list_contains "$source_list" "$required" || return 1
+  done
+}
+
+validate_received_source_files() {
+  local directory="$1" source_list="$2" path current component
+  local -a components=()
+  [[ ! -L "$directory" ]] || return 1
+  while IFS= read -r -d '' path; do
+    current="$directory"
+    IFS=/ read -r -a components <<<"$path"
+    for component in "${components[@]}"; do
+      current="$current/$component"
+      [[ ! -L "$current" ]] || return 1
+    done
+    [[ -f "$current" ]] || return 1
+  done <"$source_list"
+}
+
+source_list_contains_child() {
+  local source_list="$1" directory="$2" path
+  while IFS= read -r -d '' path; do
+    [[ "$path" == "$directory"/* ]] && return 0
+  done <"$source_list"
+  return 1
+}
+
+validate_package_checksums() (
+  local package_dir="$1" diagnostics="${2:-/dev/null}" expected_name actual_hash line commit_line line_count=0
+  local -a names=(source-files.z source-sha256.txt source.tar)
+  cd "$package_dir" || return 1
+  exec 3<package-sha256.txt
+  IFS= read -r commit_line <&3 || { exec 3<&-; return 1; }
+  [[ "$commit_line" == "commit=$expected_commit_sha" ]] || { exec 3<&-; return 1; }
+  while [[ "$line_count" -lt 3 ]]; do
+    expected_name="${names[$line_count]}"
+    IFS= read -r line <&3 || { exec 3<&-; return 1; }
+    actual_hash="$(file_sha256 "$expected_name" "$diagnostics")" || { exec 3<&-; return 1; }
+    [[ "$line" == "$actual_hash  $expected_name" ]] || { exec 3<&-; return 1; }
+    line_count=$((line_count + 1))
+  done
+  if IFS= read -r line <&3; then
+    exec 3<&-
+    return 1
+  fi
+  exec 3<&-
+)
+
+validate_package_artifact_list() {
+  local package_dir="$1" path count=0
+  local -a names=(package-sha256.txt source-files.z source-sha256.txt source.tar)
+  while IFS= read -r -d '' path; do
+    [[ "$count" -lt 4 && "$path" == "./${names[$count]}" ]] || return 1
+    count=$((count + 1))
+  done < <(cd "$package_dir" && find . -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  [[ "$count" -eq 4 ]]
+}
+
+validate_archive_list() {
+  local package_dir="$1" source_list="$2" runtime="$3" line path
+  : >"$runtime/archive-source-files.z"
+  while IFS= read -r line; do
+    case "${line:0:1}" in
+      -|d) ;;
+      *) return 1 ;;
+    esac
+  done < <(tar -tvf "$package_dir/source.tar")
+  while IFS= read -r path; do
+    source_path_is_portable "${path%/}" || return 1
+    if [[ "$path" == */ ]]; then
+      path="${path%/}"
+      source_path_is_forbidden "$path" && return 1
+      source_list_contains_child "$source_list" "$path" || return 1
+    else
+      printf '%s\0' "$path" >>"$runtime/archive-source-files.z"
+    fi
+  done < <(tar -tf "$package_dir/source.tar")
+  validate_source_list "$runtime/archive-source-files.z" "$runtime/sorted-archive-source-files.z" || return 1
+  cmp -s "$source_list" "$runtime/archive-source-files.z"
+}
+
+directory_identity() {
+  local path="$1" identity=""
+  if identity="$(stat -f '%d:%i' "$path" 2>/dev/null)" &&
+    [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  if identity="$(stat -c '%d:%i' "$path" 2>/dev/null)" &&
+    [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s\n' "$identity"
+    return 0
+  fi
+  return 1
+}
+
+export_head_source() (
+  set -euo pipefail
+  local export_dir
+  local export_parent=""
+  local export_name=""
+  local export_return_dir="$PWD"
+  local export_runtime=""
+  local extracted=""
+  local completed=0
+  local export_parent_cwd_active=0
+  local export_child_cwd_active=0
+  local export_parent_identity=""
+  local export_child_identity=""
+  local export_stage="preflight"
+  local path digest
+  local head_oid
+  local info_attributes
+  local -a archive_paths=()
+  export_dir="$(normalize_local_path "$1")"
+
+  export_parent_is_current() {
+    local identity=""
+    [[ -n "$export_parent_identity" && -d "$export_parent" && ! -L "$export_parent" ]] || return 1
+    identity="$(directory_identity "$export_parent")" || return 1
+    [[ "$identity" == "$export_parent_identity" ]]
+  }
+
+  export_child_is_current() {
+    local identity=""
+    export_parent_is_current || return 1
+    [[ -n "$export_child_identity" && -d "$export_dir" && ! -L "$export_dir" ]] || return 1
+    identity="$(directory_identity "$export_dir")" || return 1
+    [[ "$identity" == "$export_child_identity" ]]
+  }
+
+  cleanup_source_export() {
+    local status="${1:-$?}"
+    local current_identity=""
+    trap - EXIT INT TERM
+    set +e
+    if [[ -n "$export_runtime" && -d "$export_runtime" ]]; then
+      rm -r -- "$export_runtime"
+    fi
+    if [[ "$completed" -ne 1 && "$export_child_cwd_active" -eq 1 ]]; then
+      current_identity="$(directory_identity . 2>/dev/null)"
+      if [[ -n "$export_child_identity" && "$current_identity" == "$export_child_identity" ]]; then
+        rm -f -- source-files.z source-sha256.txt source.tar package-sha256.txt
+      fi
+      if cd ..; then
+        export_child_cwd_active=0
+        export_parent_cwd_active=1
+        current_identity="$(directory_identity . 2>/dev/null)"
+        if [[ -n "$export_parent_identity" && "$current_identity" == "$export_parent_identity" ]] &&
+          export_parent_is_current &&
+          [[ -d "./$export_name" && ! -L "./$export_name" ]] &&
+          [[ "$(directory_identity "./$export_name" 2>/dev/null)" == "$export_child_identity" ]]; then
+          rmdir -- "./$export_name"
+        fi
+      fi
+    fi
+    if [[ "$export_parent_cwd_active" -eq 1 ]]; then
+      cd "$export_return_dir" || true
+    fi
+    exit "$status"
+  }
+  trap cleanup_source_export EXIT
+  trap 'cleanup_source_export 130' INT
+  trap 'cleanup_source_export 143' TERM
+
+  export_parent="${export_dir%/*}"
+  export_name="${export_dir##*/}"
+  local_path_is_absolute "$export_dir" && [[ "$export_dir" != "/" &&
+    -n "$export_parent" && -n "$export_name" && "$export_name" != . && "$export_name" != .. &&
+    -d "$export_parent" && ! -L "$export_parent" &&
+    ! -e "$export_dir" && ! -L "$export_dir" ]] || {
+    echo "MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR must be an absent absolute directory" >&2
+    return 1
+  }
+  expected_commit_is_valid || {
+    echo "EXPECTED_COMMIT_SHA must be the full lowercase 40-character commit SHA" >&2
+    return 1
+  }
+  for command in git sha256sum sort xargs mktemp tar chmod mkdir rm rmdir cmp find tr cut stat; do
+    command -v "$command" >/dev/null || {
+      echo "required source export command is unavailable: $command" >&2
+      return 1
+    }
+  done
+
+  export_runtime="$(mktemp -d)"
+  extracted="$export_runtime/extracted"
+  chmod 700 "$export_runtime"
+  head_oid="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}' 2>"$export_runtime/head-resolve.raw")" || {
+    echo "cannot resolve committed HEAD" >&2
+    return 1
+  }
+  [[ "$head_oid" == "$expected_commit_sha" ]] || {
+    echo "committed HEAD does not match EXPECTED_COMMIT_SHA" >&2
+    return 1
+  }
+  info_attributes="$(
+    cd "$repo_dir"
+    path="$(git rev-parse --git-path info/attributes 2>"$export_runtime/info-attributes.raw")" || exit 1
+    path="$(normalize_local_path "$path")" || exit 1
+    if local_path_is_absolute "$path"; then
+      printf '%s\n' "$path"
+    else
+      printf '%s/%s\n' "$PWD" "$path"
+    fi
+  )" || {
+    echo "cannot resolve repository-local Git attributes path" >&2
+    return 1
+  }
+  [[ ! -e "$info_attributes" && ! -L "$info_attributes" ]] || {
+    echo "repository-local Git info/attributes must be absent for immutable export" >&2
+    return 1
+  }
+  cd "$export_parent" || {
+    echo "cannot enter source export parent" >&2
+    return 1
+  }
+  export_parent_cwd_active=1
+  export_parent_identity="$(directory_identity .)" || {
+    echo "cannot bind source export parent identity" >&2
+    return 1
+  }
+  export_parent_is_current || {
+    echo "source export parent identity changed" >&2
+    return 1
+  }
+  [[ ! -e "./$export_name" && ! -L "./$export_name" ]] || {
+    echo "source export destination was concurrently acquired" >&2
+    return 1
+  }
+  mkdir -- "./$export_name" 2>"$export_runtime/export-destination.raw" || {
+    echo "source export destination was concurrently acquired" >&2
+    return 1
+  }
+  cd -- "./$export_name" || {
+    echo "cannot enter acquired source export destination" >&2
+    return 1
+  }
+  export_parent_cwd_active=0
+  export_child_cwd_active=1
+  export_child_identity="$(directory_identity .)" || {
+    echo "cannot bind source export destination identity" >&2
+    return 1
+  }
+  export_child_is_current || {
+    echo "source export destination identity changed" >&2
+    return 1
+  }
+  mkdir "$extracted"
+  chmod 700 "$extracted"
+  printf 'identity\n' >"$export_runtime/export-stage"
+  if ! (
+    [[ "$(directory_identity .)" == "$export_child_identity" ]] || exit 1
+    export_child_is_current || exit 1
+    chmod 700 . || exit 1
+    printf 'source-list\n' >"$export_runtime/export-stage" || exit 1
+    write_source_file_list "$head_oid" >source-files.z || exit 1
+    validate_source_list source-files.z "$export_runtime/sorted-source-files.z" || exit 1
+    while IFS= read -r -d '' path; do archive_paths+=("$path"); done <source-files.z
+    [[ "${#archive_paths[@]}" -gt 0 ]] || exit 1
+    printf 'git-attributes\n' >"$export_runtime/export-stage" || exit 1
+    [[ ! -e "$info_attributes" && ! -L "$info_attributes" ]] || exit 1
+    printf 'git-archive\n' >"$export_runtime/export-stage" || exit 1
+    ( cd "$repo_dir"; GIT_ATTR_NOSYSTEM=1 git -c core.attributesFile= -c core.autocrlf=false -c core.eol=lf \
+      archive --format=tar "$head_oid" -- "${archive_paths[@]}" ) \
+      >source.tar 2>"$export_runtime/git-archive.raw" || exit 1
+    [[ ! -e "$info_attributes" && ! -L "$info_attributes" ]] || exit 1
+    printf 'archive-list\n' >"$export_runtime/export-stage" || exit 1
+    validate_archive_list . source-files.z "$export_runtime" 2>>"$export_runtime/archive-validation.raw" || exit 1
+    printf 'archive-extract\n' >"$export_runtime/export-stage" || exit 1
+    tar -C "$extracted" -xf source.tar >"$export_runtime/archive-extract.raw" 2>&1 || exit 1
+    validate_received_source_files "$extracted" source-files.z || exit 1
+    printf 'context-list\n' >"$export_runtime/export-stage" || exit 1
+    write_context_file_list "$extracted" >"$export_runtime/archive-source-files.z" || exit 1
+    cmp -s source-files.z "$export_runtime/archive-source-files.z" || exit 1
+    printf 'source-manifest\n' >"$export_runtime/export-stage" || exit 1
+    write_directory_manifest "$extracted" "$PWD/source-files.z" source-sha256.txt || exit 1
+    printf 'package-manifest\n' >"$export_runtime/export-stage" || exit 1
+    printf 'commit=%s\n' "$head_oid" >package-sha256.txt || exit 1
+    for path in source-files.z source-sha256.txt source.tar; do
+      digest="$(file_sha256 "$path")" || exit 1
+      printf '%s  %s\n' "$digest" "$path" >>package-sha256.txt || exit 1
+    done
+    printf 'artifact-validation\n' >"$export_runtime/export-stage" || exit 1
+    validate_package_artifact_list . || exit 1
+    validate_package_checksums . "$export_runtime/package-checksums.raw" || exit 1
+    printf 'permissions\n' >"$export_runtime/export-stage" || exit 1
+    chmod 600 source-files.z source-sha256.txt source.tar package-sha256.txt
+  ); then
+    IFS= read -r export_stage <"$export_runtime/export-stage" || export_stage="unknown"
+    case "$export_stage" in
+      identity|source-list|git-attributes|git-archive|archive-list|archive-extract|context-list|source-manifest|package-manifest|artifact-validation|permissions) ;;
+      *) export_stage="unknown" ;;
+    esac
+    printf 'committed HEAD miniapp source export failed at stage=%s\n' "$export_stage" >&2
+    return 1
+  fi
+  export_child_is_current || { echo "source export destination identity changed" >&2; return 1; }
+  completed=1
+)
+
+if [[ "${MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY:-0}" == "1" &&
+  -n "${MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR:-}" ]]; then
+  echo "choose one miniapp auth refresh source mode" >&2
+  exit 1
+fi
+if [[ "${MINIAPP_AUTH_REFRESH_SOURCE_LIST_ONLY:-0}" == "1" ]]; then
+  if [[ "$source_list_tree" != "HEAD" ]]; then
+    [[ "${#source_list_tree}" -eq 40 && "$source_list_tree" != *[!0-9a-f]* ]] || {
+      echo "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE must be a full lowercase Git tree SHA" >&2
+      exit 1
+    }
+    git -C "$repo_dir" cat-file -e "$source_list_tree^{tree}" 2>/dev/null || {
+      echo "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE does not identify a Git tree" >&2
+      exit 1
+    }
+  fi
+  write_source_file_list "$source_list_tree"
+  exit 0
+fi
+[[ "$source_list_tree" == "HEAD" ]] || {
+  echo "MINIAPP_AUTH_REFRESH_SOURCE_LIST_TREE is only valid in source-list mode" >&2
+  exit 1
+}
+if [[ -n "${MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR:-}" ]]; then
+  export_head_source "$MINIAPP_AUTH_REFRESH_SOURCE_EXPORT_DIR"
+  exit 0
+fi
+
+[[ "${MINIAPP_AUTH_REFRESH_ACCEPTANCE_CONFIRM:-}" == "I_UNDERSTAND_THIS_RUNS_ONLY_ISOLATED_MINIAPP_TESTS" ]] || {
+  echo "isolated miniapp auth refresh confirmation is missing" >&2
+  exit 1
+}
+expected_commit_is_valid || {
+  echo "EXPECTED_COMMIT_SHA must be the full lowercase 40-character commit SHA" >&2
+  exit 1
+}
+
+for command in sha256sum sort xargs mktemp tar chmod mkdir rm rmdir mv cmp find wc tr cut grep cp stat; do
+  command -v "$command" >/dev/null || {
+    echo "required command is unavailable: $command" >&2
+    exit 1
+  }
+done
+
+source_package_dir="$(normalize_local_path "${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR:-}")"
+local_path_is_absolute "$source_package_dir" && [[ -d "$source_package_dir" && ! -L "$source_package_dir" ]] || {
+  echo "MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_DIR must identify the transferred source package" >&2
+  exit 1
+}
+preflight_on_exit() {
+  local status="${1:-$?}"
+  trap - EXIT INT TERM
+  set +e
+  [[ -z "$runtime_dir" || ! -d "$runtime_dir" ]] || rm -r -- "$runtime_dir"
+  exit "$status"
+}
+runtime_dir="$(mktemp -d 2>/dev/null)" || { echo "cannot create private miniapp runtime" >&2; exit 1; }
+trap preflight_on_exit EXIT
+trap 'preflight_on_exit 130' INT
+trap 'preflight_on_exit 143' TERM
+chmod 700 "$runtime_dir" 2>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure private miniapp runtime" >&2; exit 1; }
+runtime_evidence="$runtime_dir/evidence"
+build_context="$runtime_dir/build-context"
+source_package_snapshot="$runtime_dir/source-package"
+current_stage="preflight"
+success=0
+evidence_eligible=0
+sanitization_failed=0
+mkdir "$runtime_evidence" "$build_context" "$source_package_snapshot" 2>"$runtime_dir/runtime-directories.raw" || {
+  echo "cannot create private miniapp runtime state" >&2
+  exit 1
+}
+chmod 700 "$runtime_evidence" "$build_context" "$source_package_snapshot" 2>>"$runtime_dir/runtime-mode.raw" || {
+  echo "cannot secure private miniapp runtime state" >&2
+  exit 1
+}
+for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
+  [[ -f "$source_package_dir/$artifact" && ! -L "$source_package_dir/$artifact" ]] || {
+    echo "transferred miniapp source package is incomplete" >&2
+    exit 1
+  }
+done
+validate_package_artifact_list "$source_package_dir" || {
+  echo "transferred miniapp source package must contain exactly four artifacts" >&2
+  exit 1
+}
+cp -- "$source_package_dir/source-files.z" "$source_package_dir/source-sha256.txt" \
+  "$source_package_dir/source.tar" "$source_package_dir/package-sha256.txt" \
+  "$source_package_snapshot/" >"$runtime_dir/package-snapshot.raw" 2>&1 || {
+  echo "cannot snapshot transferred miniapp source package" >&2
+  exit 1
+}
+chmod 600 "$source_package_snapshot/source-files.z" "$source_package_snapshot/source-sha256.txt" \
+  "$source_package_snapshot/source.tar" "$source_package_snapshot/package-sha256.txt" \
+  2>>"$runtime_dir/runtime-mode.raw" || { echo "cannot secure miniapp source package snapshot" >&2; exit 1; }
+validate_package_artifact_list "$source_package_snapshot" 2>"$runtime_dir/package-snapshot-list.raw" || {
+  echo "private miniapp source package snapshot is invalid" >&2
+  exit 1
+}
+for artifact in source-files.z source-sha256.txt source.tar package-sha256.txt; do
+  [[ -f "$source_package_snapshot/$artifact" && ! -L "$source_package_snapshot/$artifact" ]] || {
+    echo "private miniapp source package snapshot is incomplete" >&2
+    exit 1
+  }
+done
+
+authorized_package_manifest_sha256="${MINIAPP_AUTH_REFRESH_SOURCE_PACKAGE_MANIFEST_SHA256:-}"
+actual_package_manifest_sha256="$(
+  cd "$source_package_snapshot"
+  file_sha256 package-sha256.txt "$runtime_dir/package-manifest.raw"
+)"
+[[ "${#authorized_package_manifest_sha256}" -eq 64 &&
+  "$authorized_package_manifest_sha256" != *[!0-9a-f]* &&
+  "$actual_package_manifest_sha256" == "$authorized_package_manifest_sha256" ]] || {
+  echo "source package manifest digest does not match authorization" >&2
+  exit 1
+}
+validate_package_checksums "$source_package_snapshot" "$runtime_dir/package-checksums.raw" || {
+  echo "transferred miniapp source package checksum failed" >&2
+  exit 1
+}
+
+source_files="$source_package_snapshot/source-files.z"
+source_manifest="$source_package_snapshot/source-sha256.txt"
+
+hash_evidence_directory() {
+  local directory="$1" path digest
+  (
+    cd "$directory"
+    find . -type f ! -name 'evidence-sha256.txt' -print0 |
+      LC_ALL=C sort -z |
+      while IFS= read -r -d '' path; do
+        digest="$(file_sha256 "$path")" || exit 1
+        printf '%s  %s\n' "$digest" "$path"
+      done
+  ) >"$directory/evidence-sha256.txt"
+}
+
+evidence_parent_is_safe() {
+  [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]]
+}
+
+evidence_parent_is_current() {
+  local identity=""
+  evidence_parent_is_safe || return 1
+  [[ -n "$evidence_parent_identity" ]] || return 1
+  identity="$(directory_identity "$evidence_parent")" || return 1
+  [[ "$identity" == "$evidence_parent_identity" ]]
+}
+
+enter_evidence_parent_capability() {
+  evidence_parent_is_current || return 1
+  evidence_parent_return_dir="$PWD"
+  cd "$evidence_parent" || return 1
+  if [[ "$(directory_identity .)" != "$evidence_parent_identity" ]]; then
+    cd "$evidence_parent_return_dir" || true
+    evidence_parent_return_dir=""
+    return 1
+  fi
+  evidence_parent_cwd_active=1
+}
+
+leave_evidence_parent_capability() {
+  local status="${1:-0}"
+  if [[ "$evidence_parent_cwd_active" -eq 1 ]]; then
+    cd "$evidence_parent_return_dir" || status=1
+  fi
+  evidence_parent_cwd_active=0
+  evidence_parent_return_dir=""
+  return "$status"
+}
+
+prepare_evidence_parent() {
+  if [[ -e "$evidence_parent" || -L "$evidence_parent" ]]; then
+    evidence_parent_is_safe || return 1
+  else
+    mkdir "$evidence_parent" 2>>"$runtime_dir/evidence-parent.raw" || return 1
+    evidence_parent_is_safe || return 1
+  fi
+  evidence_parent_identity="$(directory_identity "$evidence_parent")"
+}
+
+publish_evidence_directory() {
+  local directory="$1" staging_name=""
+  local evidence_name="./${evidence_dir##*/}"
+  local lock_name="${evidence_name}.publish.lock"
+  enter_evidence_parent_capability || return 1
+  [[ ! -e "$evidence_name" && ! -L "$evidence_name" ]] || {
+    leave_evidence_parent_capability 1
+    return 1
+  }
+  evidence_publish_lock="$lock_name"
+  mkdir "$evidence_publish_lock" || {
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  }
+  if ! evidence_parent_is_current || [[ -e "$evidence_name" || -L "$evidence_name" ]]; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if ! evidence_publish_tmp="$(mktemp -d "${evidence_name}.publish.XXXXXX")"; then
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  staging_name="${evidence_publish_tmp##*/}"
+  if ! evidence_parent_is_current || ! chmod 700 "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if ! (cd "$directory" && tar -cf - . 2>>"$runtime_dir/evidence-copy-errors.raw") |
+    tar -C "$evidence_publish_tmp" -xf - 2>>"$runtime_dir/evidence-copy-errors.raw"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if ! evidence_parent_is_current || ! validate_evidence_staging_copy "$directory" "$evidence_publish_tmp"; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if ! evidence_parent_is_current ||
+    ! mv -n -- "$evidence_publish_tmp" "$evidence_name" 2>>"$runtime_dir/evidence-publish-errors.raw" ||
+    [[ -e "$evidence_publish_tmp" ]]; then
+    rm -r -- "$evidence_publish_tmp"
+    evidence_publish_tmp=""
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if ! evidence_parent_is_current; then
+    evidence_publish_tmp=""
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if [[ -d "$evidence_name/$staging_name" ]]; then
+    evidence_publish_tmp=""
+    if ! rm -r -- "$evidence_name/$staging_name"; then
+      evidence_publish_lock=""
+      leave_evidence_parent_capability 1
+      return 1
+    fi
+    rmdir "$evidence_publish_lock" || true
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  if ! validate_evidence_staging_copy "$directory" "$evidence_name"; then
+    evidence_publish_tmp=""
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  evidence_publish_tmp=""
+  if ! evidence_parent_is_current || ! rmdir "$evidence_publish_lock"; then
+    evidence_publish_lock=""
+    leave_evidence_parent_capability 1
+    return 1
+  fi
+  evidence_publish_lock=""
+  leave_evidence_parent_capability 0
+}
+
+validate_evidence_staging_copy() {
+  local source="$1" staged="$2" path
+  local source_list="$runtime_dir/evidence-publish-source-files.z"
+  local staged_list="$runtime_dir/evidence-publish-staged-files.z"
+  [[ -d "$source" && ! -L "$source" && -d "$staged" && ! -L "$staged" ]] || return 1
+  [[ -z "$(find "$source" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  [[ -z "$(find "$staged" -mindepth 1 ! -type f -print -quit)" ]] || return 1
+  write_context_file_list "$source" >"$source_list" || return 1
+  write_context_file_list "$staged" >"$staged_list" || return 1
+  cmp -s "$source_list" "$staged_list" || return 1
+  while IFS= read -r -d '' path; do
+    [[ -f "$staged/$path" && ! -L "$staged/$path" ]] || return 1
+  done <"$source_list"
+  write_directory_manifest "$source" "$source_list" "$runtime_dir/evidence-publish-source-sha256.txt" || return 1
+  write_directory_manifest "$staged" "$staged_list" "$runtime_dir/evidence-publish-staged-sha256.txt" || return 1
+  cmp -s "$runtime_dir/evidence-publish-source-sha256.txt" "$runtime_dir/evidence-publish-staged-sha256.txt"
+}
+
+checkpoint_pass_line_is_safe() {
+  local index="$1" line="$2"
+  case "$index" in
+    0) [[ "$line" =~ ^classification=source_package\|result=PASS\|count=[1-9][0-9]*\|commit=[0-9a-f]{40}\|sha256=[0-9a-f]{64}$ ]] ;;
+    1) [[ "$line" == 'classification=toolchain|result=PASS|count=2' ]] ;;
+    2) [[ "$line" == 'classification=npm_ci|result=PASS|count=1' ]] ;;
+    3) [[ "$line" =~ ^classification=focused_tests\|result=PASS\|count=[1-9][0-9]*$ ]] ;;
+    4) [[ "$line" =~ ^classification=full_tests\|result=PASS\|count=[1-9][0-9]*$ ]] ;;
+    5) [[ "$line" == 'classification=build_weapp|result=PASS|count=1' ]] ;;
+    6) [[ "$line" == 'classification=build_tt|result=PASS|count=1' ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+failure_stage_is_safe() {
+  case "$1" in
+    toolchain|npm_ci|focused_tests|full_tests|build_weapp|build_tt|evidence_scan|evidence_publish) return 0 ;;
+  esac
+  return 1
+}
+
+checkpoint_file_is_safe() {
+  local file="$1" mode="$2" line stage pass_count=0 failure_count=0
+  [[ -s "$file" && -f "$file" && ! -L "$file" ]] || return 1
+  while IFS= read -r line; do
+    if [[ "$line" == classification=acceptance_failure\|result=FAIL\|stage=*\|count=1 ]]; then
+      [[ "$mode" == failure && "$failure_count" -eq 0 ]] || return 1
+      stage="${line#classification=acceptance_failure|result=FAIL|stage=}"
+      stage="${stage%|count=1}"
+      failure_stage_is_safe "$stage" || return 1
+      failure_count=1
+      continue
+    fi
+    [[ "$failure_count" -eq 0 ]] || return 1
+    checkpoint_pass_line_is_safe "$pass_count" "$line" || return 1
+    pass_count=$((pass_count + 1))
+  done <"$file"
+  if [[ "$mode" == success ]]; then
+    [[ "$pass_count" -eq 7 && "$failure_count" -eq 0 ]]
+  else
+    [[ "$pass_count" -ge 1 && "$pass_count" -le 7 && "$failure_count" -eq 1 ]]
+  fi
+}
+
+scan_evidence_directory() {
+  local directory="$1"
+  local output="$2"
+  local scan_status=0
+  grep -ERn --binary-files=text 'Authorization|Bearer[[:space:]]|access_token|refresh_token|token["=:]|password["=:]|DB_DSN=|JWT_(ACCESS|REFRESH)_SECRET=|openid["=:]|raw-miniapp-secret' \
+    "$directory" >"$output" || scan_status=$?
+  [[ "$scan_status" -eq 1 ]]
+}
+
+publish_sanitization_failure() {
+  local safe_dir="$runtime_dir/safe-sanitization-failure"
+  if [[ -e "$safe_dir" || -L "$safe_dir" ]]; then rm -r -- "$safe_dir" || return 1; fi
+  mkdir "$safe_dir" || return 1
+  chmod 700 "$safe_dir" || return 1
+  printf 'classification=evidence_sanitization|result=FAIL|stage=evidence_sanitization|count=1\n' >"$safe_dir/acceptance-results.txt" || return 1
+  printf 'classification=evidence_scan|result=FAIL|count=1\n' >"$safe_dir/evidence-leak-scan.txt" || return 1
+  hash_evidence_directory "$safe_dir" || return 1
+  chmod 600 "$safe_dir"/*.txt || return 1
+  publish_evidence_directory "$safe_dir"
+}
+
+retain_failure_evidence() {
+  local safe_dir="$runtime_dir/safe-failure-evidence"
+  [[ "$sanitization_failed" -eq 0 ]] || {
+    publish_sanitization_failure
+    return
+  }
+  failure_stage_is_safe "$current_stage" || {
+    publish_sanitization_failure
+    return
+  }
+  mkdir "$safe_dir" || { publish_sanitization_failure; return; }
+  chmod 700 "$safe_dir" || { publish_sanitization_failure; return; }
+  cp "$runtime_evidence/acceptance-results.txt" "$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return; }
+  printf 'classification=acceptance_failure|result=FAIL|stage=%s|count=1\n' "$current_stage" >>"$safe_dir/acceptance-results.txt" || { publish_sanitization_failure; return; }
+  checkpoint_file_is_safe "$safe_dir/acceptance-results.txt" failure || {
+    publish_sanitization_failure
+    return
+  }
+  scan_evidence_directory "$safe_dir" "$runtime_dir/safe-failure-leaks.txt" || {
+    publish_sanitization_failure
+    return
+  }
+  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$safe_dir/evidence-leak-scan.txt" || { publish_sanitization_failure; return; }
+  hash_evidence_directory "$safe_dir" || { publish_sanitization_failure; return; }
+  chmod 600 "$safe_dir"/*.txt || { publish_sanitization_failure; return; }
+  publish_evidence_directory "$safe_dir"
+}
+
+publish_success_evidence() {
+  checkpoint_file_is_safe "$runtime_evidence/acceptance-results.txt" success || {
+    publish_sanitization_failure
+    return 1
+  }
+  scan_evidence_directory "$runtime_evidence" "$runtime_dir/success-evidence-leaks.raw" || {
+    sanitization_failed=1
+    publish_sanitization_failure
+    return 1
+  }
+  printf 'classification=evidence_scan|result=PASS|count=0\n' >"$runtime_evidence/evidence-leak-scan.txt" || {
+    publish_sanitization_failure
+    return 1
+  }
+  hash_evidence_directory "$runtime_evidence" || {
+    publish_sanitization_failure
+    return 1
+  }
+  chmod 600 "$runtime_evidence"/*.txt || {
+    publish_sanitization_failure
+    return 1
+  }
+  current_stage="evidence_publish"
+  publish_evidence_directory "$runtime_evidence"
+}
+
+on_exit() {
+  local status="${1:-$?}"
+  trap - EXIT INT TERM
+  set +e
+  if [[ "$success" -ne 1 && "$evidence_eligible" -eq 1 && ! -e "$evidence_dir" ]]; then
+    retain_failure_evidence || true
+  fi
+  if [[ "$evidence_parent_cwd_active" -eq 1 &&
+    "$(directory_identity . 2>/dev/null)" == "$evidence_parent_identity" ]]; then
+    if [[ -n "$evidence_publish_tmp" && -d "$evidence_publish_tmp" ]]; then
+      rm -r -- "$evidence_publish_tmp"
+    fi
+    if [[ -n "$evidence_publish_lock" && -d "$evidence_publish_lock" ]]; then
+      rmdir "$evidence_publish_lock" || true
+    fi
+  fi
+  if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
+    rm -r -- "$runtime_dir"
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+trap 'on_exit 130' INT
+trap 'on_exit 143' TERM
+
+validate_source_list "$source_files" "$runtime_dir/sorted-source-files.z" || {
+  echo "transferred miniapp source list is invalid" >&2
+  exit 1
+}
+validate_archive_list "$source_package_snapshot" "$source_files" "$runtime_dir" 2>>"$runtime_dir/archive-validation.raw" || {
+  echo "source archive list or entry type is unsafe" >&2
+  exit 1
+}
+tar -C "$build_context" -xf "$source_package_snapshot/source.tar" >"$runtime_dir/archive-extract.raw" 2>&1 || {
+  echo "source archive extraction failed" >&2
+  exit 1
+}
+validate_received_source_files "$build_context" "$source_files" 2>>"$runtime_dir/build-context-validation.raw" || {
+  echo "temporary miniapp source contains a missing or unsafe file" >&2
+  exit 1
+}
+write_context_file_list "$build_context" >"$runtime_dir/build-context-files.z" 2>>"$runtime_dir/build-context-validation.raw"
+cmp -s "$source_files" "$runtime_dir/build-context-files.z" || {
+  echo "source archive contents do not match the committed source list" >&2
+  exit 1
+}
+write_directory_manifest "$build_context" "$source_files" "$runtime_dir/build-context-sha256.txt" 2>>"$runtime_dir/build-context-validation.raw"
+cmp -s "$source_manifest" "$runtime_dir/build-context-sha256.txt" || {
+  echo "temporary miniapp build context does not match package manifest" >&2
+  exit 1
+}
+validate_received_source_files "$repo_dir" "$source_files" 2>>"$runtime_dir/received-source-validation.raw" || {
+  echo "received miniapp source contains a missing or unsafe file" >&2
+  exit 1
+}
+write_directory_manifest "$repo_dir" "$source_files" "$runtime_dir/received-source-sha256.txt" 2>>"$runtime_dir/received-source-validation.raw"
+cmp -s "$source_manifest" "$runtime_dir/received-source-sha256.txt" || {
+  echo "received miniapp source does not match package manifest" >&2
+  exit 1
+}
+
+prepare_evidence_parent || { echo "miniapp auth refresh evidence parent is unsafe" >&2; exit 1; }
+[[ ! -e "$evidence_dir" && ! -L "$evidence_dir" &&
+  ! -e "${evidence_dir}.publish.lock" && ! -L "${evidence_dir}.publish.lock" ]] || {
+  echo "refusing to overwrite existing miniapp auth refresh evidence" >&2
+  exit 1
+}
+
+source_count="$(tr -cd '\0' <"$source_files" | wc -c | tr -d ' ')"
+printf 'classification=source_package|result=PASS|count=%s|commit=%s|sha256=%s\n' \
+  "$source_count" "$expected_commit_sha" "$actual_package_manifest_sha256" >"$runtime_evidence/acceptance-results.txt"
+evidence_eligible=1
+
+current_stage="toolchain"
+command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
+command -v npm >/dev/null || { echo "npm is required" >&2; exit 1; }
+node_version="$(node --version 2>>"$runtime_dir/toolchain.raw")" || { echo "cannot read node version" >&2; exit 1; }
+npm_version="$(npm --version 2>>"$runtime_dir/toolchain.raw")" || { echo "cannot read npm version" >&2; exit 1; }
+[[ "$node_version" == "$expected_node" ]] || { echo "node must be $expected_node" >&2; exit 1; }
+[[ "$npm_version" == "$expected_npm" ]] || { echo "npm must be $expected_npm" >&2; exit 1; }
+printf 'classification=toolchain|result=PASS|count=2\n' >>"$runtime_evidence/acceptance-results.txt"
+
+export TARO_APP_API_BASE_URL="https://example.invalid/api/v1"
+run_in_miniapp() {
+  local classification="$1"
+  shift
+  current_stage="$classification"
+  (
+    cd "$build_context/miniapp"
+    "$@"
+  ) >"$runtime_dir/$classification.raw" 2>&1
+  printf 'classification=%s|result=PASS|count=1\n' "$classification" >>"$runtime_evidence/acceptance-results.txt"
+}
+
+validate_vitest_report() {
+  local report="$1"
+  node - "$report" <<'NODE'
+const fs = require('node:fs')
+
+const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+const integerFields = [
+  'numTotalTests',
+  'numPassedTests',
+  'numFailedTests',
+  'numPendingTests',
+  'numTodoTests'
+]
+if (!integerFields.every((field) => Number.isInteger(report[field]))) {
+  process.exit(1)
+}
+if (report.success !== true ||
+  report.numTotalTests <= 0 ||
+  report.numPassedTests !== report.numTotalTests ||
+  report.numFailedTests !== 0 ||
+  report.numPendingTests !== 0 ||
+  report.numTodoTests !== 0) {
+  process.exit(1)
+}
+process.stdout.write(String(report.numTotalTests))
+NODE
+}
+
+run_vitest() {
+  local classification="$1"
+  shift
+  local report="$runtime_dir/$classification.json"
+  local test_count=""
+  current_stage="$classification"
+  (
+    cd "$build_context/miniapp"
+    npm test -- "$@" --reporter=json --outputFile="$report"
+  ) >"$runtime_dir/$classification.raw" 2>&1
+  test_count="$(validate_vitest_report "$report" 2>>"$runtime_dir/$classification.raw")" || {
+    echo "$classification did not produce a passing non-empty zero-skip Vitest report" >&2
+    exit 1
+  }
+  printf 'classification=%s|result=PASS|count=%s\n' \
+    "$classification" "$test_count" >>"$runtime_evidence/acceptance-results.txt"
+}
+
+run_in_miniapp npm_ci npm ci --registry=https://registry.npmmirror.com --replace-registry-host=always
+run_vitest focused_tests --run tests/request-refresh.test.ts
+run_vitest full_tests
+run_in_miniapp build_weapp npm run build:weapp
+run_in_miniapp build_tt npm run build:tt
+
+current_stage="evidence_scan"
+publish_success_evidence
+success=1
+echo "isolated miniapp auth refresh acceptance passed"

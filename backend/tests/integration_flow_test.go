@@ -11,6 +11,7 @@ import (
 
 	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/media"
+	"second-hand-market-backend/backend/internal/model"
 )
 
 type apiResp struct {
@@ -26,10 +27,28 @@ func newTestServer(t *testing.T) *app.Server {
 
 func newTestServerWithUploadDir(t *testing.T, uploadDir string) *app.Server {
 	t.Helper()
-	cfg := newTestConfig(t, uploadDir)
+	return newTestServerWithConfig(t, newTestConfig(t, uploadDir))
+}
+
+func newTestServerWithConfig(t *testing.T, cfg app.Config) *app.Server {
+	t.Helper()
 	srv, err := app.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server error: %v", err)
+	}
+	if err := app.MigrateSchema(srv.DB); err != nil {
+		t.Fatalf("migrate test schema: %v", err)
+	}
+	for _, bootstrap := range []app.AdminBootstrap{
+		{Username: "superadmin", DisplayName: "Super Admin", Role: model.AdminRoleSuper, Password: "Admin@123456"},
+		{Username: "admin", DisplayName: "Admin", Role: model.AdminRoleAdmin, Password: "Admin@123456"},
+	} {
+		if err := app.BootstrapAdmin(srv.DB, bootstrap); err != nil {
+			t.Fatalf("bootstrap test admin: %v", err)
+		}
+	}
+	if err := app.SeedDefaultCategories(srv.DB); err != nil {
+		t.Fatalf("seed test categories: %v", err)
 	}
 	return srv
 }
@@ -37,6 +56,7 @@ func newTestServerWithUploadDir(t *testing.T, uploadDir string) *app.Server {
 func newTestConfig(t *testing.T, uploadDir string) app.Config {
 	t.Helper()
 	return app.Config{
+		AppEnv:                   "test",
 		Addr:                     ":0",
 		DBDriver:                 "sqlite",
 		DBDSN:                    fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano()),
@@ -44,12 +64,13 @@ func newTestConfig(t *testing.T, uploadDir string) app.Config {
 		JWTRefreshSecret:         "test-refresh",
 		AccessTTL:                app.LoadConfig().AccessTTL,
 		RefreshTTL:               app.LoadConfig().RefreshTTL,
-		AutoMigrate:              true,
 		FileStorageProvider:      "local",
 		FileUploadLocalDir:       uploadDir,
 		FileUploadMaxBytes:       40 * 1024 * 1024,
 		ImageCompressTargetBytes: 20 * 1024 * 1024,
 		ImageProcessorDriver:     "passthrough",
+		BuyerWechatLoginMode:     "mock",
+		BuyerDouyinLoginMode:     "mock",
 	}
 }
 

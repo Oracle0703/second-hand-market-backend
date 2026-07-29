@@ -1,0 +1,57 @@
+name: secondhand-market-dev-db
+
+services:
+  mysql:
+    image: mysql:8.4@sha256:be18eb9dc45eea9b86cb74f8c68ab92ce8569ecc37ea4e6fade02e37036c5ff4
+    container_name: secondhand-market-dev-mysql
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3307:3306"
+    environment:
+      MYSQL_DATABASE: second_hand_market_dev
+      MYSQL_USER: shm_dev_app
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_app_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets:
+      - mysql_app_password
+      - mysql_root_password
+    command:
+      - --max-connections=40
+      - --innodb-buffer-pool-size=192M
+      - --tmp-table-size=16M
+      - --max-heap-table-size=16M
+      - --performance-schema=OFF
+      - --skip-log-bin
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD=$$(cat /run/secrets/mysql_app_password) mysqladmin ping -h 127.0.0.1 -u shm_dev_app --silent
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    mem_limit: 768m
+    cpus: 0.75
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - dev-db
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  mysql_app_password:
+    file: ./secrets/mysql_app_password
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+
+volumes:
+  mysql-data:
+    name: secondhand-market-dev-mysql-data
+
+networks:
+  dev-db:
+    name: secondhand-market-dev-db-net
