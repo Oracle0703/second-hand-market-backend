@@ -170,6 +170,18 @@ func TestDatabaseTargetRuntimeGuardrails(t *testing.T) {
 		cfg.DBDSN = "\t"
 		assertDatabaseRuntimeError(t, cfg, "DB_DSN", remoteDSNSentinelPassword)
 	})
+
+	t.Run("production_rejects_auto_migrate_before_connecting", func(t *testing.T) {
+		cfg := safeProductionRuntimeConfig()
+		cfg.AutoMigrate = true
+		assertDatabaseRuntimeError(t, cfg, "AUTO_MIGRATE", cfg.DBDSN)
+	})
+
+	t.Run("production_rejects_seed_defaults_before_connecting", func(t *testing.T) {
+		cfg := safeProductionRuntimeConfig()
+		cfg.SeedDefaults = true
+		assertDatabaseRuntimeError(t, cfg, "SEED_DEFAULTS", cfg.DBDSN)
+	})
 }
 
 func TestRemoteDevelopmentDatabaseRuntimeGuardrails(t *testing.T) {

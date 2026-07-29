@@ -197,6 +197,14 @@ func (c Config) ValidateRuntime() error {
 	if (env == appEnvProduction || target == dbTargetRemoteDevelopment) && strings.TrimSpace(c.DBDSN) == "" {
 		return fmt.Errorf("DB_DSN is required when APP_ENV is production or DB_TARGET is remote-development")
 	}
+	if env == appEnvProduction || target == dbTargetRemoteDevelopment {
+		if c.AutoMigrate {
+			return fmt.Errorf("AUTO_MIGRATE must be false when APP_ENV is production or DB_TARGET is remote-development")
+		}
+		if c.SeedDefaults {
+			return fmt.Errorf("SEED_DEFAULTS must be false when APP_ENV is production or DB_TARGET is remote-development")
+		}
+	}
 	if target == dbTargetRemoteDevelopment {
 		if err := validateRemoteDevelopmentDatabase(c); err != nil {
 			return err
@@ -263,12 +271,6 @@ func normalizeBuyerLoginMode(value string) string {
 func validateRemoteDevelopmentDatabase(c Config) error {
 	if c.DBDriver != "mysql" {
 		return fmt.Errorf("DB_DRIVER must be mysql when DB_TARGET is remote-development")
-	}
-	if c.AutoMigrate {
-		return fmt.Errorf("AUTO_MIGRATE must be false when DB_TARGET is remote-development")
-	}
-	if c.SeedDefaults {
-		return fmt.Errorf("SEED_DEFAULTS must be false when DB_TARGET is remote-development")
 	}
 
 	dsn, err := mysqldriver.ParseDSN(c.DBDSN)
