@@ -14,7 +14,7 @@ func main() {
 		log.Print(err)
 		os.Exit(1)
 	}
-	log.Print("CATEGORY_SEED PASS")
+	log.Print("DATABASE_MIGRATION PASS")
 }
 
 func run() error {
@@ -27,8 +27,8 @@ func run() error {
 		return err
 	}
 	defer databasecmd.CloseDatabase(db)
-	if err := app.SeedDefaultCategories(db); err != nil {
-		return errors.New("CATEGORY_SEED failed")
+	if err := app.MigrateSchema(db); err != nil {
+		return errors.New("DATABASE_MIGRATION failed")
 	}
 	return nil
 }

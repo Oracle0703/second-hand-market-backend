@@ -1,74 +1,43 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"second-hand-market-backend/backend/internal/databasecmd"
+	"second-hand-market-backend/backend/internal/model"
 )
 
-func TestDatabaseConfigFromEnv(t *testing.T) {
-	tests := []struct {
-		name       string
-		driver     string
-		dsn        string
-		wantDriver string
-		wantDSN    string
-		wantError  string
-	}{
-		{
-			name:      "requires driver",
-			wantError: "DB_DRIVER is required",
-		},
-		{
-			name:      "requires dsn",
-			driver:    "sqlite",
-			wantError: "DB_DSN is required",
-		},
-		{
-			name:      "rejects unsupported driver",
-			driver:    "unknown",
-			dsn:       "synthetic",
-			wantError: "unsupported DB_DRIVER",
-		},
-		{
-			name:       "accepts synthetic in-memory sqlite",
-			driver:     "sqlite",
-			dsn:        "file:seed-test?mode=memory&cache=shared",
-			wantDriver: "sqlite",
-			wantDSN:    "file:seed-test?mode=memory&cache=shared",
-		},
-		{
-			name:       "trims explicit configuration",
-			driver:     " mysql ",
-			dsn:        " synthetic-dsn ",
-			wantDriver: "mysql",
-			wantDSN:    "synthetic-dsn",
-		},
+func TestRunRequiresExplicitCategorySchema(t *testing.T) {
+	dsn := fmt.Sprintf("file:seed_command_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	t.Setenv("DB_DRIVER", "sqlite")
+	t.Setenv("DB_DSN", dsn)
+
+	if err := run(); err == nil || !strings.Contains(err.Error(), "CATEGORY_SEED") {
+		t.Fatalf("seed without schema error = %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("DB_DRIVER", tt.driver)
-			t.Setenv("DB_DSN", tt.dsn)
+	db, err := databasecmd.OpenDatabase(databasecmd.Config{Driver: "sqlite", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open probe database: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Category{}); err != nil {
+		t.Fatalf("explicit test migration: %v", err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("run category seed: %v", err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("run category seed again: %v", err)
+	}
 
-			driver, dsn, err := databaseConfigFromEnv()
-			if tt.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
-					t.Fatalf("databaseConfigFromEnv() error = %v, want containing %q", err, tt.wantError)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("databaseConfigFromEnv() unexpected error: %v", err)
-			}
-			if driver != tt.wantDriver || dsn != tt.wantDSN {
-				t.Fatalf(
-					"databaseConfigFromEnv() = (%q, %q), want (%q, %q)",
-					driver,
-					dsn,
-					tt.wantDriver,
-					tt.wantDSN,
-				)
-			}
-		})
+	var count int64
+	if err := db.Model(&model.Category{}).Count(&count).Error; err != nil {
+		t.Fatalf("count categories: %v", err)
+	}
+	if count != 20 {
+		t.Fatalf("category count = %d, want 20", count)
 	}
 }
