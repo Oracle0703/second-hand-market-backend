@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"second-hand-market-backend/backend/internal/auth"
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/middleware"
@@ -23,11 +24,12 @@ import (
 )
 
 type Server struct {
-	cfg            Config
-	DB             *gorm.DB
-	Router         *gin.Engine
-	limiter        *memoryRateLimiter
-	imageProcessor media.Processor
+	cfg             Config
+	DB              *gorm.DB
+	Router          *gin.Engine
+	limiter         *memoryRateLimiter
+	imageProcessor  media.Processor
+	sessionIdentity *auth.SessionIdentityResolver
 }
 
 type serverStartupDependencies struct {
@@ -89,14 +91,20 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret))
+	sessionIdentity := auth.NewSessionIdentityResolver(db)
 	s := &Server{
-		cfg:            cfg,
-		DB:             db,
-		Router:         r,
-		limiter:        newMemoryRateLimiter(),
-		imageProcessor: imageProcessor,
+		cfg:             cfg,
+		DB:              db,
+		Router:          r,
+		limiter:         newMemoryRateLimiter(),
+		imageProcessor:  imageProcessor,
+		sessionIdentity: sessionIdentity,
 	}
+	r.Use(
+		gin.Recovery(),
+		middleware.RequestID(),
+		middleware.OptionalAuth(cfg.JWTAccessSecret, sessionIdentity.ResolveAccess),
+	)
 	if strings.EqualFold(cfg.FileStorageProvider, "local") {
 		r.GET("/uploads/*object_key", s.handlePublicUpload)
 		r.HEAD("/uploads/*object_key", s.handlePublicUpload)
