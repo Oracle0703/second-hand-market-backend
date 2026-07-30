@@ -46,8 +46,9 @@
    - 同一 `Idempotency-Key + operator_id + path` 只执行一次。
    - 重复请求返回首次执行结果；参数不同则返回 `10011`。
 3. 并发控制：
-   - 创建订单时对商品行加锁，并检查商品状态为 `ON_SHELF` 且无活动订单。
-   - `orders` 使用 `uk_product_active(product_id, is_active)` 避免同商品并发 `CREATED`。
+   - Issue #16 仅将旧唯一索引替换为普通查询索引 `idx_product_active(product_id, is_active)`；Schema 允许同一商品存在多笔活动订单。
+   - 商品行锁、库存预占/释放/扣减以及并发终态由 F-07（Issue #17）的事务逻辑实现，本清单不宣称当前处理器已经具备这些能力。
+   - `0004_merchant_multi_stock` 只允许在隔离 MySQL 中验收；不得在 F-07 上线前单独部署到有业务写入的环境。活跃环境必须在同一次另行授权的维护发布中停写并同时发布 Schema 与 F-07 事务逻辑。
 
 ## 2. 认证模块（auth）
 

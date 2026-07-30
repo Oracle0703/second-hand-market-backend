@@ -134,7 +134,8 @@
 | price_cent | int | 售价（分） |
 | original_price_cent | int null | 原价（分） |
 | condition_level | varchar(16) | `LIKE_NEW/GOOD/FAIR/POOR` |
-| stock | int | 库存（本期固定为 1，保留字段） |
+| stock | int | 总库存，必须大于等于 0 |
+| reserved_stock | int | 已被活动订单预占的库存，默认 0 |
 | cover_file_id | bigint null | 封面图文件 ID |
 | status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` |
 | active_order_id | bigint null | 当前占用中的订单 ID（仅 `LOCKED` 时有值） |
@@ -157,8 +158,9 @@
 4. `idx_active_order(active_order_id)`
 
 约束说明：
-1. 本期为二手单件交易模型，`stock` 仅允许为 `1`。
-2. `stock` 作为保留字段存在，为后续“同款多件”扩展预留，不参与本期库存扣减逻辑。
+1. `stock >= 0`。
+2. `0 <= reserved_stock <= stock`。
+3. `active_order_id` 与 `LOCKED` 字段暂时保留用于兼容旧流程，但不再通过 Schema 强化；多库存事务切换属于后续 F-07。
 
 ### 2.7 product_images（商品图片）
 
@@ -181,10 +183,11 @@
 | order_no | varchar(32) unique | 订单号 |
 | merchant_id | bigint | 商家 ID |
 | product_id | bigint | 商品 ID |
+| quantity | int | 数量，必须大于 0；历史订单迁移值为 1 |
 | deal_price_cent | int | 成交价（分） |
 | buyer_contact_masked | varchar(64) null | 买家联系方式（脱敏） |
 | status | varchar(16) | `CREATED/COMPLETED/CLOSED` |
-| is_active | tinyint | `1=CREATED`，`0=非CREATED`，用于唯一约束 |
+| is_active | tinyint | `1=CREATED`，`0=非CREATED`，用于活动状态查询 |
 | close_reason | varchar(255) null | 关闭原因 |
 | created_by | bigint | 创建账号 ID |
 | completed_at | datetime null | 完成时间 |
@@ -197,12 +200,13 @@
 1. `uk_order_no(order_no)`
 2. `idx_merchant_status(merchant_id, status, created_at)`
 3. `idx_product_id(product_id)`
-4. `uk_product_active(product_id, is_active)`（确保同一商品仅一个活动订单）
+4. `idx_product_active(product_id, is_active)`（普通查询索引，不限制同一商品的订单数量）
 
 实现说明：
-1. 创建订单时写入 `status=CREATED`、`is_active=1`。
-2. 完成/关闭订单时更新 `is_active=0`。
-3. 即便存在唯一索引，也要在事务中锁商品行，避免并发写入竞态。
+1. Schema 允许同一商品存在多笔活动及历史订单。
+2. `quantity` 的默认值为 1 只保证旧记录与旧写入的字段兼容，不提供库存预占或并发安全。
+3. 预占、释放、扣减及并发终态必须由 F-07（Issue #17）的事务逻辑保证，不能依赖唯一索引。
+4. `0004_merchant_multi_stock` 当前只允许在隔离 MySQL 中验收；不得在仍有业务写入的环境单独部署。活跃环境必须等 F-07 事务逻辑完成，并在同一次另行授权的维护发布中停写、执行 preflight/up/postflight 后再恢复写入。
 
 ### 2.9 order_events（订单事件）
 
