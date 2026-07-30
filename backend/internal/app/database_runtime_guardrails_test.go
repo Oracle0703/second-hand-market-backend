@@ -8,6 +8,7 @@ import (
 const (
 	remoteDevelopmentTarget       = "remote-development"
 	remoteDevelopmentDatabase     = "second_hand_market_dev"
+	remoteDevelopmentServerUUID   = "11111111-2222-4333-8444-555555555555"
 	remoteDevelopmentExpectedUser = "shm_dev_app"
 	remoteDSNSentinelPassword     = "remote-dsn-sentinel-password"
 )
@@ -52,7 +53,7 @@ func TestLoadConfigDatabaseSettings(t *testing.T) {
 		t.Setenv("AUTO_MIGRATE", "false")
 		t.Setenv("SEED_DEFAULTS", "FALSE")
 		t.Setenv("DB_EXPECTED_DATABASE", remoteDevelopmentDatabase)
-		t.Setenv("DB_EXPECTED_SERVER_UUID", "server-uuid-probe")
+		t.Setenv("DB_EXPECTED_SERVER_UUID", remoteDevelopmentServerUUID)
 		t.Setenv("DB_EXPECTED_USER", remoteDevelopmentExpectedUser)
 
 		cfg := LoadConfig()
@@ -65,7 +66,7 @@ func TestLoadConfigDatabaseSettings(t *testing.T) {
 		if cfg.DBExpectedDatabase != remoteDevelopmentDatabase {
 			t.Fatalf("DB_EXPECTED_DATABASE = %q", cfg.DBExpectedDatabase)
 		}
-		if cfg.DBExpectedServerUUID != "server-uuid-probe" {
+		if cfg.DBExpectedServerUUID != remoteDevelopmentServerUUID {
 			t.Fatalf("DB_EXPECTED_SERVER_UUID = %q", cfg.DBExpectedServerUUID)
 		}
 		if cfg.DBExpectedUser != remoteDevelopmentExpectedUser {
@@ -204,7 +205,15 @@ func TestRemoteDevelopmentDatabaseRuntimeGuardrails(t *testing.T) {
 			{name: "wrong_expected_database", field: "DB_EXPECTED_DATABASE", mutate: func(cfg *Config) { cfg.DBExpectedDatabase = "second_hand_market" }},
 			{name: "whitespace_expected_database", field: "DB_EXPECTED_DATABASE", mutate: func(cfg *Config) { cfg.DBExpectedDatabase = " second_hand_market_dev " }},
 			{name: "empty_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = " \t" }},
+			{name: "malformed_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = "not-a-server-uuid" }},
+			{name: "noncanonical_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = "11111111222243338444555555555555" }},
+			{name: "uppercase_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = "11111111-2222-4333-8444-AAAAAAAAAAAA" }},
+			{name: "braced_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = "{11111111-2222-4333-8444-555555555555}" }},
+			{name: "urn_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = "urn:uuid:11111111-2222-4333-8444-555555555555" }},
+			{name: "whitespace_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = " " + remoteDevelopmentServerUUID }},
+			{name: "zero_expected_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(cfg *Config) { cfg.DBExpectedServerUUID = "00000000-0000-0000-0000-000000000000" }},
 			{name: "wrong_expected_user", field: "DB_EXPECTED_USER", mutate: func(cfg *Config) { cfg.DBExpectedUser = "root" }},
+			{name: "whitespace_expected_user", field: "DB_EXPECTED_USER", mutate: func(cfg *Config) { cfg.DBExpectedUser = " shm_dev_app " }},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -224,8 +233,14 @@ func TestRemoteDevelopmentDatabaseRuntimeGuardrails(t *testing.T) {
 			{name: "unix_socket", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@unix(/tmp/mysql.sock)/second_hand_market_dev"},
 			{name: "empty_database", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@tcp(127.0.0.1:13307)/"},
 			{name: "wrong_host", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@tcp(localhost:13307)/second_hand_market_dev"},
+			{name: "ipv6_loopback", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@tcp([::1]:13307)/second_hand_market_dev"},
 			{name: "wrong_port", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@tcp(127.0.0.1:3306)/second_hand_market_dev"},
+			{name: "missing_port", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@tcp(127.0.0.1)/second_hand_market_dev"},
 			{name: "production_database", dsn: "shm_dev_app:" + remoteDSNSentinelPassword + "@tcp(127.0.0.1:13307)/second_hand_market"},
+			{name: "wrong_user", dsn: "root:" + remoteDSNSentinelPassword + "@tcp(127.0.0.1:13307)/second_hand_market_dev"},
+			{name: "empty_user", dsn: ":" + remoteDSNSentinelPassword + "@tcp(127.0.0.1:13307)/second_hand_market_dev"},
+			{name: "empty_password", dsn: "shm_dev_app@tcp(127.0.0.1:13307)/second_hand_market_dev"},
+			{name: "whitespace_password", dsn: "shm_dev_app:   @tcp(127.0.0.1:13307)/second_hand_market_dev"},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -272,7 +287,7 @@ func validRemoteDevelopmentConfig() Config {
 		AutoMigrate:          false,
 		SeedDefaults:         false,
 		DBExpectedDatabase:   remoteDevelopmentDatabase,
-		DBExpectedServerUUID: "server-uuid-probe",
+		DBExpectedServerUUID: remoteDevelopmentServerUUID,
 		DBExpectedUser:       remoteDevelopmentExpectedUser,
 		BuyerWechatLoginMode: buyerLoginModeMock,
 		BuyerDouyinLoginMode: buyerLoginModeMock,
@@ -294,12 +309,12 @@ func assertDatabaseRuntimeError(t *testing.T, cfg Config, field string, forbidde
 	if err == nil {
 		t.Fatalf("expected %s to be rejected", field)
 	}
-	if !strings.Contains(err.Error(), field) {
-		t.Fatalf("error %q does not identify %s", err, field)
-	}
 	for _, value := range forbidden {
 		if value != "" && strings.Contains(err.Error(), value) {
-			t.Fatalf("error for %s leaked a protected value: %q", field, err)
+			t.Fatalf("error for %s leaked a protected value", field)
 		}
+	}
+	if !strings.Contains(err.Error(), field) {
+		t.Fatalf("error does not identify %s", field)
 	}
 }

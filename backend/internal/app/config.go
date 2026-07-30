@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -266,42 +264,6 @@ func normalizeDBTarget(value string) string {
 
 func normalizeBuyerLoginMode(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func validateRemoteDevelopmentDatabase(c Config) error {
-	if c.DBDriver != "mysql" {
-		return fmt.Errorf("DB_DRIVER must be mysql when DB_TARGET is remote-development")
-	}
-
-	dsn, err := mysqldriver.ParseDSN(c.DBDSN)
-	if err != nil {
-		return fmt.Errorf("DB_DSN must be a valid MySQL DSN for remote-development")
-	}
-	if dsn.Net != "tcp" || dsn.Addr != remoteDevelopmentDBAddr || dsn.DBName != remoteDevelopmentDBName {
-		return fmt.Errorf(
-			"DB_DSN must use tcp at %s with database %s for remote-development",
-			remoteDevelopmentDBAddr,
-			remoteDevelopmentDBName,
-		)
-	}
-	if dsn.MultiStatements ||
-		dsn.AllowAllFiles ||
-		dsn.AllowCleartextPasswords ||
-		dsn.AllowOldPasswords ||
-		dsn.AllowFallbackToPlaintext {
-		return fmt.Errorf("DB_DSN must not enable unsafe MySQL options for remote-development")
-	}
-
-	if c.DBExpectedDatabase != remoteDevelopmentDBName {
-		return fmt.Errorf("DB_EXPECTED_DATABASE must be %s for remote-development", remoteDevelopmentDBName)
-	}
-	if strings.TrimSpace(c.DBExpectedServerUUID) == "" {
-		return fmt.Errorf("DB_EXPECTED_SERVER_UUID must be non-empty for remote-development")
-	}
-	if c.DBExpectedUser != remoteDevelopmentDBUser {
-		return fmt.Errorf("DB_EXPECTED_USER must be %s for remote-development", remoteDevelopmentDBUser)
-	}
-	return nil
 }
 
 func validateProductionJWTSecret(name, value string) error {
