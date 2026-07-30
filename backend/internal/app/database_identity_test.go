@@ -15,11 +15,19 @@ type fakeDatabaseIdentityQuerier struct {
 	currentUser string
 	err         error
 	query       string
+	queryCalls  int
+	argsCount   int
 }
 
-func (q *fakeDatabaseIdentityQuerier) QueryRowContext(_ context.Context, query string, _ ...any) databaseIdentityRow {
+func (q *fakeDatabaseIdentityQuerier) QueryRowContext(_ context.Context, query string, args ...any) databaseIdentityRow {
 	q.query = query
+	q.queryCalls++
+	q.argsCount = len(args)
 	return fakeDatabaseIdentityRow{querier: q}
+}
+
+func (q *fakeDatabaseIdentityQuerier) databaseIdentityAvailable() bool {
+	return q != nil
 }
 
 type fakeDatabaseIdentityRow struct {
@@ -48,7 +56,10 @@ func TestVerifyRemoteDevelopmentDatabaseIdentity(t *testing.T) {
 			t.Fatalf("valid database identity was rejected: %v", err)
 		}
 		if querier.query != remoteDevelopmentIdentityQuery {
-			t.Fatalf("identity query = %q", querier.query)
+			t.Fatal("identity verification did not use the required read-only query")
+		}
+		if querier.queryCalls != 1 || querier.argsCount != 0 {
+			t.Fatal("identity verification did not execute exactly one argument-free query")
 		}
 	})
 
@@ -68,11 +79,22 @@ func TestVerifyRemoteDevelopmentDatabaseIdentity(t *testing.T) {
 		}{
 			{name: "database", field: "DB_EXPECTED_DATABASE", mutate: func(q *fakeDatabaseIdentityQuerier) { q.database = "second_hand_market" }},
 			{name: "empty_database", field: "DB_EXPECTED_DATABASE", mutate: func(q *fakeDatabaseIdentityQuerier) { q.database = "" }},
-			{name: "server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "wrong-server-uuid" }},
+			{name: "server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }},
 			{name: "empty_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "" }},
+			{name: "malformed_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "invalid-server-uuid" }},
+			{name: "zero_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "00000000-0000-0000-0000-000000000000" }},
+			{name: "noncanonical_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "11111111222243338444555555555555" }},
+			{name: "uppercase_server_uuid", field: "DB_EXPECTED_SERVER_UUID", mutate: func(q *fakeDatabaseIdentityQuerier) { q.serverUUID = "11111111-2222-4333-8444-AAAAAAAAAAAA" }},
 			{name: "user", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = "root@localhost" }},
 			{name: "empty_user", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = "" }},
 			{name: "user_without_host", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = remoteDevelopmentExpectedUser }},
+			{name: "user_with_empty_host", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = remoteDevelopmentExpectedUser + "@" }},
+			{name: "user_with_multiple_separators", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = remoteDevelopmentExpectedUser + "@@localhost" }},
+			{name: "user_with_whitespace_host", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = remoteDevelopmentExpectedUser + "@ \t" }},
+			{name: "user_with_control_host", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) { q.currentUser = remoteDevelopmentExpectedUser + "@local\nhost" }},
+			{name: "user_with_invalid_utf8_host", field: "DB_EXPECTED_USER", mutate: func(q *fakeDatabaseIdentityQuerier) {
+				q.currentUser = remoteDevelopmentExpectedUser + "@" + string([]byte{0xff})
+			}},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -88,6 +110,28 @@ func TestVerifyRemoteDevelopmentDatabaseIdentity(t *testing.T) {
 					querier.serverUUID,
 					querier.currentUser,
 				)
+			})
+		}
+	})
+
+	t.Run("rejects_nil_context_or_connection", func(t *testing.T) {
+		cfg := validRemoteDevelopmentConfig()
+		for _, testCase := range []struct {
+			name    string
+			ctx     context.Context
+			querier databaseIdentityQuerier
+		}{
+			{name: "nil_context", ctx: nil, querier: validDatabaseIdentityQuerier(cfg)},
+			{name: "nil_connection", ctx: context.Background(), querier: nil},
+			{name: "nil_typed_connection", ctx: context.Background(), querier: (*fakeDatabaseIdentityQuerier)(nil)},
+			{name: "nil_sql_connection", ctx: context.Background(), querier: &sqlDatabaseIdentityQuerier{}},
+			{name: "nil_typed_sql_connection", ctx: context.Background(), querier: (*sqlDatabaseIdentityQuerier)(nil)},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				err := verifyRemoteDevelopmentDatabaseIdentity(testCase.ctx, testCase.querier, cfg)
+				if err == nil || !strings.Contains(err.Error(), "DATABASE_IDENTITY") {
+					t.Fatal("unavailable identity connection was not rejected safely")
+				}
 			})
 		}
 	})
@@ -115,6 +159,9 @@ func assertDatabaseIdentityError(
 	}
 	if !strings.Contains(err.Error(), field) {
 		t.Fatalf("identity error %q does not identify %s", err, field)
+	}
+	if fake, ok := querier.(*fakeDatabaseIdentityQuerier); ok && fake.queryCalls != 1 {
+		t.Fatal("identity failure did not come from exactly one identity query")
 	}
 	for _, value := range forbidden {
 		if value != "" && strings.Contains(err.Error(), value) {
