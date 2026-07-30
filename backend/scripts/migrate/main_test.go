@@ -22,7 +22,7 @@ func TestParseMigrationSelectionRequiresExactlyOneAllowlistedMigration(t *testin
 		if err != nil {
 			t.Fatalf("parse %v: %v", args, err)
 		}
-		if spec.ID == "" || spec.FileName == "" || spec.SHA256 == "" {
+		if spec.ID == "" || len(spec.Sources) != 1 || spec.Sources[0].FileName == "" || spec.Sources[0].SHA256 == "" {
 			t.Fatalf("incomplete migration spec: %+v", spec)
 		}
 	}
@@ -51,6 +51,41 @@ func TestParseMigrationSelectionRequiresExactlyOneAllowlistedMigration(t *testin
 				t.Fatalf("selection error leaked input: %q", err)
 			}
 		})
+	}
+}
+
+func Test0004MigrationLoadsAllThreeStages(t *testing.T) {
+	spec, err := parseMigrationSelection([]string{"--migration", "0004_merchant_multi_stock"})
+	if err != nil {
+		t.Fatalf("select 0004: %v", err)
+	}
+
+	statements, err := loadMigrationStatementsFromDir("../../migrations", spec)
+	if err != nil {
+		t.Fatalf("load 0004: %v", err)
+	}
+	if len(statements) != 23 {
+		t.Fatalf("0004 statements = %d, want 23", len(statements))
+	}
+}
+
+func Test0004MigrationSourcesHaveFixedOrderAndHashes(t *testing.T) {
+	spec, err := parseMigrationSelection([]string{"--migration", "0004_merchant_multi_stock"})
+	if err != nil {
+		t.Fatalf("select 0004: %v", err)
+	}
+	want := []migrationSource{
+		{FileName: "0004_merchant_multi_stock.preflight.sql", SHA256: "9b00fd6d32ef8e73d74fedbad154d99a584ebc5ef292d849b8776fddedf95865"},
+		{FileName: "0004_merchant_multi_stock.up.sql", SHA256: "ec2713616fb266ba653d3babfa738e896525e53cad6d87417dc8e629b092b3f2"},
+		{FileName: "0004_merchant_multi_stock.postflight.sql", SHA256: "c17ebf6c0595f15c9f7de8749b216cde2bc86fe57a3cd9b4984b8c6404288ae2"},
+	}
+	if len(spec.Sources) != len(want) {
+		t.Fatalf("0004 sources = %d, want %d", len(spec.Sources), len(want))
+	}
+	for index, source := range spec.Sources {
+		if source != want[index] {
+			t.Fatalf("0004 source %d = %+v, want %+v", index, source, want[index])
+		}
 	}
 }
 
@@ -136,6 +171,44 @@ func TestRunExecutesOnlyTheExplicitlySelectedMigration(t *testing.T) {
 	}
 }
 
+func TestRunExecutes0004StagesInOrder(t *testing.T) {
+	var executed []string
+	dependencies := migrationDependencies{
+		loadConfig: func() (databasecmd.Config, error) {
+			return databasecmd.Config{Driver: "mysql", DSN: migrationSecretSentinel}, nil
+		},
+		openDatabase:  func(databasecmd.Config) (*gorm.DB, error) { return &gorm.DB{}, nil },
+		closeDatabase: func(*gorm.DB) {},
+		loadStatements: func(spec migrationSpec) ([]string, error) {
+			want := []string{
+				"0004_merchant_multi_stock.preflight.sql",
+				"0004_merchant_multi_stock.up.sql",
+				"0004_merchant_multi_stock.postflight.sql",
+			}
+			if len(spec.Sources) != len(want) {
+				t.Fatalf("0004 sources = %d, want %d", len(spec.Sources), len(want))
+			}
+			for index, source := range spec.Sources {
+				if source.FileName != want[index] {
+					t.Fatalf("0004 source %d = %q, want %q", index, source.FileName, want[index])
+				}
+			}
+			return []string{"preflight statement", "up statement", "postflight statement"}, nil
+		},
+		execute: func(_ *gorm.DB, statement string) error {
+			executed = append(executed, statement)
+			return nil
+		},
+	}
+
+	if _, err := run([]string{"--migration", "0004_merchant_multi_stock"}, dependencies); err != nil {
+		t.Fatalf("run 0004: %v", err)
+	}
+	if got := strings.Join(executed, "|"); got != "preflight statement|up statement|postflight statement" {
+		t.Fatalf("0004 execution order = %q", got)
+	}
+}
+
 func TestRunRejectsSQLiteWithoutOpeningDatabase(t *testing.T) {
 	opened := false
 	dependencies := migrationDependencies{
@@ -205,6 +278,66 @@ func TestRunStopsAtFirstFailureAndRedactsDetails(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInvalid0004SourcesBeforeDatabaseAccess(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		setup func(t *testing.T, directory string, spec migrationSpec)
+	}{
+		{
+			name:  "missing",
+			setup: func(t *testing.T, directory string, spec migrationSpec) {},
+		},
+		{
+			name: "tampered",
+			setup: func(t *testing.T, directory string, spec migrationSpec) {
+				path := directory + string(os.PathSeparator) + spec.Sources[0].FileName
+				if err := os.WriteFile(path, []byte("SELECT 1;\n"), 0o600); err != nil {
+					t.Fatalf("write tampered source: %v", err)
+				}
+			},
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, directory string, spec migrationSpec) {
+				target := directory + string(os.PathSeparator) + "target.sql"
+				path := directory + string(os.PathSeparator) + spec.Sources[0].FileName
+				if err := os.WriteFile(target, []byte("SELECT 1;\n"), 0o600); err != nil {
+					t.Fatalf("write symlink target: %v", err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			directory := t.TempDir()
+			spec := migrationCatalog["0004_merchant_multi_stock"]
+			testCase.setup(t, directory, spec)
+			configLoaded := false
+			dependencies := migrationDependencies{
+				loadConfig: func() (databasecmd.Config, error) {
+					configLoaded = true
+					return databasecmd.Config{}, nil
+				},
+				openDatabase:  func(databasecmd.Config) (*gorm.DB, error) { t.Fatal("database must not be opened"); return nil, nil },
+				closeDatabase: func(*gorm.DB) { t.Fatal("database must not be closed") },
+				loadStatements: func(spec migrationSpec) ([]string, error) {
+					return loadMigrationStatementsFromDir(directory, spec)
+				},
+				execute: func(*gorm.DB, string) error { t.Fatal("statement must not execute"); return nil },
+			}
+
+			if _, err := run([]string{"--migration", "0004_merchant_multi_stock"}, dependencies); err == nil {
+				t.Fatal("invalid 0004 sources were accepted")
+			}
+			if configLoaded {
+				t.Fatal("database config was loaded before source validation")
+			}
+		})
+	}
+}
+
 func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 	wantStatements := map[string]int{
 		"0001_init":                13,
@@ -226,11 +359,13 @@ func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 func TestLoadMigrationStatementsRejectsModifiedOrLinkedSources(t *testing.T) {
 	directory := t.TempDir()
 	spec := migrationSpec{
-		ID:       "test",
-		FileName: "test.up.sql",
-		SHA256:   "b4e0497804e46e0a0b0b8c31975b062152d551bac49c3c2e80932567b4085dcd",
+		ID: "test",
+		Sources: []migrationSource{{
+			FileName: "test.up.sql",
+			SHA256:   "b4e0497804e46e0a0b0b8c31975b062152d551bac49c3c2e80932567b4085dcd",
+		}},
 	}
-	path := directory + string(os.PathSeparator) + spec.FileName
+	path := directory + string(os.PathSeparator) + spec.Sources[0].FileName
 	if err := os.WriteFile(path, []byte("SELECT 1;\n"), 0o600); err != nil {
 		t.Fatalf("write migration fixture: %v", err)
 	}

@@ -19,26 +19,53 @@ import (
 const maxMigrationBytes = 1 << 20
 
 type migrationSpec struct {
-	ID       string
+	ID      string
+	Sources []migrationSource
+}
+
+type migrationSource struct {
 	FileName string
 	SHA256   string
 }
 
 var migrationCatalog = map[string]migrationSpec{
 	"0001_init": {
-		ID:       "0001_init",
-		FileName: "0001_init.up.sql",
-		SHA256:   "78cc0be7c571e7ff2b14d283cbf03571f73d947474e726a0d07fc83f7d14dd92",
+		ID: "0001_init",
+		Sources: []migrationSource{{
+			FileName: "0001_init.up.sql",
+			SHA256:   "78cc0be7c571e7ff2b14d283cbf03571f73d947474e726a0d07fc83f7d14dd92",
+		}},
 	},
 	"0002_buyer_domain": {
-		ID:       "0002_buyer_domain",
-		FileName: "0002_buyer_domain.up.sql",
-		SHA256:   "c1c59f570df99a0799d9d6fedffe54dca2fad22da32b2ecdc1da7e50cc8480ed",
+		ID: "0002_buyer_domain",
+		Sources: []migrationSource{{
+			FileName: "0002_buyer_domain.up.sql",
+			SHA256:   "c1c59f570df99a0799d9d6fedffe54dca2fad22da32b2ecdc1da7e50cc8480ed",
+		}},
 	},
 	"0003_buyer_auth_provider": {
-		ID:       "0003_buyer_auth_provider",
-		FileName: "0003_buyer_auth_provider.up.sql",
-		SHA256:   "36fcc18878f9248f7d1e9bcce47f4cb726a8371048df10899e5ed082e76de036",
+		ID: "0003_buyer_auth_provider",
+		Sources: []migrationSource{{
+			FileName: "0003_buyer_auth_provider.up.sql",
+			SHA256:   "36fcc18878f9248f7d1e9bcce47f4cb726a8371048df10899e5ed082e76de036",
+		}},
+	},
+	"0004_merchant_multi_stock": {
+		ID: "0004_merchant_multi_stock",
+		Sources: []migrationSource{
+			{
+				FileName: "0004_merchant_multi_stock.preflight.sql",
+				SHA256:   "9b00fd6d32ef8e73d74fedbad154d99a584ebc5ef292d849b8776fddedf95865",
+			},
+			{
+				FileName: "0004_merchant_multi_stock.up.sql",
+				SHA256:   "ec2713616fb266ba653d3babfa738e896525e53cad6d87417dc8e629b092b3f2",
+			},
+			{
+				FileName: "0004_merchant_multi_stock.postflight.sql",
+				SHA256:   "c17ebf6c0595f15c9f7de8749b216cde2bc86fe57a3cd9b4984b8c6404288ae2",
+			},
+		},
 	},
 }
 
@@ -135,7 +162,23 @@ func parseMigrationSelection(args []string) (migrationSpec, error) {
 }
 
 func loadMigrationStatementsFromDir(directory string, spec migrationSpec) ([]string, error) {
-	path := filepath.Join(directory, spec.FileName)
+	if len(spec.Sources) == 0 {
+		return nil, errors.New("migration source is invalid")
+	}
+
+	var statements []string
+	for _, source := range spec.Sources {
+		sourceStatements, err := loadMigrationSourceFromDir(directory, source)
+		if err != nil {
+			return nil, err
+		}
+		statements = append(statements, sourceStatements...)
+	}
+	return statements, nil
+}
+
+func loadMigrationSourceFromDir(directory string, source migrationSource) ([]string, error) {
+	path := filepath.Join(directory, source.FileName)
 	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("migration source is invalid")
@@ -162,7 +205,7 @@ func loadMigrationStatementsFromDir(directory string, spec migrationSpec) ([]str
 	}
 
 	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != spec.SHA256 {
+	if hex.EncodeToString(sum[:]) != source.SHA256 {
 		return nil, errors.New("migration source is invalid")
 	}
 	return splitSQLStatements(string(data))
