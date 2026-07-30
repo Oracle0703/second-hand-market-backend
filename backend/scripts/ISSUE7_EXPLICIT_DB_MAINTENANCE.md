@@ -9,21 +9,35 @@ in this repository.
 
 ## Apply one existing migration
 
-The migration command accepts exactly one allowlisted existing MySQL `up` migration:
+The migration command accepts exactly one allowlisted MySQL migration selection:
 
 ```text
 go run ./scripts/migrate --migration 0001_init
 go run ./scripts/migrate --migration 0002_buyer_domain
 go run ./scripts/migrate --migration 0003_buyer_auth_provider
+go run ./scripts/migrate --migration 0004_merchant_multi_stock
 ```
 
-Each invocation validates and executes only the selected file from `migrations/`. It does not
-chain earlier or later migrations, run GORM AutoMigrate, apply a down migration, bootstrap an
+The first three selections each validate and execute one existing `.up.sql` source. The 0004
+selection validates and executes exactly these three sources in order:
+
+```text
+0004_merchant_multi_stock.preflight.sql
+0004_merchant_multi_stock.up.sql
+0004_merchant_multi_stock.postflight.sql
+```
+
+Every selected source is validated as a regular, non-symlink file with an exact SHA256 before
+the command reads database configuration or opens a connection. The command does not chain
+earlier or later migrations, run GORM AutoMigrate, apply a down migration, bootstrap an
 administrator, or seed categories. Missing, repeated, unknown, extra, or path-like selections
 fail before a database connection is opened. The existing migration files use MySQL syntax, so
 this command rejects `DB_DRIVER=sqlite`. MySQL may commit DDL statements individually; if an
 execution fails, inspect the selected migration's database state before deciding whether to
 retry it.
+
+`0004_merchant_multi_stock` must not be run against an active environment until Issue #17 /
+F-07 is included in the same separately authorized maintenance release with writers stopped.
 
 ## Bootstrap one administrator
 
