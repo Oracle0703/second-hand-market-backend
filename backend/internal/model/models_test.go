@@ -28,7 +28,9 @@ func TestMultiStockModelMetadataMatchesMigrationContract(t *testing.T) {
 		"default:1",
 		"check:chk_orders_quantity_positive,quantity > 0",
 	)
-	assertFieldTagContains(t, orderSchema, "ProductID", "type:bigint")
+	assertFieldTagContains(t, orderSchema, "ProductID", "type:bigint", "not null")
+	assertFieldTagContains(t, orderSchema, "Status", "size:16", "not null")
+	assertFieldTagContains(t, orderSchema, "IsActive", "not null")
 	assertFieldTagContains(t, productSchema, "ReservedStock",
 		"type:int",
 		"not null",
@@ -40,6 +42,7 @@ func TestMultiStockModelMetadataMatchesMigrationContract(t *testing.T) {
 		"not null",
 		"default:1",
 	)
+	assertFieldTagContains(t, productSchema, "Status", "size:16", "not null")
 	assertFieldTagContains(t, productSchema, "ActiveOrderID", "type:bigint")
 
 	indexes := orderSchema.ParseIndexes()

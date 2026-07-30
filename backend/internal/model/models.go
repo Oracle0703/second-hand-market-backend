@@ -145,7 +145,7 @@ type Product struct {
 	Stock             int    `gorm:"type:int;not null;default:1"`
 	ReservedStock     int    `gorm:"type:int;not null;default:0;check:chk_products_stock_reservation_bounds,stock >= 0 AND reserved_stock >= 0 AND reserved_stock <= stock"`
 	CoverFileID       *uint64
-	Status            string  `gorm:"size:16;index:idx_merchant_status_updated,priority:2"`
+	Status            string  `gorm:"size:16;not null;index:idx_merchant_status_updated,priority:2"`
 	ActiveOrderID     *uint64 `gorm:"type:bigint;index:idx_active_order"`
 	LockedAt          *time.Time
 	ShelfAt           *time.Time
@@ -172,13 +172,13 @@ type Order struct {
 	ID                 uint64 `gorm:"primaryKey"`
 	OrderNo            string `gorm:"size:32;uniqueIndex"`
 	MerchantID         uint64 `gorm:"index:idx_merchant_status_created,priority:1"`
-	ProductID          uint64 `gorm:"type:bigint;index:idx_product_id;index:idx_product_active,priority:1"`
+	ProductID          uint64 `gorm:"type:bigint;not null;index:idx_product_id;index:idx_product_active,priority:1"`
 	Quantity           int    `gorm:"type:int;not null;default:1;check:chk_orders_quantity_positive,quantity > 0"`
 	DealPriceCent      int
 	BuyerContactMasked *string `gorm:"size:64"`
 	Remark             *string `gorm:"size:255"`
-	Status             string  `gorm:"size:16;index:idx_merchant_status_created,priority:2"`
-	IsActive           bool    `gorm:"index:idx_product_active,priority:2"`
+	Status             string  `gorm:"size:16;not null;index:idx_merchant_status_created,priority:2"`
+	IsActive           bool    `gorm:"not null;index:idx_product_active,priority:2"`
 	CloseReason        *string `gorm:"size:255"`
 	CreatedBy          uint64
 	CompletedAt        *time.Time
