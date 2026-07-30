@@ -393,9 +393,16 @@ done
 [[ "$mysql_ready" -eq 1 ]] ||
   fail "isolated MySQL did not become ready"
 mysql_version="$(
-  run_engine exec "$container_id" mysql --version 2>/dev/null
+  timeout --foreground "$engine_timeout" \
+    "${container_engine[@]}" exec -i "$container_id" \
+    mysql \
+    --defaults-extra-file=/run/secrets/issue9-root-client.cnf \
+    --batch --skip-column-names 2>/dev/null <<'SQL'
+SELECT VERSION();
+SQL
 )" || fail "could not read the isolated MySQL version"
-[[ "$mysql_version" =~ Distrib[[:space:]]8\. ]] ||
+mysql_version="$(printf '%s' "$mysql_version" | tr -d '\r\n')"
+[[ "$mysql_version" =~ ^8\.[0-9]+\.[0-9]+ ]] ||
   fail "isolated database is not MySQL 8.x"
 unset mysql_version
 
