@@ -10,6 +10,8 @@ fail() {
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v go >/dev/null 2>&1 || fail "Go 1.22 or newer is required"
 command -v timeout >/dev/null 2>&1 || fail "GNU timeout is required"
+command -v vips >/dev/null 2>&1 ||
+  fail "real libvips is required so the full suite has zero test-level skips"
 
 expected_sha="${EXPECTED_COMMIT_SHA:-}"
 [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] ||
@@ -78,6 +80,10 @@ tool_env=(
   GOPROXY=https://proxy.golang.org,direct
   GOSUMDB=sum.golang.org
   CGO_ENABLED=0
+  GIT_AUTHOR_NAME=database-startup-guards
+  GIT_AUTHOR_EMAIL=database-startup-guards@example.invalid
+  GIT_COMMITTER_NAME=database-startup-guards
+  GIT_COMMITTER_EMAIL=database-startup-guards@example.invalid
   APP_ENV=test
   DB_TARGET=local
   DB_DRIVER=guardrail-probe
@@ -86,6 +92,8 @@ tool_env=(
   SEED_DEFAULTS=false
   BUYER_WECHAT_LOGIN_MODE=mock
   BUYER_DOUYIN_LOGIN_MODE=mock
+  STRICT_IMAGE_VIPS_INTEGRATION=1
+  IMAGE_PROCESSOR_BIN=vips
 )
 
 summary="$evidence_dir/summary.txt"
@@ -135,6 +143,24 @@ run_logged() {
     fail "$name or its evidence capture failed"
 }
 
+assert_test_log() {
+  name="$1"
+  log_path="$evidence_dir/$name.log"
+  read -r test_pass_count test_skip_count < <(
+    awk '
+      index($0, "\"Action\":\"pass\"") && index($0, "\"Test\":") { passes++ }
+      index($0, "\"Action\":\"skip\"") && index($0, "\"Test\":") { skips++ }
+      END { print passes + 0, skips + 0 }
+    ' "$log_path"
+  )
+  {
+    printf '%s_pass_actions=%d\n' "$name" "$test_pass_count"
+    printf '%s_test_level_skips=%d\n' "$name" "$test_skip_count"
+  } >>"$summary"
+  [[ "$test_pass_count" -gt 0 ]] || fail "$name reported zero passing test actions"
+  [[ "$test_skip_count" -eq 0 ]] || fail "$name reported test-level skips"
+}
+
 go_version="$(env -i "${tool_env[@]}" go env GOVERSION)"
 if ! awk -v version="${go_version#go}" '
   BEGIN {
@@ -154,12 +180,14 @@ fi
 verify_temp_env
 run_logged go-mod-download env -i "${tool_env[@]}" go mod download
 run_logged go-mod-verify env -i "${tool_env[@]}" go mod verify
-run_logged go-test env -i "${tool_env[@]}" go test -p 1 -count=1 ./...
+focused_test_pattern='^(TestLoadConfigDatabaseSettings|TestLoadConfigRejectsInvalidDatabaseBooleansWithoutLeakingValues|TestDatabaseTargetRuntimeGuardrails|TestNewServerValidatesRuntimeBeforeDatabase|TestLoadConfigAutoMigrateIsStrictAndDefaultsOff|TestNewServerVerifiesRemoteIdentityBeforeDatabaseWrites|TestNewServerRejectsDatabaseWriteFlagsBeforeOpeningDatabase|TestNewServerRedactsDatabaseOpenErrors|TestVerifyConnectedDatabaseIdentitySkipsLocalTarget|TestVerifyRemoteDevelopmentDatabaseIdentity|TestProductionEnvExamplesEnableRuntimeGuardrails|TestDevelopmentEnvExampleDisablesDatabaseWrites)$'
+run_logged go-test-focused env -i "${tool_env[@]}" \
+  go test -json -p 1 -count=1 -run "$focused_test_pattern" ./internal/app
+assert_test_log go-test-focused
+run_logged go-test env -i "${tool_env[@]}" go test -json -p 1 -count=1 ./...
+assert_test_log go-test
 run_logged go-vet env -i "${tool_env[@]}" go vet -p 1 ./...
-run_logged build-server env -i "${tool_env[@]}" go build -o "$build_dir/bin/server" ./cmd/server
-run_logged build-migrate env -i "${tool_env[@]}" go build -o "$build_dir/bin/migrate" ./scripts/migrate
-run_logged build-bootstrap-admin env -i "${tool_env[@]}" go build -o "$build_dir/bin/bootstrap_admin" ./scripts/bootstrap_admin
-run_logged build-seed-categories env -i "${tool_env[@]}" go build -o "$build_dir/bin/seed_categories" ./scripts/seed_categories
+run_logged go-build env -i "${tool_env[@]}" go build -p 1 ./...
 
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]] ||
   fail "acceptance commands changed tracked or untracked source files"
