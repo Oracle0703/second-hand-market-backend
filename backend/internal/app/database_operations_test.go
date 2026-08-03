@@ -27,6 +27,19 @@ func TestMigrateSchemaCreatesApplicationTables(t *testing.T) {
 	}
 }
 
+func TestMigrateSchemaUsesExplicitFileTableName(t *testing.T) {
+	db := newDatabaseOperationsTestDB(t)
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("migrate schema: %v", err)
+	}
+	if !db.Migrator().HasTable("files") {
+		t.Fatal("FileRecord must use the explicit SQL migration table name files")
+	}
+	if db.Migrator().HasTable("file_records") {
+		t.Fatal("FileRecord must not create GORM default table file_records")
+	}
+}
+
 func TestMigrateSchemaCreatesImageBackfillLedger(t *testing.T) {
 	db := newDatabaseOperationsTestDB(t)
 	if err := MigrateSchema(db); err != nil {

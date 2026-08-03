@@ -211,6 +211,10 @@ type FileRecord struct {
 	CreatedAt    time.Time `gorm:"index:idx_biz_type_created,priority:2"`
 }
 
+func (FileRecord) TableName() string {
+	return "files"
+}
+
 type ImageBackfillRun struct {
 	ID             string `gorm:"primaryKey;size:64"`
 	ProfileVersion string `gorm:"size:32;index"`
