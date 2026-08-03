@@ -18,4 +18,8 @@ describe('stock adjustment helpers', () => {
   it('exposes the three supported stock adjustment types', () => {
     expect(STOCK_ADJUSTMENT_TYPE_OPTIONS.map((item) => item.value)).toEqual(['INCREASE', 'DECREASE', 'MARK_SOLD'])
   })
+
+  it('keeps locked, sold, and closed products out of the stock adjustment entry', () => {
+    expect(['LOCKED', 'SOLD', 'CLOSED'].every((status) => !canAdjustProductStock(status as ProductStatus))).toBe(true)
+  })
 })

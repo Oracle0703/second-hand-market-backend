@@ -7,6 +7,8 @@ import { getStatusColor, getStatusText, PRODUCT_STATUS_META, toValueEnum, type P
 import { api } from '@/services/api'
 import { centToYuanText } from '@/utils/price'
 import { resolveAssetURL } from '@/utils/url'
+import { StockAdjustmentModal, type StockAdjustmentProduct } from './components/StockAdjustmentModal'
+import { canAdjustProductStock } from './stock-adjustment'
 
 type ProductItem = {
   id: number
@@ -59,6 +61,7 @@ export function ListPage() {
   const [previewTitle, setPreviewTitle] = useState('')
   const [previewImageURLs, setPreviewImageURLs] = useState<string[]>([])
   const [previewImageIDs, setPreviewImageIDs] = useState<number[]>([])
+  const [stockAdjustProduct, setStockAdjustProduct] = useState<StockAdjustmentProduct | null>(null)
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
     queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
@@ -224,7 +227,7 @@ export function ListPage() {
       title: '操作',
       key: 'actions',
       search: false,
-      width: 260,
+      width: 320,
       fixed: 'right',
       render: (_, row) => (
         <Space size={0} wrap>
@@ -262,6 +265,11 @@ export function ListPage() {
                 创建订单
               </Button>
             </>
+          )}
+          {canAdjustProductStock(row.status) && (
+            <Button type="link" onClick={() => setStockAdjustProduct({ id: row.id, title: row.title, status: row.status, stock: row.stock })}>
+              调整库存
+            </Button>
           )}
           {(row.status === 'DRAFT' || row.status === 'ON_SHELF' || row.status === 'OFF_SHELF') && (
             <Button
@@ -321,6 +329,15 @@ export function ListPage() {
             新建商品
           </Button>
         ]}
+      />
+      <StockAdjustmentModal
+        open={Boolean(stockAdjustProduct)}
+        product={stockAdjustProduct}
+        onCancel={() => setStockAdjustProduct(null)}
+        onSuccess={async () => {
+          setStockAdjustProduct(null)
+          actionRef.current?.reload()
+        }}
       />
       <Modal
         title={`上传图片 - ${previewTitle}`}

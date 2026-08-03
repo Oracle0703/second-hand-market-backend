@@ -26,7 +26,7 @@ vi.mock('@/services/api', () => ({
 const originalGetComputedStyle = window.getComputedStyle
 vi.stubGlobal('getComputedStyle', (element: Element, pseudoElt?: string | null) => {
   if (pseudoElt) {
-    return { getPropertyValue: () => '' } as CSSStyleDeclaration
+    return { getPropertyValue: () => '' } as unknown as CSSStyleDeclaration
   }
   return originalGetComputedStyle(element)
 })
