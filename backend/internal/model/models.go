@@ -216,7 +216,7 @@ func (FileRecord) TableName() string {
 }
 
 type ImageBackfillRun struct {
-	ID             string `gorm:"primaryKey;size:64"`
+	ID             string `gorm:"column:id;primaryKey;size:64"`
 	ProfileVersion string `gorm:"size:32;index"`
 	CreatedAt      time.Time
 	FinishedAt     *time.Time
