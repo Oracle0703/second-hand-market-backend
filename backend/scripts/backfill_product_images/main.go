@@ -136,7 +136,7 @@ func main() {
 			defer func() {
 				_ = releaseGlobalBackfillLock(conn)
 			}()
-			got, err = run(context.Background(), conn, root, options, deps)
+			got, err = run(context.Background(), db, root, options, deps)
 			return err
 		})
 	} else {
