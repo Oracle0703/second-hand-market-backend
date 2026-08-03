@@ -402,6 +402,143 @@ func TestLocalFileResponsesIgnorePersistedExternalURL(t *testing.T) {
 	}
 }
 
+func TestPublicUploadBaseURLFormatsResponsesWithoutChangingStoredURL(t *testing.T) {
+	cfg := newTestConfig(t, t.TempDir())
+	cfg.PublicUploadBaseURL = "https://market.meaningful.ink/uploads/"
+	srv := newTestServerWithConfig(t, cfg)
+
+	merchantID, username, password := registerMerchant(t, srv, "public_upload_base_url")
+	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 || str(login.Data["token_scope"]) != "full" {
+		t.Fatalf("approved merchant login failed: %+v", login)
+	}
+	merchantToken := str(login.Data["access_token"])
+
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "PRODUCT_IMAGE",
+		"file_name": "product.png",
+		"file_size": len(encodedUploadImage(t, "image/png")),
+		"mime_type": "image/png",
+	}, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if presign.Code != 0 {
+		t.Fatalf("presign failed: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+
+	upload := requestMultipart(
+		t,
+		srv.Router,
+		http.MethodPost,
+		"/api/v1/files/upload",
+		map[string]string{
+			"file_id":    fmt.Sprintf("%d", fileID),
+			"object_key": objectKey,
+		},
+		"file",
+		"product.png",
+		encodedUploadImage(t, "image/png"),
+		map[string]string{"Authorization": "Bearer " + merchantToken},
+	)
+	if upload.Code != 0 {
+		t.Fatalf("upload failed: %+v", upload)
+	}
+	absoluteURL := str(upload.Data["url"])
+	if !strings.HasPrefix(absoluteURL, "https://market.meaningful.ink/uploads/") {
+		t.Fatalf("upload response should expose absolute compatible URL: %s", absoluteURL)
+	}
+	if !strings.HasSuffix(absoluteURL, objectKey) {
+		t.Fatalf("upload response URL should end with object key %q: %s", objectKey, absoluteURL)
+	}
+
+	var record model.FileRecord
+	if err := srv.DB.First(&record, fileID).Error; err != nil {
+		t.Fatalf("load uploaded file record: %v", err)
+	}
+	if record.URL != "/uploads/"+objectKey {
+		t.Fatalf("database URL must remain relative: got=%q want=%q", record.URL, "/uploads/"+objectKey)
+	}
+
+	cats := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/categories?level=2", nil, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if cats.Code != 0 {
+		t.Fatalf("categories failed: %+v", cats)
+	}
+	items, ok := cats.Data["items"].([]interface{})
+	if !ok || len(items) == 0 {
+		t.Fatalf("categories empty: %+v", cats)
+	}
+	row := items[0].(map[string]interface{})
+	categoryID := numToUint64(row["id"])
+	if categoryID == 0 {
+		categoryID = numToUint64(row["ID"])
+	}
+
+	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
+		"title":               "兼容图片商品",
+		"description":         "旧小程序继续使用绝对 URL",
+		"category_id":         categoryID,
+		"price_cent":          1000,
+		"original_price_cent": 1200,
+		"condition_level":     "GOOD",
+		"stock":               1,
+		"image_file_ids":      []uint64{fileID},
+	}, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if create.Code != 0 {
+		t.Fatalf("create product failed: %+v", create)
+	}
+	productID := numToUint64(create.Data["product_id"])
+	onShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), nil, map[string]string{"Authorization": "Bearer " + merchantToken})
+	if onShelf.Code != 0 {
+		t.Fatalf("on shelf failed: %+v", onShelf)
+	}
+
+	responses := []apiResp{
+		requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/merchant/products/%d", productID), nil, map[string]string{
+			"Authorization": "Bearer " + merchantToken,
+		}),
+		requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/products", nil, map[string]string{
+			"X-Device-Id": "public-upload-base-list",
+		}),
+		requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d", productID), nil, map[string]string{
+			"X-Device-Id": "public-upload-base-detail",
+		}),
+	}
+	for index, resp := range responses {
+		if resp.Code != 0 || resp.HTTPStatus != http.StatusOK {
+			t.Fatalf("response %d failed: %+v", index, resp)
+		}
+		payload, err := json.Marshal(resp.Data)
+		if err != nil {
+			t.Fatalf("marshal response %d: %v", index, err)
+		}
+		if !bytes.Contains(payload, []byte(absoluteURL)) {
+			t.Fatalf("response %d did not expose absolute compatible URL %q: %s", index, absoluteURL, payload)
+		}
+		if bytes.Contains(payload, []byte("\"/uploads/")) {
+			t.Fatalf("response %d exposed relative upload URL despite compatibility base: %s", index, payload)
+		}
+	}
+}
+
+func TestServerRejectsInvalidPublicUploadBaseURL(t *testing.T) {
+	tests := []string{
+		"ftp://market.meaningful.ink/uploads",
+		"https://market.meaningful.ink/static",
+		"https://market.meaningful.ink/uploads?token=leak",
+		"https://market.meaningful.ink/uploads#frag",
+	}
+	for _, rawURL := range tests {
+		t.Run(rawURL, func(t *testing.T) {
+			cfg := newTestConfig(t, t.TempDir())
+			cfg.PublicUploadBaseURL = rawURL
+			if _, err := app.NewServer(cfg); err == nil {
+				t.Fatal("invalid PUBLIC_UPLOAD_BASE_URL must fail closed")
+			}
+		})
+	}
+}
+
 func TestConfirmCannotPromotePendingFile(t *testing.T) {
 	srv := newTestServer(t)
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{

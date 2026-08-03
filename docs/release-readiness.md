@@ -62,9 +62,9 @@
 
 | 阶段 | 检查项 |
 | --- | --- |
-| 小程序版本 | 确认线上小程序版本或 commit 已包含相对 `/uploads/...` 图片地址解析能力 |
+| 小程序版本 | 若线上小程序尚未包含相对 `/uploads/...` 图片地址解析能力，生产必须配置响应层兼容 `PUBLIC_UPLOAD_BASE_URL=https://market.meaningful.ink/uploads`；该兼容不需要小程序发版 |
 | 镜像产物 | 同一镜像必须包含 `/srv/server`、`/srv/migrate`、`/srv/backfill-product-images` 和 `/srv/migrations/` |
-| 第一阶段配置 | API 显式配置 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false`、`IMAGE_PROCESSOR_DRIVER=vips`、`AUTO_MIGRATE=false`、`SEED_DEFAULTS=false`、`FILE_PUBLIC_BASE_URL=` |
+| 第一阶段配置 | API 显式配置 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false`、`IMAGE_PROCESSOR_DRIVER=vips`、`AUTO_MIGRATE=false`、`SEED_DEFAULTS=false`、`FILE_PUBLIC_BASE_URL=`；旧小程序兼容时额外配置 `PUBLIC_UPLOAD_BASE_URL=https://market.meaningful.ink/uploads` |
 | 预检 | 在维护窗口前执行基础谓词检查和 `/srv/backfill-product-images --dry-run --limit 100`，候选超过 100 或预计超过 30 分钟则停止并重新评审 |
 | 写冻结 | 冻结上传、确认、商品创建、商品编辑和商品删除写接口；确认读接口和 `/uploads/...` 仍可用 |
 | 迁移 | 使用 `/srv/migrate --migration 0004_image_backfill_ledger` 显式执行账本前向迁移 |

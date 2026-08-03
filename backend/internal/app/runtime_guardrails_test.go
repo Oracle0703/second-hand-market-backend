@@ -482,6 +482,9 @@ func TestProductionEnvExamplesEnableRuntimeGuardrails(t *testing.T) {
 			if values["REQUIRE_DETAIL_V1_PRODUCT_IMAGES"] != "false" {
 				t.Fatalf("REQUIRE_DETAIL_V1_PRODUCT_IMAGES = %q", values["REQUIRE_DETAIL_V1_PRODUCT_IMAGES"])
 			}
+			if values["PUBLIC_UPLOAD_BASE_URL"] != "https://market.meaningful.ink/uploads" {
+				t.Fatalf("PUBLIC_UPLOAD_BASE_URL = %q", values["PUBLIC_UPLOAD_BASE_URL"])
+			}
 			assertDatabaseWriteFlagsDisabled(t, values)
 			if err := validateProductionJWTSecret("JWT_ACCESS_SECRET", values["JWT_ACCESS_SECRET"]); err == nil {
 				t.Fatal("the access-secret placeholder must remain fail-closed")

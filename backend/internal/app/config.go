@@ -63,6 +63,7 @@ type Config struct {
 	FileStorageProvider          string
 	FileUploadLocalDir           string
 	FilePublicBaseURL            string
+	PublicUploadBaseURL          string
 	FileUploadMaxBytes           int64
 	ImageCompressTargetBytes     int64
 	ImageProcessorDriver         string
@@ -102,6 +103,7 @@ func LoadConfig() Config {
 		FileStorageProvider:        getEnv("FILE_STORAGE_PROVIDER", "local"),
 		FileUploadLocalDir:         getEnv("FILE_UPLOAD_LOCAL_DIR", "uploads"),
 		FilePublicBaseURL:          getEnv("FILE_PUBLIC_BASE_URL", ""),
+		PublicUploadBaseURL:        getEnv("PUBLIC_UPLOAD_BASE_URL", ""),
 		FileUploadMaxBytes:         int64(getEnvInt("FILE_UPLOAD_MAX_MB", 40)) * 1024 * 1024,
 		ImageCompressTargetBytes:   int64(getEnvInt("IMAGE_COMPRESS_TARGET_MB", 20)) * 1024 * 1024,
 		ImageProcessorDriver:       getEnv("IMAGE_PROCESSOR_DRIVER", "vips"),
@@ -221,6 +223,9 @@ func (c Config) ValidateRuntime() error {
 			return fmt.Errorf("IMAGE_PROCESSOR_DRIVER must be vips in production")
 		}
 	}
+	if err := validatePublicUploadBaseURL(c.PublicUploadBaseURL); err != nil {
+		return err
+	}
 	if target == dbTargetRemoteDevelopment {
 		if err := validateRemoteDevelopmentDatabase(c); err != nil {
 			return err
@@ -282,6 +287,27 @@ func normalizeDBTarget(value string) string {
 
 func normalizeBuyerLoginMode(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validatePublicUploadBaseURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL must be a valid HTTP(S) URL ending at /uploads")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL must use http or https")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL must not include query or fragment")
+	}
+	if strings.TrimRight(parsed.Path, "/") != "/uploads" {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL path must be /uploads")
+	}
+	return nil
 }
 
 func validateProductionJWTSecret(name, value string) error {

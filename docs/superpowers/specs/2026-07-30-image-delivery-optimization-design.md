@@ -245,11 +245,12 @@ apply 期间必须安排明确的写冻结。网关或既有运维入口至少�
 | `DB_DRIVER` | 回填 apply 固定为 `mysql` | cleanup 仍固定为 `mysql` |
 | `AUTO_MIGRATE` | `false` | `false` |
 | `SEED_DEFAULTS` | `false` | `false` |
-| `FILE_PUBLIC_BASE_URL` | 空值，由 API 的相对 `/uploads/...` 路径提供访问 | 保持不变 |
+| `FILE_PUBLIC_BASE_URL` | 空值，数据库和回填账本继续使用相对 `/uploads/...` 路径 | 保持不变 |
+| `PUBLIC_UPLOAD_BASE_URL` | 线上小程序尚未发版支持相对图片地址时，显式设为 `https://market.meaningful.ink/uploads`，仅用于 API 响应层兼容旧客户端 | 旧客户端全部确认升级后可评估置空 |
 
 发布步骤：
 
-1. 记录并确认线上小程序版本号或 commit 已包含相对 `/uploads/...` 解析能力；仓库当前支持不等于线上版本已经发布。
+1. 记录并确认线上小程序版本号或 commit 是否已包含相对 `/uploads/...` 解析能力；若线上小程序尚未发版，则第一阶段必须配置 `PUBLIC_UPLOAD_BASE_URL=https://market.meaningful.ink/uploads`，由 API 响应层返回绝对图片 URL，数据库和回填仍保留相对 `/uploads/...`。
 2. 构建包含 API、显式迁移命令、回填命令和 migrations 的镜像，执行镜像内 vips codec smoke，但不自动运行回填。
 3. 使用新镜像执行只读预检：运行开关 false 对应的基础关联谓词与真实 dry-run，提前识别 PENDING、缺记录、跨商户、无法解析归属等阻断异常，并检查候选数量和预计耗时没有触发规模停止条件。
 4. 在网关开启规定范围的写冻结，等待在途写归零并执行读写探针；在冻结快照下重新运行基础谓词和 dry-run。基础违规或阻断异常不为 0 时先修复并复检，无法修复则不进入迁移和部署。

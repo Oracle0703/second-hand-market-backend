@@ -228,10 +228,11 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		return
 	}
 
+	storedURL := s.canonicalFileURL(finalObjectKey)
 	url := s.publicFileURL(finalObjectKey)
 	updates := map[string]interface{}{
 		"object_key":  finalObjectKey,
-		"url":         url,
+		"url":         storedURL,
 		"scan_status": model.FileScanPass,
 		"mime_type":   outputMIME,
 		"size_bytes":  int64(len(processed.Content)),
@@ -367,6 +368,15 @@ func (s *Server) handlePublicUpload(c *gin.Context) {
 }
 
 func (s *Server) publicFileURL(objectKey string) string {
+	relativeURL := s.canonicalFileURL(objectKey)
+	baseURL := strings.TrimRight(strings.TrimSpace(s.cfg.PublicUploadBaseURL), "/")
+	if baseURL == "" {
+		return relativeURL
+	}
+	return baseURL + strings.TrimPrefix(relativeURL, "/uploads")
+}
+
+func (s *Server) canonicalFileURL(objectKey string) string {
 	cleanKey := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+objectKey)), "/")
 	return "/uploads/" + cleanKey
 }
