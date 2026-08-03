@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/databasecmd"
@@ -522,8 +523,13 @@ func applyCandidate(db *gorm.DB, root string, file candidateFile, output []byte,
 }
 
 func ensureRun(db *gorm.DB, runID string) error {
-	run := model.ImageBackfillRun{ID: runID, ProfileVersion: media.DetailProfileVersion}
-	return db.FirstOrCreate(&run, model.ImageBackfillRun{ID: runID}).Error
+	return db.Table("image_backfill_runs").
+		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).
+		Create(map[string]any{
+			"id":              runID,
+			"profile_version": media.DetailProfileVersion,
+			"created_at":      time.Now(),
+		}).Error
 }
 
 func loadBackfillItem(db *gorm.DB, runID string, fileID uint64) (model.ImageBackfillItem, bool, error) {

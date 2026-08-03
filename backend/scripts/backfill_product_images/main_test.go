@@ -140,6 +140,26 @@ func TestDryRunDoesNotWriteObjectsRecordsOrLedger(t *testing.T) {
 	}
 }
 
+func TestEnsureRunCreatesLedgerRunByID(t *testing.T) {
+	fx := newBackfillFixture(t)
+
+	const runID = "IMGENSURE1"
+	if err := ensureRun(fx.db, runID); err != nil {
+		t.Fatalf("ensure run: %v", err)
+	}
+	if err := ensureRun(fx.db, runID); err != nil {
+		t.Fatalf("ensure run again: %v", err)
+	}
+
+	var count int64
+	if err := fx.db.Table("image_backfill_runs").Where("id = ?", runID).Count(&count).Error; err != nil {
+		t.Fatalf("count run: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("run count = %d, want 1", count)
+	}
+}
+
 func TestDryRunWritesJSONLineWithPredictedTarget(t *testing.T) {
 	fx := newBackfillFixture(t)
 	var output bytes.Buffer
