@@ -1,6 +1,25 @@
 import { http, type APIResponse } from './http'
 import type { LoginResponse, LoginType } from '../types/auth'
 
+export type AdjustProductStockPayload = {
+  adjustment_type: 'INCREASE' | 'DECREASE' | 'MARK_SOLD'
+  quantity: number
+  reason: string
+}
+
+export type AdjustProductStockResponse = {
+  product_id: number
+  movement_id: number
+  adjustment_type: AdjustProductStockPayload['adjustment_type']
+  quantity: number
+  stock_before: number
+  stock_after: number
+  status_before: string
+  status_after: string
+  adjusted_at: string
+  idempotent?: boolean
+}
+
 export const api = {
   login(payload: { login_type: LoginType; username: string; password: string }) {
     return http.post<APIResponse<LoginResponse>>('/auth/login', payload)
@@ -83,6 +102,9 @@ export const api = {
   },
   productClose(productId: string | number, reason?: string) {
     return http.post(`/merchant/products/${productId}/close`, reason ? { reason } : {})
+  },
+  adjustProductStock(productId: string | number, payload: AdjustProductStockPayload) {
+    return http.post<APIResponse<AdjustProductStockResponse>>(`/merchant/products/${productId}/stock-adjustments`, payload)
   },
   orders(params: Record<string, string | number> = {}) {
     return http.get('/merchant/orders', { params })
