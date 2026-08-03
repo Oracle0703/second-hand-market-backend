@@ -170,5 +170,4 @@ Sync code to `/home/yu/services/secondhand-market-acceptance`, rebuild acceptanc
 
 - [ ] **Step 3: Resume production checklist**
 
-After acceptance passes, continue the production first-stage checklist: backup, config, image build with `/srv/migrate` and `/srv/backfill-product-images`, dry-run, write freeze, migration, deploy, canary, batch backfill, smoke.
-
+After acceptance passes, continue the production first-stage checklist: backup, config, image build with `/srv/migrate` and `/srv/backfill-product-images`, dry-run, write freeze, legacy `file_records` to `files` migration when required, ledger migration, deploy, canary, batch backfill, smoke.

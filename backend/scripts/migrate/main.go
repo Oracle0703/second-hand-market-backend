@@ -45,6 +45,11 @@ var migrationCatalog = map[string]migrationSpec{
 		FileName: "0004_image_backfill_ledger.up.sql",
 		SHA256:   "fe3fe80737b7ebb1786e7dc9ba6a021fa69c9523af44c7994a66513e1ab0c159",
 	},
+	"0005_legacy_file_records_table": {
+		ID:       "0005_legacy_file_records_table",
+		FileName: "0005_legacy_file_records_table.up.sql",
+		SHA256:   "fcbce9f568ff40b0a8809eb9b5920946db2cca9b9869f1bfae95955ae5883fca",
+	},
 }
 
 type migrationDependencies struct {

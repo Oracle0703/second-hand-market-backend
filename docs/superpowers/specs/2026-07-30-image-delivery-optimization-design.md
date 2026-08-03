@@ -254,7 +254,7 @@ apply 期间必须安排明确的写冻结。网关或既有运维入口至少�
 2. 构建包含 API、显式迁移命令、回填命令和 migrations 的镜像，执行镜像内 vips codec smoke，但不自动运行回填。
 3. 使用新镜像执行只读预检：运行开关 false 对应的基础关联谓词与真实 dry-run，提前识别 PENDING、缺记录、跨商户、无法解析归属等阻断异常，并检查候选数量和预计耗时没有触发规模停止条件。
 4. 在网关开启规定范围的写冻结，等待在途写归零并执行读写探针；在冻结快照下重新运行基础谓词和 dry-run。基础违规或阻断异常不为 0 时先修复并复检，无法修复则不进入迁移和部署。
-5. 显式执行账本前向迁移并核验表结构；以 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false` 滚动发布全部 API 实例。确认实例版本和配置修订一致后，通过维护绕行入口验证 JPEG/PNG/WebP/HEIC/HEIF 新上传、旧商品保存、图片展示和 GET 缓存头，普通外部写流量仍保持冻结。
+5. 显式执行前向迁移并核验表结构：若旧生产库仍存在 `file_records` 且不存在 `files`，先执行 `/srv/migrate --migration 0005_legacy_file_records_table` 将旧表原子改名为当前模型使用的 `files`；随后执行 `/srv/migrate --migration 0004_image_backfill_ledger` 创建回填账本。之后以 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false` 滚动发布全部 API 实例。确认实例版本和配置修订一致后，通过维护绕行入口验证 JPEG/PNG/WebP/HEIC/HEIF 新上传、旧商品保存、图片展示和 GET 缓存头，普通外部写流量仍保持冻结。
 6. 创建唯一 run-id，以 `--apply --run-id <ID> --limit 1` 做单张 canary；验证详情、封面、列表、新旧 URL、对象哈希和账本后，使用同一 run-id 分批完成其余候选。
 7. 对账并确保没有 `PROCESSING` 或 `STAGED` 活跃项，再对全部有效商品引用执行与开关 true 完全相同的严格谓词。只有严格违规、阻断异常和未处置的相关 `PENDING/FAILED` 均为 0，才能把全部 API 实例滚动到 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=true`。
 8. 在网关仍冻结时确认所有实例配置一致，并通过维护绕行入口验证商品编辑；随后解除写冻结。旧对象继续保留，不要求维护窗口持续 24 小时。

@@ -67,7 +67,7 @@
 | 第一阶段配置 | API 显式配置 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false`、`IMAGE_PROCESSOR_DRIVER=vips`、`AUTO_MIGRATE=false`、`SEED_DEFAULTS=false`、`FILE_PUBLIC_BASE_URL=`；旧小程序兼容时额外配置 `PUBLIC_UPLOAD_BASE_URL=https://market.meaningful.ink/uploads` |
 | 预检 | 在维护窗口前执行基础谓词检查和 `/srv/backfill-product-images --dry-run --limit 100`，候选超过 100 或预计超过 30 分钟则停止并重新评审 |
 | 写冻结 | 冻结上传、确认、商品创建、商品编辑和商品删除写接口；确认读接口和 `/uploads/...` 仍可用 |
-| 迁移 | 使用 `/srv/migrate --migration 0004_image_backfill_ledger` 显式执行账本前向迁移 |
+| 迁移 | 旧生产库若仍为 `file_records` 且不存在 `files`，先执行 `/srv/migrate --migration 0005_legacy_file_records_table`；随后执行 `/srv/migrate --migration 0004_image_backfill_ledger` 创建回填账本 |
 | 回填 | 使用同一 `run-id` 先执行 `--apply --limit 1` canary，再分批 apply；期间保持 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false` |
 | 严格切换 | 仅当严格谓词违规、阻断异常和未处置 `PROCESSING/STAGED/FAILED` 均为 0 后，将全部 API 实例切到 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=true` |
 | 延迟清理 | 各条目 `cleanup_after` 到期后，用同一 `run-id` 执行 `--cleanup`；失败项保留对象和错误码，重试或人工处理 |
