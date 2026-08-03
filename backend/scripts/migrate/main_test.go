@@ -18,6 +18,7 @@ func TestParseMigrationSelectionRequiresExactlyOneAllowlistedMigration(t *testin
 		{"--migration", "0001_init"},
 		{"--migration=0002_buyer_domain"},
 		{"--migration=0005_legacy_file_records_table"},
+		{"--migration=0006_product_stock_adjustments"},
 	} {
 		spec, err := parseMigrationSelection(args)
 		if err != nil {
@@ -213,6 +214,7 @@ func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 		"0003_buyer_auth_provider":       2,
 		"0004_image_backfill_ledger":     2,
 		"0005_legacy_file_records_table": 1,
+		"0006_product_stock_adjustments": 1,
 	}
 	for migrationID, expectedCount := range wantStatements {
 		spec := migrationCatalog[migrationID]

@@ -50,6 +50,11 @@ var migrationCatalog = map[string]migrationSpec{
 		FileName: "0005_legacy_file_records_table.up.sql",
 		SHA256:   "fcbce9f568ff40b0a8809eb9b5920946db2cca9b9869f1bfae95955ae5883fca",
 	},
+	"0006_product_stock_adjustments": {
+		ID:       "0006_product_stock_adjustments",
+		FileName: "0006_product_stock_adjustments.up.sql",
+		SHA256:   "b19343cffc234d9de3c9b82dc56b75729a76b7c959bf218dff0ac80591d7664e",
+	},
 }
 
 type migrationDependencies struct {
