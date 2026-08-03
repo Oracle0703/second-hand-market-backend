@@ -60,6 +60,12 @@ const (
 	IntentClosed    = "CLOSED"
 )
 
+const (
+	StockAdjustmentIncrease = "INCREASE"
+	StockAdjustmentDecrease = "DECREASE"
+	StockAdjustmentMarkSold = "MARK_SOLD"
+)
+
 type Merchant struct {
 	ID            uint64  `gorm:"primaryKey"`
 	MerchantNo    string  `gorm:"size:32;uniqueIndex"`
@@ -165,6 +171,21 @@ type ProductImage struct {
 	FileID    uint64
 	SortOrder int `gorm:"index:idx_product_sort,priority:2"`
 	CreatedAt time.Time
+}
+
+type ProductStockAdjustment struct {
+	ID             uint64 `gorm:"primaryKey"`
+	ProductID      uint64 `gorm:"index:idx_product_stock_adjustment_created,priority:1"`
+	MerchantID     uint64 `gorm:"index:idx_merchant_stock_adjustment_created,priority:1"`
+	AdjustmentType string `gorm:"size:32"`
+	Quantity       int
+	StockBefore    int
+	StockAfter     int
+	StatusBefore   string `gorm:"size:16"`
+	StatusAfter    string `gorm:"size:16"`
+	Reason         string `gorm:"size:255"`
+	OperatorID     uint64
+	CreatedAt      time.Time `gorm:"index:idx_product_stock_adjustment_created,priority:2;index:idx_merchant_stock_adjustment_created,priority:2"`
 }
 
 type Order struct {

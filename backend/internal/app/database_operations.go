@@ -26,6 +26,7 @@ func MigrateSchema(db *gorm.DB) error {
 		&model.Category{},
 		&model.Product{},
 		&model.ProductImage{},
+		&model.ProductStockAdjustment{},
 		&model.Order{},
 		&model.OrderEvent{},
 		&model.FileRecord{},

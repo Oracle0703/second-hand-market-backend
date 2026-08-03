@@ -25,6 +25,9 @@ func TestMigrateSchemaCreatesApplicationTables(t *testing.T) {
 			t.Fatalf("missing migrated table for %T", target)
 		}
 	}
+	if !db.Migrator().HasTable(&model.ProductStockAdjustment{}) {
+		t.Fatalf("expected product_stock_adjustments table to be created")
+	}
 }
 
 func TestMigrateSchemaUsesExplicitFileTableName(t *testing.T) {
