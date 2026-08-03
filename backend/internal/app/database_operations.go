@@ -29,6 +29,8 @@ func MigrateSchema(db *gorm.DB) error {
 		&model.Order{},
 		&model.OrderEvent{},
 		&model.FileRecord{},
+		&model.ImageBackfillRun{},
+		&model.ImageBackfillItem{},
 		&model.OperationLog{},
 		&model.AuthSession{},
 		&model.IdempotencyRecord{},

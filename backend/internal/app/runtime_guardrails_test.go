@@ -21,26 +21,28 @@ const (
 
 func safeProductionRuntimeConfig() Config {
 	return Config{
-		AppEnv:                     appEnvProduction,
-		DBTarget:                   "local",
-		DBDriver:                   "guardrail-probe",
-		DBDSN:                      "guardrail-probe-dsn",
-		JWTAccessSecret:            testProductionAccessSecret,
-		JWTRefreshSecret:           testProductionRefreshSecret,
-		BuyerWechatLoginMode:       buyerLoginModeReal,
-		BuyerWechatAppID:           "wx-test-app-id",
-		BuyerWechatAppSecret:       "wx-test-app-secret",
-		BuyerWechatCode2SessionURL: wechatCode2SessionURL,
-		BuyerWechatHTTPTimeout:     5 * time.Second,
-		BuyerDouyinLoginMode:       buyerLoginModeDisabled,
-		BuyerDouyinCode2SessionURL: douyinCode2SessionURL,
-		BuyerDouyinHTTPTimeout:     5 * time.Second,
-		FileStorageProvider:        "local",
-		FileUploadMaxBytes:         40 * 1024 * 1024,
-		ImageCompressTargetBytes:   20 * 1024 * 1024,
-		ImageProcessorDriver:       "passthrough",
-		AccessTTL:                  2 * time.Hour,
-		RefreshTTL:                 7 * 24 * time.Hour,
+		AppEnv:                          appEnvProduction,
+		DBTarget:                        "local",
+		DBDriver:                        "guardrail-probe",
+		DBDSN:                           "guardrail-probe-dsn",
+		JWTAccessSecret:                 testProductionAccessSecret,
+		JWTRefreshSecret:                testProductionRefreshSecret,
+		BuyerWechatLoginMode:            buyerLoginModeReal,
+		BuyerWechatAppID:                "wx-test-app-id",
+		BuyerWechatAppSecret:            "wx-test-app-secret",
+		BuyerWechatCode2SessionURL:      wechatCode2SessionURL,
+		BuyerWechatHTTPTimeout:          5 * time.Second,
+		BuyerDouyinLoginMode:            buyerLoginModeDisabled,
+		BuyerDouyinCode2SessionURL:      douyinCode2SessionURL,
+		BuyerDouyinHTTPTimeout:          5 * time.Second,
+		FileStorageProvider:             "local",
+		FileUploadMaxBytes:              40 * 1024 * 1024,
+		ImageCompressTargetBytes:        20 * 1024 * 1024,
+		ImageProcessorDriver:            "vips",
+		RequireDetailV1ProductImages:    false,
+		AccessTTL:                       2 * time.Hour,
+		RefreshTTL:                      7 * 24 * time.Hour,
+		requireDetailV1ProductImagesSet: true,
 	}
 }
 
@@ -266,9 +268,25 @@ func TestLoadConfigProductionDefaultsFailClosed(t *testing.T) {
 	t.Setenv("JWT_REFRESH_SECRET", "dev-refresh-secret")
 	t.Setenv("BUYER_WECHAT_LOGIN_MODE", buyerLoginModeMock)
 	t.Setenv("BUYER_DOUYIN_LOGIN_MODE", buyerLoginModeMock)
+	t.Setenv("REQUIRE_DETAIL_V1_PRODUCT_IMAGES", "false")
 
 	cfg := LoadConfig()
 	assertRuntimeConfigError(t, cfg, "BUYER_WECHAT_LOGIN_MODE")
+}
+
+func TestLoadConfigProductionRequiresExplicitDetailSwitch(t *testing.T) {
+	t.Setenv("APP_ENV", appEnvProduction)
+	t.Setenv("DB_TARGET", dbTargetLocal)
+	t.Setenv("DB_DSN", "production-test-dsn")
+	t.Setenv("JWT_ACCESS_SECRET", testProductionAccessSecret)
+	t.Setenv("JWT_REFRESH_SECRET", testProductionRefreshSecret)
+	t.Setenv("BUYER_WECHAT_LOGIN_MODE", buyerLoginModeDisabled)
+	t.Setenv("BUYER_DOUYIN_LOGIN_MODE", buyerLoginModeDisabled)
+	t.Setenv("IMAGE_PROCESSOR_DRIVER", "vips")
+	unsetEnvForTest(t, "REQUIRE_DETAIL_V1_PRODUCT_IMAGES")
+
+	cfg := LoadConfig()
+	assertRuntimeConfigError(t, cfg, "REQUIRE_DETAIL_V1_PRODUCT_IMAGES")
 }
 
 func TestLoadConfigRejectsInvalidRealProviderTimeout(t *testing.T) {
@@ -460,6 +478,9 @@ func TestProductionEnvExamplesEnableRuntimeGuardrails(t *testing.T) {
 			}
 			if values["BUYER_DOUYIN_CODE2SESSION_URL"] != douyinCode2SessionURL {
 				t.Fatalf("BUYER_DOUYIN_CODE2SESSION_URL = %q", values["BUYER_DOUYIN_CODE2SESSION_URL"])
+			}
+			if values["REQUIRE_DETAIL_V1_PRODUCT_IMAGES"] != "false" {
+				t.Fatalf("REQUIRE_DETAIL_V1_PRODUCT_IMAGES = %q", values["REQUIRE_DETAIL_V1_PRODUCT_IMAGES"])
 			}
 			assertDatabaseWriteFlagsDisabled(t, values)
 			if err := validateProductionJWTSecret("JWT_ACCESS_SECRET", values["JWT_ACCESS_SECRET"]); err == nil {

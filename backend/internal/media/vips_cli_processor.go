@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"second-hand-market-backend/backend/internal/common"
 )
@@ -31,6 +32,9 @@ func NewVipsCLIProcessor(binary string, policy UploadPolicy) VipsCLIProcessor {
 func (p VipsCLIProcessor) Process(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	if err := p.Policy.ValidateOriginalSize(int64(len(req.Content))); err != nil {
 		return ProcessResult{}, err
+	}
+	if req.OutputProfile == DetailProfileVersion {
+		return p.processDetail(ctx, req)
 	}
 
 	detected := DetectImageMIME(req.Content)
@@ -124,6 +128,104 @@ func (p VipsCLIProcessor) Process(ctx context.Context, req ProcessRequest) (Proc
 	return ProcessResult{}, common.ErrInvalidUpload
 }
 
+func (p VipsCLIProcessor) processDetail(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
+	detected := DetectImageMIME(req.Content)
+	if !IsAllowedImageMIME(detected) {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	sourceExt := MIMEExt(detected)
+	if sourceExt == "" {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+
+	policy := DefaultDetailImagePolicy()
+	timeout := policy.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	tmpDir, err := os.MkdirTemp("", "shm-vips-detail-*")
+	if err != nil {
+		return ProcessResult{}, common.ErrInternal
+	}
+	defer os.RemoveAll(tmpDir)
+
+	inputPath := filepath.Join(tmpDir, "input"+sourceExt)
+	if err := os.WriteFile(inputPath, req.Content, 0o600); err != nil {
+		return ProcessResult{}, common.ErrInternal
+	}
+
+	var (
+		candidates []DetailCandidate
+		lastErr    error
+	)
+	for _, edge := range policy.Edges {
+		for _, quality := range policy.Qualities {
+			outPath := filepath.Join(tmpDir, fmt.Sprintf("detail-%d-%d.jpg", edge, quality))
+			if err := p.run(ctx, buildDetailVipsArgs(inputPath, outPath, edge, quality)...); err != nil {
+				if isProcessorRuntimeError(ctx, err) {
+					return ProcessResult{}, common.ErrInternal
+				}
+				lastErr = err
+				continue
+			}
+			output, err := os.ReadFile(outPath)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			width, height, err := ValidateDetailJPEG(policy, output)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			candidate := DetailCandidate{
+				Content:     output,
+				LongestEdge: maxInt(width, height),
+				Quality:     quality,
+				SizeBytes:   int64(len(output)),
+			}
+			candidates = append(candidates, candidate)
+			if candidate.SizeBytes <= policy.TargetBytes {
+				return detailResult(candidate, width, height), nil
+			}
+		}
+	}
+
+	candidate, err := policy.Select(candidates)
+	if err != nil {
+		if lastErr != nil && isProcessorRuntimeError(ctx, lastErr) {
+			return ProcessResult{}, common.ErrInternal
+		}
+		return ProcessResult{}, err
+	}
+	width, height, err := ValidateDetailJPEG(policy, candidate.Content)
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	return detailResult(candidate, width, height), nil
+}
+
+func detailResult(candidate DetailCandidate, width, height int) ProcessResult {
+	return ProcessResult{
+		OutputMIME: "image/jpeg",
+		OutputExt:  ".jpg",
+		Content:    candidate.Content,
+		Width:      width,
+		Height:     height,
+	}
+}
+
+func isProcessorRuntimeError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	var execErr *exec.Error
+	return errors.As(err, &execErr) || os.IsNotExist(err) || ctx.Err() != nil
+}
+
 func (p VipsCLIProcessor) run(ctx context.Context, args ...string) error {
 	if p.runner != nil {
 		return p.runner(ctx, p.Binary, args...)
@@ -147,6 +249,24 @@ func buildOutputSpec(path, mimeType string, quality int) string {
 	default:
 		return path
 	}
+}
+
+func buildDetailVipsArgs(inputPath, outPath string, edge, quality int) []string {
+	return []string{
+		"thumbnail",
+		inputPath,
+		buildDetailOutputSpec(outPath, quality),
+		strconv.Itoa(edge),
+		"--height",
+		strconv.Itoa(edge),
+		"--size",
+		"down",
+		"--auto-rotate",
+	}
+}
+
+func buildDetailOutputSpec(path string, quality int) string {
+	return path + "[Q=" + strconv.Itoa(quality) + ",strip]"
 }
 
 func buildVipsArgs(inputPath, outPath, mimeType string, quality int, scale float64) []string {

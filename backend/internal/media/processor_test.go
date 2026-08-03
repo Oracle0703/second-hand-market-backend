@@ -105,6 +105,102 @@ func TestCanonicalImageMIMENormalizesGenericHEIF(t *testing.T) {
 	}
 }
 
+func TestDetailImagePolicyUsesFixedTraversalAndHardLimit(t *testing.T) {
+	policy := DefaultDetailImagePolicy()
+	if policy.MaxEdge != 1280 || policy.TargetBytes != 300*1024 || policy.HardLimitBytes != 500*1024 {
+		t.Fatalf("unexpected detail policy constants: %+v", policy)
+	}
+
+	candidate, err := policy.Select([]DetailCandidate{
+		{LongestEdge: 1280, Quality: 82, SizeBytes: 360 * 1024},
+		{LongestEdge: 1280, Quality: 78, SizeBytes: 299 * 1024},
+		{LongestEdge: 1120, Quality: 82, SizeBytes: 250 * 1024},
+	})
+	if err != nil {
+		t.Fatalf("select target candidate: %v", err)
+	}
+	if candidate.LongestEdge != 1280 || candidate.Quality != 78 {
+		t.Fatalf("selected candidate = %+v", candidate)
+	}
+
+	fallback, err := policy.Select([]DetailCandidate{
+		{LongestEdge: 1280, Quality: 82, SizeBytes: 360 * 1024},
+		{LongestEdge: 1120, Quality: 82, SizeBytes: 340 * 1024},
+	})
+	if err != nil {
+		t.Fatalf("select hard-limit fallback: %v", err)
+	}
+	if fallback.LongestEdge != 1280 || fallback.Quality != 82 {
+		t.Fatalf("fallback candidate = %+v", fallback)
+	}
+
+	_, err = policy.Select([]DetailCandidate{{
+		LongestEdge: 960,
+		Quality:     66,
+		SizeBytes:   500*1024 + 1,
+	}})
+	if err != common.ErrInvalidUpload {
+		t.Fatalf("oversized candidate error = %v", err)
+	}
+}
+
+func TestDetailProductImageKeyRequiresVersionedJPEGPrefix(t *testing.T) {
+	valid := "product_image/detail-v1/F123.jpg"
+	if !IsDetailProductImageKey(valid) {
+		t.Fatalf("valid detail key rejected: %q", valid)
+	}
+	for _, key := range []string{
+		"product_image/F123.jpg",
+		"product_image/detail-v1/F123.png",
+		"merchant_license/detail-v1/F123.jpg",
+		"../product_image/detail-v1/F123.jpg",
+	} {
+		if IsDetailProductImageKey(key) {
+			t.Fatalf("invalid detail key accepted: %q", key)
+		}
+	}
+}
+
+func TestPassthroughDetailProfileIgnoresOutputMIMEClaimAndEmitsJPEG(t *testing.T) {
+	processor := NewPassthroughProcessor(DefaultUploadPolicy())
+
+	result, err := processor.Process(context.Background(), ProcessRequest{
+		FileName:      "photo.png",
+		InputMIME:     "image/jpeg",
+		OutputProfile: DetailProfileVersion,
+		Content:       encodedTestImage(t, "image/png"),
+	})
+	if err != nil {
+		t.Fatalf("process detail PNG with output claim: %v", err)
+	}
+	if result.OutputMIME != "image/jpeg" || result.OutputExt != ".jpg" {
+		t.Fatalf("unexpected detail metadata: %+v", result)
+	}
+	if got := DetectImageMIME(result.Content); got != "image/jpeg" {
+		t.Fatalf("detail output MIME = %q", got)
+	}
+	if _, format, err := image.Decode(bytes.NewReader(result.Content)); err != nil || format != "jpeg" {
+		t.Fatalf("detail output is not decodable JPEG: format=%q err=%v", format, err)
+	}
+}
+
+func TestPassthroughDetailProfileRejectsImagesItCannotResize(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 1281, 1))
+	var content bytes.Buffer
+	if err := png.Encode(&content, img); err != nil {
+		t.Fatalf("encode oversized fixture: %v", err)
+	}
+
+	result, err := NewPassthroughProcessor(DefaultUploadPolicy()).Process(context.Background(), ProcessRequest{
+		InputMIME:     "image/png",
+		OutputProfile: DetailProfileVersion,
+		Content:       content.Bytes(),
+	})
+	if err != common.ErrInvalidUpload {
+		t.Fatalf("oversized detail passthrough result=%+v err=%v", result, err)
+	}
+}
+
 func TestImageMIMEMatchesClaimAllowsHEIFAliasesOnly(t *testing.T) {
 	if !ImageMIMEMatchesClaim("image/heic", "image/heif") ||
 		!ImageMIMEMatchesClaim("image/heif", "image/heic") {
@@ -222,6 +318,90 @@ func TestVipsProcessorNeverFallsBackToOriginalBytes(t *testing.T) {
 	if len(result.Content) != 0 {
 		t.Fatal("failed vips execution returned original content")
 	}
+}
+
+func TestVipsDetailProfileIgnoresOutputMIMEClaimAndStopsAtTarget(t *testing.T) {
+	output := encodedTestImage(t, "image/jpeg")
+	processor := NewVipsCLIProcessor("test-vips", DefaultUploadPolicy())
+	commandCount := 0
+	processor.runner = func(_ context.Context, _ string, args ...string) error {
+		commandCount++
+		if len(args) < 3 || args[0] != "thumbnail" {
+			t.Fatalf("unexpected detail vips args: %v", args)
+		}
+		outputPath := strings.SplitN(args[2], "[", 2)[0]
+		return os.WriteFile(outputPath, output, 0o600)
+	}
+
+	result, err := processor.Process(context.Background(), ProcessRequest{
+		FileName:      "photo.png",
+		InputMIME:     "image/jpeg",
+		OutputProfile: DetailProfileVersion,
+		Content:       encodedTestImage(t, "image/png"),
+	})
+	if err != nil {
+		t.Fatalf("process detail through vips runner: %v", err)
+	}
+	if commandCount != 1 {
+		t.Fatalf("target-sized candidate should short-circuit after one command, got %d", commandCount)
+	}
+	if result.OutputMIME != "image/jpeg" || result.OutputExt != ".jpg" || !bytes.Equal(result.Content, output) {
+		t.Fatalf("unexpected detail result: %+v", result)
+	}
+}
+
+func TestVipsDetailProfileUsesFirstHardLimitFallback(t *testing.T) {
+	output := paddedJPEG(t, 340*1024)
+	processor := NewVipsCLIProcessor("test-vips", DefaultUploadPolicy())
+	commandCount := 0
+	processor.runner = func(_ context.Context, _ string, args ...string) error {
+		commandCount++
+		outputPath := strings.SplitN(args[2], "[", 2)[0]
+		return os.WriteFile(outputPath, output, 0o600)
+	}
+
+	result, err := processor.Process(context.Background(), ProcessRequest{
+		InputMIME:     "image/jpeg",
+		OutputProfile: DetailProfileVersion,
+		Content:       encodedTestImage(t, "image/jpeg"),
+	})
+	if err != nil {
+		t.Fatalf("process fallback detail candidate: %v", err)
+	}
+	if commandCount != len(DetailEdges)*len(DetailQualities) {
+		t.Fatalf("fallback search commands = %d", commandCount)
+	}
+	if !bytes.Equal(result.Content, output) || int64(len(result.Content)) != 340*1024 {
+		t.Fatalf("fallback result size = %d", len(result.Content))
+	}
+}
+
+func TestVipsDetailProfileRejectsCandidatesOverHardLimit(t *testing.T) {
+	output := paddedJPEG(t, int(DetailHardLimitBytes)+1)
+	processor := NewVipsCLIProcessor("test-vips", DefaultUploadPolicy())
+	processor.runner = func(_ context.Context, _ string, args ...string) error {
+		outputPath := strings.SplitN(args[2], "[", 2)[0]
+		return os.WriteFile(outputPath, output, 0o600)
+	}
+
+	result, err := processor.Process(context.Background(), ProcessRequest{
+		InputMIME:     "image/jpeg",
+		OutputProfile: DetailProfileVersion,
+		Content:       encodedTestImage(t, "image/jpeg"),
+	})
+	if err != common.ErrInvalidUpload {
+		t.Fatalf("oversized detail candidates result=%+v err=%v", result, err)
+	}
+}
+
+func paddedJPEG(t *testing.T, size int) []byte {
+	t.Helper()
+	content := encodedTestImage(t, "image/jpeg")
+	if len(content) > size {
+		t.Fatalf("base JPEG size %d exceeds requested size %d", len(content), size)
+	}
+	padding := make([]byte, size-len(content))
+	return append(content, padding...)
 }
 
 func TestVipsProcessorKeepsSanitizedResultWhenCompressionFails(t *testing.T) {

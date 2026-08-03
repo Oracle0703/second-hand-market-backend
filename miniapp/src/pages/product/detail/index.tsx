@@ -39,6 +39,7 @@ export default function ProductDetailPage() {
   const product = detail.data?.product
   const imageURLs = (product?.images || []).map((url) => resolveAssetURL(url)).filter(Boolean)
   const originalPriceCent = product?.original_price_cent ?? product?.price_cent ?? 0
+  const [activeImageIndex, setActiveImageIndex] = React.useState(0)
 
   useShareAppMessage(() => ({
     title: product?.title || '二手好物',
@@ -67,18 +68,24 @@ export default function ProductDetailPage() {
             <Swiper
               indicatorDots
               circular
+              current={activeImageIndex}
+              onChange={(event) => setActiveImageIndex(event.detail.current)}
               style={{ width: '100%', height: '420rpx', marginBottom: '12rpx' }}
             >
-              {imageURLs.map((url, idx) => (
-                <SwiperItem key={`${url}-${idx}`}>
-                  <Image
-                    src={url}
-                    mode="aspectFill"
-                    style={{ width: '100%', height: '420rpx', borderRadius: '12rpx' }}
-                    onClick={() => Taro.previewImage({ current: url, urls: imageURLs })}
-                  />
-                </SwiperItem>
-              ))}
+              {imageURLs.map((url, idx) => {
+                const shouldLoadImage = Math.abs(idx - activeImageIndex) <= 1
+
+                return (
+                  <SwiperItem key={`${url}-${idx}`}>
+                    <Image
+                      src={shouldLoadImage ? url : ''}
+                      mode="aspectFill"
+                      style={{ width: '100%', height: '420rpx', borderRadius: '12rpx' }}
+                      onClick={() => Taro.previewImage({ current: url, urls: imageURLs })}
+                    />
+                  </SwiperItem>
+                )
+              })}
             </Swiper>
           ) : product.cover_url ? (
             <Image

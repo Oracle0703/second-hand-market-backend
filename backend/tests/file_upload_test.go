@@ -558,6 +558,245 @@ func (p fakeProcessor) Process(_ context.Context, _ media.ProcessRequest) (media
 	return p.result, nil
 }
 
+type uploadedFile struct {
+	ID        uint64
+	ObjectKey string
+	URL       string
+}
+
+func approvedMerchantToken(t *testing.T, srv *app.Server, prefix string) string {
+	t.Helper()
+	merchantID, username, password := registerMerchant(t, srv, prefix)
+	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 || str(login.Data["token_scope"]) != "full" {
+		t.Fatalf("approved merchant login failed: %+v", login)
+	}
+	return str(login.Data["access_token"])
+}
+
+func uploadProductImage(t *testing.T, srv *app.Server, token string, content []byte, mimeType string) uploadedFile {
+	t.Helper()
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "PRODUCT_IMAGE",
+		"file_name": "product-source",
+		"file_size": len(content),
+		"mime_type": mimeType,
+	}, map[string]string{"Authorization": "Bearer " + token})
+	if presign.Code != 0 {
+		t.Fatalf("product image presign failed: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	upload := requestMultipart(
+		t,
+		srv.Router,
+		http.MethodPost,
+		"/api/v1/files/upload",
+		map[string]string{
+			"file_id":    fmt.Sprintf("%d", fileID),
+			"object_key": objectKey,
+		},
+		"file",
+		"product-source",
+		content,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if upload.Code != 0 {
+		t.Fatalf("product image upload failed: %+v", upload)
+	}
+	return uploadedFile{
+		ID:        fileID,
+		ObjectKey: str(upload.Data["object_key"]),
+		URL:       str(upload.Data["url"]),
+	}
+}
+
+func TestProductImageUploadStoresDetailJPEGAndImmutableCache(t *testing.T) {
+	uploadDir := t.TempDir()
+	srv := newTestServerWithUploadDir(t, uploadDir)
+	token := approvedMerchantToken(t, srv, "detail_upload")
+
+	source := encodedUploadImage(t, "image/png")
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "PRODUCT_IMAGE",
+		"file_name": "photo.png",
+		"file_size": len(source),
+		"mime_type": "image/png",
+	}, map[string]string{"Authorization": "Bearer " + token})
+	if presign.Code != 0 {
+		t.Fatalf("product image presign failed: %+v", presign)
+	}
+	objectKey := str(presign.Data["object_key"])
+	if !strings.HasPrefix(objectKey, "product_image/detail-v1/") || !strings.HasSuffix(objectKey, ".jpg") {
+		t.Fatalf("product presign key = %q", objectKey)
+	}
+
+	fileID := numToUint64(presign.Data["file_id"])
+	upload := requestMultipart(
+		t,
+		srv.Router,
+		http.MethodPost,
+		"/api/v1/files/upload",
+		map[string]string{
+			"file_id":    fmt.Sprintf("%d", fileID),
+			"object_key": objectKey,
+		},
+		"file",
+		"photo.png",
+		source,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if upload.Code != 0 {
+		t.Fatalf("product image upload failed: %+v", upload)
+	}
+	if got := str(upload.Data["object_key"]); got != objectKey {
+		t.Fatalf("final object key = %q, want %q", got, objectKey)
+	}
+
+	var record model.FileRecord
+	if err := srv.DB.First(&record, fileID).Error; err != nil {
+		t.Fatalf("load file record: %v", err)
+	}
+	if record.ScanStatus != model.FileScanPass ||
+		record.MimeType != "image/jpeg" ||
+		!media.IsDetailProductImageKey(record.ObjectKey) ||
+		record.SizeBytes <= 0 ||
+		record.SizeBytes > media.DetailHardLimitBytes {
+		t.Fatalf("stored product detail image metadata invalid: %+v", record)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, str(upload.Data["url"]), nil)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("download product image failed: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("detail cache header = %q", got)
+	}
+	if got := media.DetectImageMIME(w.Body.Bytes()); got != "image/jpeg" {
+		t.Fatalf("download MIME = %q", got)
+	}
+	if int64(len(w.Body.Bytes())) != record.SizeBytes {
+		t.Fatalf("download size = %d, record size = %d", len(w.Body.Bytes()), record.SizeBytes)
+	}
+
+	path, err := media.LocalObjectPath(uploadDir, objectKey)
+	if err != nil {
+		t.Fatalf("resolve stored object: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stored object missing: %v", err)
+	}
+}
+
+func TestProductImageUploadRejectsOversizedDetailOutput(t *testing.T) {
+	uploadDir := t.TempDir()
+	srv := newTestServerWithUploadDir(t, uploadDir)
+	token := approvedMerchantToken(t, srv, "detail_oversized")
+	content := encodedUploadImage(t, "image/jpeg")
+	oversized := append(content, make([]byte, int(media.DetailHardLimitBytes)+1-len(content))...)
+	srv.SetImageProcessor(fakeProcessor{result: media.ProcessResult{
+		OutputMIME: "image/jpeg",
+		OutputExt:  ".jpg",
+		Content:    oversized,
+		Width:      4,
+		Height:     3,
+	}})
+
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "PRODUCT_IMAGE",
+		"file_name": "photo.jpg",
+		"file_size": len(content),
+		"mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + token})
+	if presign.Code != 0 {
+		t.Fatalf("product image presign failed: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	upload := requestMultipart(
+		t,
+		srv.Router,
+		http.MethodPost,
+		"/api/v1/files/upload",
+		map[string]string{
+			"file_id":    fmt.Sprintf("%d", fileID),
+			"object_key": objectKey,
+		},
+		"file",
+		"photo.jpg",
+		content,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if upload.Code != 10008 {
+		t.Fatalf("oversized detail output should be rejected: %+v", upload)
+	}
+	assertRejectedUploadState(t, srv, uploadDir, fileID, objectKey)
+}
+
+func TestProductImageUploadNoReplaceConflictKeepsExistingBytes(t *testing.T) {
+	uploadDir := t.TempDir()
+	srv := newTestServerWithUploadDir(t, uploadDir)
+	token := approvedMerchantToken(t, srv, "detail_conflict")
+	content := encodedUploadImage(t, "image/jpeg")
+
+	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
+		"biz_type":  "PRODUCT_IMAGE",
+		"file_name": "photo.jpg",
+		"file_size": len(content),
+		"mime_type": "image/jpeg",
+	}, map[string]string{"Authorization": "Bearer " + token})
+	if presign.Code != 0 {
+		t.Fatalf("product image presign failed: %+v", presign)
+	}
+	fileID := numToUint64(presign.Data["file_id"])
+	objectKey := str(presign.Data["object_key"])
+	path, err := media.LocalObjectPath(uploadDir, objectKey)
+	if err != nil {
+		t.Fatalf("resolve conflict target: %v", err)
+	}
+	if err := media.PublishObjectNoReplace(path, []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write existing target: %v", err)
+	}
+
+	upload := requestMultipart(
+		t,
+		srv.Router,
+		http.MethodPost,
+		"/api/v1/files/upload",
+		map[string]string{
+			"file_id":    fmt.Sprintf("%d", fileID),
+			"object_key": objectKey,
+		},
+		"file",
+		"photo.jpg",
+		content,
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if upload.Code != 10010 {
+		t.Fatalf("no-replace conflict should be reported: %+v", upload)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read existing target: %v", err)
+	}
+	if string(stored) != "existing" {
+		t.Fatalf("existing target overwritten: %q", stored)
+	}
+	var record model.FileRecord
+	if err := srv.DB.First(&record, fileID).Error; err != nil {
+		t.Fatalf("load conflict file record: %v", err)
+	}
+	if record.ScanStatus != model.FileScanPending || record.URL != "" {
+		t.Fatalf("conflict promoted file record: %+v", record)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("conflict left temporary file: %v", err)
+	}
+}
+
 func TestFileUploadRejectsInvalidProcessorContract(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -57,3 +57,17 @@
 6. 回滚准备：
    - 保留上一版前后端构建产物
    - 若上线后出现 `10010/10005` 异常激增，优先回滚后端并保留日志样本。
+
+## 7. 商品图片 `detail-v1` 专项发布步骤
+
+| 阶段 | 检查项 |
+| --- | --- |
+| 小程序版本 | 确认线上小程序版本或 commit 已包含相对 `/uploads/...` 图片地址解析能力 |
+| 镜像产物 | 同一镜像必须包含 `/srv/server`、`/srv/migrate`、`/srv/backfill-product-images` 和 `/srv/migrations/` |
+| 第一阶段配置 | API 显式配置 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false`、`IMAGE_PROCESSOR_DRIVER=vips`、`AUTO_MIGRATE=false`、`SEED_DEFAULTS=false`、`FILE_PUBLIC_BASE_URL=` |
+| 预检 | 在维护窗口前执行基础谓词检查和 `/srv/backfill-product-images --dry-run --limit 100`，候选超过 100 或预计超过 30 分钟则停止并重新评审 |
+| 写冻结 | 冻结上传、确认、商品创建、商品编辑和商品删除写接口；确认读接口和 `/uploads/...` 仍可用 |
+| 迁移 | 使用 `/srv/migrate --migration 0004_image_backfill_ledger` 显式执行账本前向迁移 |
+| 回填 | 使用同一 `run-id` 先执行 `--apply --limit 1` canary，再分批 apply；期间保持 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=false` |
+| 严格切换 | 仅当严格谓词违规、阻断异常和未处置 `PROCESSING/STAGED/FAILED` 均为 0 后，将全部 API 实例切到 `REQUIRE_DETAIL_V1_PRODUCT_IMAGES=true` |
+| 延迟清理 | 各条目 `cleanup_after` 到期后，用同一 `run-id` 执行 `--cleanup`；失败项保留对象和错误码，重试或人工处理 |

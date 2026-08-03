@@ -207,9 +207,10 @@ func TestRunStopsAtFirstFailureAndRedactsDetails(t *testing.T) {
 
 func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 	wantStatements := map[string]int{
-		"0001_init":                13,
-		"0002_buyer_domain":        5,
-		"0003_buyer_auth_provider": 2,
+		"0001_init":                  13,
+		"0002_buyer_domain":          5,
+		"0003_buyer_auth_provider":   2,
+		"0004_image_backfill_ledger": 2,
 	}
 	for migrationID, expectedCount := range wantStatements {
 		spec := migrationCatalog[migrationID]

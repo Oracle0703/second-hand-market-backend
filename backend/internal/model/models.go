@@ -211,6 +211,35 @@ type FileRecord struct {
 	CreatedAt    time.Time `gorm:"index:idx_biz_type_created,priority:2"`
 }
 
+type ImageBackfillRun struct {
+	ID             string `gorm:"primaryKey;size:64"`
+	ProfileVersion string `gorm:"size:32;index"`
+	CreatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
+type ImageBackfillItem struct {
+	ID               uint64  `gorm:"primaryKey"`
+	RunID            string  `gorm:"size:64;uniqueIndex:uk_backfill_run_file,priority:1;index"`
+	FileID           uint64  `gorm:"uniqueIndex:uk_backfill_run_file,priority:2;index"`
+	SourceObjectKey  string  `gorm:"size:255"`
+	TargetObjectKey  string  `gorm:"size:255"`
+	ProfileVersion   string  `gorm:"size:32;index"`
+	SourceSHA256     *string `gorm:"size:64"`
+	OutputSHA256     *string `gorm:"size:64"`
+	SourceSizeBytes  int64
+	OutputSizeBytes  *int64
+	Status           string `gorm:"size:16;index"`
+	Attempts         int
+	ErrorCode        *string `gorm:"size:64"`
+	CommittedAt      *time.Time
+	CleanupAfter     *time.Time `gorm:"index"`
+	CleanupStatus    string     `gorm:"size:16;index"`
+	CleanupErrorCode *string    `gorm:"size:64"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type OperationLog struct {
 	ID           uint64  `gorm:"primaryKey"`
 	RequestID    string  `gorm:"size:64"`

@@ -46,39 +46,41 @@ var knownUnsafeProductionJWTSecrets = map[string]struct{}{
 }
 
 type Config struct {
-	AppEnv                     string
-	Addr                       string
-	DBTarget                   string
-	DBDriver                   string
-	DBDSN                      string
-	DBExpectedDatabase         string
-	DBExpectedServerUUID       string
-	DBExpectedUser             string
-	JWTAccessSecret            string
-	JWTRefreshSecret           string
-	AccessTTL                  time.Duration
-	RefreshTTL                 time.Duration
-	AutoMigrate                bool
-	SeedDefaults               bool
-	FileStorageProvider        string
-	FileUploadLocalDir         string
-	FilePublicBaseURL          string
-	FileUploadMaxBytes         int64
-	ImageCompressTargetBytes   int64
-	ImageProcessorDriver       string
-	ImageProcessorBin          string
-	BuyerWechatLoginMode       string
-	BuyerWechatAppID           string
-	BuyerWechatAppSecret       string
-	BuyerWechatCode2SessionURL string
-	BuyerWechatHTTPTimeout     time.Duration
-	BuyerDouyinLoginMode       string
-	BuyerDouyinAppID           string
-	BuyerDouyinAppSecret       string
-	BuyerDouyinCode2SessionURL string
-	BuyerDouyinHTTPTimeout     time.Duration
+	AppEnv                       string
+	Addr                         string
+	DBTarget                     string
+	DBDriver                     string
+	DBDSN                        string
+	DBExpectedDatabase           string
+	DBExpectedServerUUID         string
+	DBExpectedUser               string
+	JWTAccessSecret              string
+	JWTRefreshSecret             string
+	AccessTTL                    time.Duration
+	RefreshTTL                   time.Duration
+	AutoMigrate                  bool
+	SeedDefaults                 bool
+	FileStorageProvider          string
+	FileUploadLocalDir           string
+	FilePublicBaseURL            string
+	FileUploadMaxBytes           int64
+	ImageCompressTargetBytes     int64
+	ImageProcessorDriver         string
+	ImageProcessorBin            string
+	RequireDetailV1ProductImages bool
+	BuyerWechatLoginMode         string
+	BuyerWechatAppID             string
+	BuyerWechatAppSecret         string
+	BuyerWechatCode2SessionURL   string
+	BuyerWechatHTTPTimeout       time.Duration
+	BuyerDouyinLoginMode         string
+	BuyerDouyinAppID             string
+	BuyerDouyinAppSecret         string
+	BuyerDouyinCode2SessionURL   string
+	BuyerDouyinHTTPTimeout       time.Duration
 
-	runtimeLoadErr error
+	runtimeLoadErr                  error
+	requireDetailV1ProductImagesSet bool
 }
 
 func LoadConfig() Config {
@@ -117,6 +119,7 @@ func LoadConfig() Config {
 	}
 	cfg.loadRuntimeBool("AUTO_MIGRATE", &cfg.AutoMigrate)
 	cfg.loadRuntimeBool("SEED_DEFAULTS", &cfg.SeedDefaults)
+	cfg.loadRuntimeBoolFlag("REQUIRE_DETAIL_V1_PRODUCT_IMAGES", &cfg.RequireDetailV1ProductImages, &cfg.requireDetailV1ProductImagesSet)
 	if value := os.Getenv("ACCESS_TTL_SECONDS"); value != "" {
 		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
 			cfg.AccessTTL = time.Duration(seconds) * time.Second
@@ -137,9 +140,16 @@ func LoadConfig() Config {
 }
 
 func (c *Config) loadRuntimeBool(name string, target *bool) {
+	c.loadRuntimeBoolFlag(name, target, nil)
+}
+
+func (c *Config) loadRuntimeBoolFlag(name string, target *bool, seen *bool) {
 	raw, ok := os.LookupEnv(name)
 	if !ok {
 		return
+	}
+	if seen != nil {
+		*seen = true
 	}
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
@@ -201,6 +211,14 @@ func (c Config) ValidateRuntime() error {
 		}
 		if c.SeedDefaults {
 			return fmt.Errorf("SEED_DEFAULTS must be false when APP_ENV is production or DB_TARGET is remote-development")
+		}
+	}
+	if env == appEnvProduction {
+		if !c.requireDetailV1ProductImagesSet {
+			return fmt.Errorf("REQUIRE_DETAIL_V1_PRODUCT_IMAGES must be explicitly configured in production")
+		}
+		if !strings.EqualFold(strings.TrimSpace(c.ImageProcessorDriver), "vips") {
+			return fmt.Errorf("IMAGE_PROCESSOR_DRIVER must be vips in production")
 		}
 	}
 	if target == dbTargetRemoteDevelopment {

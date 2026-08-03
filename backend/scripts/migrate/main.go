@@ -40,6 +40,11 @@ var migrationCatalog = map[string]migrationSpec{
 		FileName: "0003_buyer_auth_provider.up.sql",
 		SHA256:   "36fcc18878f9248f7d1e9bcce47f4cb726a8371048df10899e5ed082e76de036",
 	},
+	"0004_image_backfill_ledger": {
+		ID:       "0004_image_backfill_ledger",
+		FileName: "0004_image_backfill_ledger.up.sql",
+		SHA256:   "fe3fe80737b7ebb1786e7dc9ba6a021fa69c9523af44c7994a66513e1ab0c159",
+	},
 }
 
 type migrationDependencies struct {

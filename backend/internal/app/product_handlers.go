@@ -10,6 +10,7 @@ import (
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
+	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/model"
 	"second-hand-market-backend/backend/internal/stateflow"
 )
@@ -64,6 +65,9 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		product.CoverFileID = &cover
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := s.validateMerchantProductImageFiles(tx, actor, req.ImageFileIDs); err != nil {
+			return err
+		}
 		if err := tx.Create(&product).Error; err != nil {
 			return err
 		}
@@ -76,7 +80,7 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		s.writeOperationLog(c, tx, "product", product.ID, "product_create", nil, &to, common.CodeOK, &actor.MerchantID, gin.H{"title": product.Title})
 		return nil
 	}); err != nil {
-		common.Fail(c, common.ErrInternal)
+		common.Fail(c, err)
 		return
 	}
 	common.Success(c, gin.H{
@@ -163,6 +167,9 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 			if !allowed["image_file_ids"] || len(req.ImageFileIDs) == 0 || len(req.ImageFileIDs) > 5 {
 				return common.ErrInvalidTransition
 			}
+			if err := s.validateMerchantProductImageFiles(tx, actor, req.ImageFileIDs); err != nil {
+				return err
+			}
 			cover := req.ImageFileIDs[0]
 			product.CoverFileID = &cover
 			if err := tx.Where("product_id = ?", product.ID).Delete(&model.ProductImage{}).Error; err != nil {
@@ -186,6 +193,84 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 		return
 	}
 	common.Success(c, gin.H{"product_id": id, "status": "UPDATED", "updated_at": time.Now().Format(time.RFC3339)})
+}
+
+func (s *Server) validateMerchantProductImageFiles(tx *gorm.DB, actor common.Actor, ids []uint64) error {
+	if len(ids) == 0 || len(ids) > 5 {
+		return common.ErrInvalidUpload
+	}
+	seen := make(map[uint64]struct{}, len(ids))
+	uniqueIDs := make([]uint64, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			return common.ErrInvalidUpload
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+
+	var files []model.FileRecord
+	if err := tx.Where("id IN ?", uniqueIDs).Find(&files).Error; err != nil {
+		return err
+	}
+	if len(files) != len(uniqueIDs) {
+		return common.ErrInvalidUpload
+	}
+	filesByID := make(map[uint64]model.FileRecord, len(files))
+	uploaderIDs := make([]uint64, 0, len(files))
+	for _, file := range files {
+		filesByID[file.ID] = file
+		if file.UploaderID != nil {
+			uploaderIDs = append(uploaderIDs, *file.UploaderID)
+		}
+	}
+
+	merchantByAccountID, err := merchantIDsForAccounts(tx, uploaderIDs)
+	if err != nil {
+		return err
+	}
+	for _, id := range uniqueIDs {
+		file := filesByID[id]
+		if file.BizType != model.FileBizProductImage ||
+			file.ScanStatus != model.FileScanPass ||
+			file.UploaderType != model.UserTypeMerchant ||
+			file.UploaderID == nil {
+			return common.ErrInvalidUpload
+		}
+		merchantID, ok := merchantByAccountID[*file.UploaderID]
+		if !ok || merchantID != actor.MerchantID {
+			return common.ErrInvalidUpload
+		}
+		if s.cfg.RequireDetailV1ProductImages && !isStrictDetailProductImageRecord(file) {
+			return common.ErrInvalidUpload
+		}
+	}
+	return nil
+}
+
+func merchantIDsForAccounts(tx *gorm.DB, accountIDs []uint64) (map[uint64]uint64, error) {
+	result := make(map[uint64]uint64, len(accountIDs))
+	if len(accountIDs) == 0 {
+		return result, nil
+	}
+	var accounts []model.MerchantAccount
+	if err := tx.Unscoped().Where("id IN ?", accountIDs).Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	for _, account := range accounts {
+		result[account.ID] = account.MerchantID
+	}
+	return result, nil
+}
+
+func isStrictDetailProductImageRecord(file model.FileRecord) bool {
+	return media.IsDetailProductImageKey(file.ObjectKey) &&
+		strings.EqualFold(strings.TrimSpace(file.MimeType), "image/jpeg") &&
+		file.SizeBytes > 0 &&
+		file.SizeBytes <= media.DetailHardLimitBytes
 }
 
 func (s *Server) handleProductDetail(c *gin.Context) {
@@ -416,6 +501,19 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 					referenced[row.FileID] = struct{}{}
 				}
 			}
+			coverRefs := make([]refRow, 0)
+			if err := tx.Model(&model.Product{}).
+				Select("cover_file_id AS file_id, COUNT(*) AS ref_count").
+				Where("cover_file_id IN ? AND id <> ? AND deleted_at IS NULL", fileIDs, product.ID).
+				Group("cover_file_id").
+				Scan(&coverRefs).Error; err != nil {
+				return err
+			}
+			for _, row := range coverRefs {
+				if row.RefCount > 0 {
+					referenced[row.FileID] = struct{}{}
+				}
+			}
 			for _, fileID := range fileIDs {
 				if _, inUse := referenced[fileID]; !inUse {
 					deletableFileIDs = append(deletableFileIDs, fileID)
@@ -426,27 +524,41 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 		if len(deletableFileIDs) > 0 {
 			files := make([]model.FileRecord, 0, len(deletableFileIDs))
 			if err := tx.Where(
-				"id IN ? AND biz_type = ? AND uploader_type = ? AND uploader_id = ?",
+				"id IN ? AND biz_type = ? AND uploader_type = ?",
 				deletableFileIDs,
 				model.FileBizProductImage,
 				model.UserTypeMerchant,
-				actor.UserID,
 			).Find(&files).Error; err != nil {
 				return err
 			}
 			if len(files) > 0 {
 				ids := make([]uint64, 0, len(files))
+				uploaderIDs := make([]uint64, 0, len(files))
 				for _, file := range files {
+					if file.UploaderID != nil {
+						uploaderIDs = append(uploaderIDs, *file.UploaderID)
+					}
+				}
+				merchantByAccountID, err := merchantIDsForAccounts(tx, uploaderIDs)
+				if err != nil {
+					return err
+				}
+				for _, file := range files {
+					if file.UploaderID == nil || merchantByAccountID[*file.UploaderID] != actor.MerchantID {
+						continue
+					}
 					ids = append(ids, file.ID)
 					objectKey := strings.TrimSpace(file.ObjectKey)
 					if objectKey != "" {
 						objectKeys = append(objectKeys, objectKey)
 					}
 				}
-				if err := tx.Where("id IN ?", ids).Delete(&model.FileRecord{}).Error; err != nil {
-					return err
+				if len(ids) > 0 {
+					if err := tx.Where("id IN ?", ids).Delete(&model.FileRecord{}).Error; err != nil {
+						return err
+					}
+					deletedFileIDs = append(deletedFileIDs, ids...)
 				}
-				deletedFileIDs = append(deletedFileIDs, ids...)
 			}
 		}
 

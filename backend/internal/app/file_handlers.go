@@ -83,11 +83,16 @@ func (s *Server) handlePresign(c *gin.Context) {
 		return
 	}
 	objectKey := fmt.Sprintf("%s/%s%s", strings.ToLower(bizType), common.BuildBizNo("F"), ext)
+	recordMIME := mimeType
+	if bizType == model.FileBizProductImage {
+		objectKey = fmt.Sprintf("product_image/detail-v1/%s.jpg", common.BuildBizNo("F"))
+		recordMIME = "image/jpeg"
+	}
 	file := model.FileRecord{
 		BizType:      bizType,
 		ObjectKey:    objectKey,
 		URL:          "",
-		MimeType:     mimeType,
+		MimeType:     recordMIME,
 		SizeBytes:    req.FileSize,
 		UploaderType: uploaderType,
 		UploaderID:   uploaderID,
@@ -167,67 +172,59 @@ func (s *Server) handleUploadFile(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	processed, err := processor.Process(c.Request.Context(), media.ProcessRequest{
+	processRequest := media.ProcessRequest{
 		FileName:  formFile.Filename,
 		InputMIME: file.MimeType,
 		Content:   content,
-	})
+	}
+	if file.BizType == model.FileBizProductImage {
+		processRequest.OutputProfile = media.DetailProfileVersion
+	}
+	processed, err := processor.Process(c.Request.Context(), processRequest)
 	if err != nil {
 		common.Fail(c, err)
 		return
 	}
 	outputMIME := strings.ToLower(strings.TrimSpace(processed.OutputMIME))
 	outputExt := media.MIMEExt(outputMIME)
-	expectedOutputMIME := media.CanonicalImageMIME(file.MimeType)
-	if len(processed.Content) == 0 ||
-		int64(len(processed.Content)) > limit ||
-		outputExt == "" ||
-		outputMIME != expectedOutputMIME ||
-		strings.ToLower(strings.TrimSpace(processed.OutputExt)) != outputExt ||
-		media.DetectImageMIME(processed.Content) != outputMIME {
-		common.Fail(c, common.ErrInvalidUpload)
-		return
-	}
-
-	finalObjectKey, err := replaceObjectKeyExtension(file.ObjectKey, outputExt)
-	if err != nil {
-		common.Fail(c, common.ErrInvalidUpload)
-		return
+	finalObjectKey := file.ObjectKey
+	if file.BizType == model.FileBizProductImage {
+		if len(processed.Content) == 0 ||
+			outputMIME != "image/jpeg" ||
+			strings.ToLower(strings.TrimSpace(processed.OutputExt)) != ".jpg" ||
+			!media.IsDetailProductImageKey(file.ObjectKey) ||
+			media.DetectImageMIME(processed.Content) != "image/jpeg" {
+			common.Fail(c, common.ErrInvalidUpload)
+			return
+		}
+		if _, _, err := media.ValidateDetailJPEG(media.DefaultDetailImagePolicy(), processed.Content); err != nil {
+			common.Fail(c, err)
+			return
+		}
+	} else {
+		expectedOutputMIME := media.CanonicalImageMIME(file.MimeType)
+		if len(processed.Content) == 0 ||
+			int64(len(processed.Content)) > limit ||
+			outputExt == "" ||
+			outputMIME != expectedOutputMIME ||
+			strings.ToLower(strings.TrimSpace(processed.OutputExt)) != outputExt ||
+			media.DetectImageMIME(processed.Content) != outputMIME {
+			common.Fail(c, common.ErrInvalidUpload)
+			return
+		}
+		finalObjectKey, err = replaceObjectKeyExtension(file.ObjectKey, outputExt)
+		if err != nil {
+			common.Fail(c, common.ErrInvalidUpload)
+			return
+		}
 	}
 	dstPath, err := s.localUploadPath(finalObjectKey)
 	if err != nil {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
-	}
-	tmpPath := dstPath + ".tmp"
-	out, err := os.Create(tmpPath)
-	if err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
-	}
-	writeAndClose := func() error {
-		defer out.Close()
-		if _, err := out.Write(processed.Content); err != nil {
-			return err
-		}
-		return nil
-	}
-	if err := writeAndClose(); err != nil {
-		_ = os.Remove(tmpPath)
-		if err == common.ErrInvalidUpload {
-			common.Fail(c, err)
-			return
-		}
-		common.Fail(c, common.ErrInternal)
-		return
-	}
-	if err := os.Rename(tmpPath, dstPath); err != nil {
-		_ = os.Remove(tmpPath)
-		common.Fail(c, common.ErrInternal)
+	if err := media.PublishObjectNoReplace(dstPath, processed.Content, 0o600); err != nil {
+		common.Fail(c, err)
 		return
 	}
 
@@ -307,20 +304,7 @@ func (s *Server) loadFileRecordAndAuthorize(c *gin.Context, fileID uint64) (*mod
 }
 
 func (s *Server) localUploadPath(objectKey string) (string, error) {
-	root, err := filepath.Abs(s.cfg.FileUploadLocalDir)
-	if err != nil {
-		return "", err
-	}
-	cleanKey := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+objectKey)), "/")
-	target := filepath.Join(root, filepath.FromSlash(cleanKey))
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return "", err
-	}
-	if rel == "." || strings.HasPrefix(rel, "..") {
-		return "", common.ErrInvalidUpload
-	}
-	return target, nil
+	return media.LocalObjectPath(s.cfg.FileUploadLocalDir, objectKey)
 }
 
 func replaceObjectKeyExtension(objectKey, ext string) (string, error) {
@@ -376,6 +360,9 @@ func (s *Server) handlePublicUpload(c *gin.Context) {
 	c.Header("Content-Type", mimeType)
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Security-Policy", "sandbox; default-src 'none'")
+	if media.IsDetailProductImageKey(objectKey) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	}
 	http.ServeContent(c.Writer, c.Request, filepath.Base(objectKey), stat.ModTime(), file)
 }
 
