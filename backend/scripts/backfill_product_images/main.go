@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/databasecmd"
@@ -523,18 +522,22 @@ func applyCandidate(db *gorm.DB, root string, file candidateFile, output []byte,
 }
 
 func ensureRun(db *gorm.DB, runID string) error {
-	return db.Table("image_backfill_runs").
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"profile_version": media.DetailProfileVersion,
-			}),
-		}).
-		Create(map[string]any{
-			"id":              runID,
-			"profile_version": media.DetailProfileVersion,
-			"created_at":      time.Now(),
-		}).Error
+	switch db.Dialector.Name() {
+	case "mysql":
+		return db.Exec(
+			"INSERT INTO image_backfill_runs (id, profile_version, created_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE profile_version = VALUES(profile_version)",
+			runID,
+			media.DetailProfileVersion,
+			time.Now(),
+		).Error
+	default:
+		return db.Exec(
+			"INSERT INTO image_backfill_runs (id, profile_version, created_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET profile_version = excluded.profile_version",
+			runID,
+			media.DetailProfileVersion,
+			time.Now(),
+		).Error
+	}
 }
 
 func loadBackfillItem(db *gorm.DB, runID string, fileID uint64) (model.ImageBackfillItem, bool, error) {

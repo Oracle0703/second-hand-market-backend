@@ -160,6 +160,24 @@ func TestEnsureRunCreatesLedgerRunByID(t *testing.T) {
 	}
 }
 
+func TestEnsureRunDoesNotPolluteConnectionStatement(t *testing.T) {
+	fx := newBackfillFixture(t)
+
+	const runID = "IMGSCOPE1"
+	err := fx.db.Connection(func(conn *gorm.DB) error {
+		if err := ensureRun(conn, runID); err != nil {
+			return err
+		}
+		var items []model.ImageBackfillItem
+		return conn.Where("run_id = ? AND status IN ?", runID, []string{statusProcessing, statusStaged}).
+			Order("file_id ASC").
+			Find(&items).Error
+	})
+	if err != nil {
+		t.Fatalf("query image_backfill_items after ensureRun: %v", err)
+	}
+}
+
 func TestDryRunWritesJSONLineWithPredictedTarget(t *testing.T) {
 	fx := newBackfillFixture(t)
 	var output bytes.Buffer
