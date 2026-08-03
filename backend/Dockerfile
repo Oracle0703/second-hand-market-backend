@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/backfill-product-imag
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libheif1 libvips-tools \
+  && apt-get install -y --no-install-recommends ca-certificates curl libheif1 libvips-tools \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv

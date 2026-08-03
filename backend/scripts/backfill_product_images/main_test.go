@@ -201,6 +201,7 @@ func TestImageDeliveryPackaging(t *testing.T) {
 		"COPY --from=build /out/migrate /srv/migrate",
 		"COPY --from=build /out/backfill-product-images /srv/backfill-product-images",
 		"COPY backend/migrations /srv/migrations",
+		"ca-certificates curl libheif1 libvips-tools",
 	} {
 		if !bytes.Contains(dockerfile, []byte(snippet)) {
 			t.Fatalf("Dockerfile missing %q", snippet)
