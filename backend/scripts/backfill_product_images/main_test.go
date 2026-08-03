@@ -195,6 +195,7 @@ func TestImageDeliveryPackaging(t *testing.T) {
 		t.Fatalf("read Dockerfile: %v", err)
 	}
 	for _, snippet := range []string{
+		"ENV GOPROXY=https://goproxy.cn,direct",
 		"go build -o /out/migrate ./scripts/migrate",
 		"go build -o /out/backfill-product-images ./scripts/backfill_product_images",
 		"COPY --from=build /out/migrate /srv/migrate",
