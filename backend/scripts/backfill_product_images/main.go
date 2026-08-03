@@ -524,7 +524,12 @@ func applyCandidate(db *gorm.DB, root string, file candidateFile, output []byte,
 
 func ensureRun(db *gorm.DB, runID string) error {
 	return db.Table("image_backfill_runs").
-		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"profile_version": media.DetailProfileVersion,
+			}),
+		}).
 		Create(map[string]any{
 			"id":              runID,
 			"profile_version": media.DetailProfileVersion,
