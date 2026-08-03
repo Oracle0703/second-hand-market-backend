@@ -5,7 +5,7 @@
 2. 页面按角色与 scope 鉴权：未登录、平台管理员、商家主账号（`full/onboarding`）。
 3. 商品状态采用：`DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED`。
 4. 分类采用两级字典，页面通过分类查询接口动态加载。
-5. `stock` 在本期固定为 `1`，前端仅展示不允许修改。
+5. `stock` 为当前可用库存；商品列表和详情提供“调整库存”入口，创建/编辑页保留基础库存输入。
 
 ## 1. 路由与信息架构
 
@@ -122,19 +122,25 @@
   - 上架：`POST /api/v1/merchant/products/:id/on-shelf`
   - 下架：`POST /api/v1/merchant/products/:id/off-shelf`
   - 关闭：`POST /api/v1/merchant/products/:id/close`
+  - 调整库存：`POST /api/v1/merchant/products/:id/stock-adjustments`
 - 状态展示规则：
-  - `DRAFT`：显示“编辑/上架/关闭”
-  - `ON_SHELF`：显示“下架/创建订单/关闭”
-  - `OFF_SHELF`：显示“编辑/上架/关闭”
+  - `DRAFT`：显示“编辑/上架/调整库存/关闭”
+  - `ON_SHELF`：显示“下架/创建订单/调整库存/关闭”
+  - `OFF_SHELF`：显示“编辑/上架/调整库存/关闭”
   - `LOCKED`：显示“查看订单”，禁用编辑与上下架
   - `SOLD/CLOSED`：仅允许查看详情
+- 库存调整弹窗：
+  - 展示当前库存。
+  - 支持 `补充库存`、`减少库存`、`线下售出` 三类调整。
+  - 必填调整数量和调整原因。
+  - `LOCKED/SOLD/CLOSED` 商品不展示可执行调整入口。
 - PC/移动差异：
   - PC 操作列直接展示按钮。
   - 移动端卡片“更多”菜单。
 
 #### 新建商品页（`/merchant/products/new`）
 - 角色：MerchantOwner。
-- 核心内容：标题、价格、成色、库存（固定 1，只读展示）、描述、图片、分类选择。
+- 核心内容：标题、价格、成色、库存数量、描述、图片、分类选择。
 - 关键动作 -> 接口：
   - 获取一级/二级分类：`GET /api/v1/merchant/categories`
   - 创建商品：`POST /api/v1/merchant/products`
@@ -142,7 +148,7 @@
 - 分类交互规则：
   - 先选一级再加载二级。
   - 必选二级分类后才允许提交。
-  - 库存不提供可编辑输入，提交时不传或仅传固定值 `1`。
+  - 库存必须为大于 `0` 的整数。
 
 #### 商品编辑页（`/merchant/products/:productId/edit`）
 - 角色：MerchantOwner。
@@ -151,11 +157,12 @@
   - 更新商品：`PUT /api/v1/merchant/products/:id`
   - 分类查询：`GET /api/v1/merchant/categories`
 - 字段可编辑规则：
-  - `DRAFT/OFF_SHELF`：除库存外可编辑（标题、描述、分类、价格、成色、图片）。
+  - `DRAFT/OFF_SHELF`：可编辑标题、描述、分类、价格、成色、图片和库存。
   - `ON_SHELF`：仅描述、图片可编辑。
   - `LOCKED/SOLD/CLOSED`：禁止编辑。
 - 库存规则：
-  - 编辑页不提供 `stock` 编辑控件，库存固定展示 `1`。
+  - 编辑页兼容保留基础库存输入。
+  - 日常盘点、减少库存、线下售出扣减优先通过商品列表/详情的“调整库存”入口完成，以便后端记录调整流水和原因。
 - 前后端约束：
   - 前端禁用不可编辑字段和提交按钮。
   - 后端二次校验字段变更，拒绝越权更新。
@@ -166,9 +173,11 @@
   - 详情：`GET /api/v1/merchant/products/:id`
   - 上架/下架/关闭：对应商品状态接口
   - 创建订单：`POST /api/v1/merchant/orders`
+  - 调整库存：`POST /api/v1/merchant/products/:id/stock-adjustments`
 - 状态展示规则：
   - `LOCKED` 明确展示“占用中（待完成/待关闭订单）”。
   - 若 `active_order_id` 存在，展示“查看关联订单”按钮。
+  - `DRAFT/ON_SHELF/OFF_SHELF` 展示“调整库存”按钮；`LOCKED/SOLD/CLOSED` 不展示可执行调整入口。
 
 #### 订单列表页（`/merchant/orders`）
 - 角色：MerchantOwner。
