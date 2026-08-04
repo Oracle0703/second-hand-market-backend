@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -10,7 +11,9 @@ import (
 	"second-hand-market-backend/backend/internal/model"
 )
 
-func OptionalAuth(accessSecret string) gin.HandlerFunc {
+type AccessIdentityResolver func(context.Context, *auth.AccessClaims) (common.Actor, error)
+
+func OptionalAuth(accessSecret string, resolveIdentity AccessIdentityResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		head := c.GetHeader("Authorization")
 		if head == "" {
@@ -29,7 +32,18 @@ func OptionalAuth(accessSecret string) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		common.SetActor(c, common.Actor{UserID: claims.UserID, UserType: claims.UserType, Role: claims.Role, MerchantID: claims.MerchantID, Scope: claims.Scope, SessionID: claims.SessionID})
+		if resolveIdentity == nil {
+			common.Fail(c, common.ErrInternal)
+			c.Abort()
+			return
+		}
+		actor, err := resolveIdentity(c.Request.Context(), claims)
+		if err != nil {
+			common.Fail(c, err)
+			c.Abort()
+			return
+		}
+		common.SetActor(c, actor)
 		c.Next()
 	}
 }

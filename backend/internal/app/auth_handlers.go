@@ -174,80 +174,81 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
-	var session model.AuthSession
-	if err := s.DB.Where("id = ?", claims.SessionID).First(&session).Error; err != nil {
+	resolved, err := s.sessionIdentity.Resolve(
+		c.Request.Context(),
+		claims.SessionID,
+		claims.UserType,
+		claims.UserID,
+	)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	if resolved.RefreshTokenHash != common.SHA256(req.RefreshToken) {
 		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
-	if session.RevokedAt != nil || session.ExpiredAt.Before(time.Now()) || session.RefreshTokenHash != common.SHA256(req.RefreshToken) {
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
+	actor := resolved.Actor
 
-	role := ""
-	merchantID := uint64(0)
-	scope := "full"
-	switch claims.UserType {
-	case model.UserTypeAdmin:
-		var admin model.AdminUser
-		if err := s.DB.Where("id = ?", claims.UserID).First(&admin).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if admin.Status == model.AccountStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
-		}
-		role = admin.Role
-	case model.UserTypeMerchant:
-		var acct model.MerchantAccount
-		if err := s.DB.Where("id = ?", claims.UserID).First(&acct).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if acct.Status == model.AccountStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
-		}
-		role = acct.Role
-		merchantID = acct.MerchantID
-		var merchant model.Merchant
-		if err := s.DB.Where("id = ?", acct.MerchantID).First(&merchant).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if merchant.ReviewStatus != model.ReviewApproved {
-			scope = "onboarding"
-		}
-	case model.UserTypeBuyer:
-		var buyer model.BuyerUser
-		if err := s.DB.Where("id = ?", claims.UserID).First(&buyer).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if buyer.Status == model.BuyerStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
-		}
-		role = model.UserTypeBuyer
-	default:
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
-
-	newRefresh, refreshExp, err := auth.BuildRefreshToken(s.cfg.JWTRefreshSecret, auth.RefreshClaims{UserID: claims.UserID, UserType: claims.UserType, SessionID: session.ID}, s.cfg.RefreshTTL)
+	newRefresh, refreshExp, err := auth.BuildRefreshToken(s.cfg.JWTRefreshSecret, auth.RefreshClaims{
+		UserID:    actor.UserID,
+		UserType:  actor.UserType,
+		SessionID: actor.SessionID,
+	}, s.cfg.RefreshTTL)
 	if err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	access, _, err := auth.BuildAccessToken(s.cfg.JWTAccessSecret, auth.AccessClaims{UserID: claims.UserID, UserType: claims.UserType, Role: role, MerchantID: merchantID, Scope: scope, SessionID: session.ID}, s.cfg.AccessTTL)
+	access, _, err := auth.BuildAccessToken(s.cfg.JWTAccessSecret, auth.AccessClaims{
+		UserID:     actor.UserID,
+		UserType:   actor.UserType,
+		Role:       actor.Role,
+		MerchantID: actor.MerchantID,
+		Scope:      actor.Scope,
+		SessionID:  actor.SessionID,
+	}, s.cfg.AccessTTL)
 	if err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	if err := s.DB.Model(&model.AuthSession{}).Where("id = ?", session.ID).Updates(map[string]interface{}{"refresh_token_hash": common.SHA256(newRefresh), "expired_at": refreshExp}).Error; err != nil {
+	now := time.Now()
+	result := s.DB.WithContext(c.Request.Context()).
+		Model(&model.AuthSession{}).
+		Where(
+			"id = ? AND user_type = ? AND user_id = ? AND revoked_at IS NULL AND expired_at > ? AND refresh_token_hash = ?",
+			actor.SessionID,
+			actor.UserType,
+			actor.UserID,
+			now,
+			resolved.RefreshTokenHash,
+		).
+		Updates(map[string]interface{}{
+			"refresh_token_hash": common.SHA256(newRefresh),
+			"expired_at":         refreshExp,
+		})
+	if result.Error != nil {
 		common.Fail(c, common.ErrInternal)
 		return
+	}
+	if result.RowsAffected > 1 {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	if result.RowsAffected == 0 {
+		current, resolveErr := s.sessionIdentity.Resolve(
+			c.Request.Context(),
+			actor.SessionID,
+			actor.UserType,
+			actor.UserID,
+		)
+		if resolveErr != nil {
+			common.Fail(c, resolveErr)
+			return
+		}
+		if current.RefreshTokenHash != common.SHA256(newRefresh) {
+			common.Fail(c, common.ErrUnauthorized)
+			return
+		}
 	}
 	common.Success(c, gin.H{"access_token": access, "refresh_token": newRefresh, "expires_in": int(s.cfg.AccessTTL.Seconds())})
 }
@@ -259,8 +260,22 @@ func (s *Server) handleLogout(c *gin.Context) {
 		return
 	}
 	now := time.Now()
-	if err := s.DB.Model(&model.AuthSession{}).Where("id = ?", actor.SessionID).Update("revoked_at", &now).Error; err != nil {
+	result := s.DB.WithContext(c.Request.Context()).
+		Model(&model.AuthSession{}).
+		Where(
+			"id = ? AND user_type = ? AND user_id = ? AND revoked_at IS NULL AND expired_at > ?",
+			actor.SessionID,
+			actor.UserType,
+			actor.UserID,
+			now,
+		).
+		Update("revoked_at", &now)
+	if result.Error != nil {
 		common.Fail(c, common.ErrInternal)
+		return
+	}
+	if result.RowsAffected != 1 {
+		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
 	common.Success(c, gin.H{"success": true})
