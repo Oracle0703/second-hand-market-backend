@@ -61,6 +61,12 @@ type UpdateProductRequest struct {
 	ImageFileIDs      []uint64 `json:"image_file_ids"`
 }
 
+type AdjustProductStockRequest struct {
+	AdjustmentType string `json:"adjustment_type" binding:"required,oneof=INCREASE DECREASE MARK_SOLD"`
+	Quantity       int    `json:"quantity" binding:"required,gt=0"`
+	Reason         string `json:"reason" binding:"required,min=2,max=255"`
+}
+
 type CreateOrderRequest struct {
 	ProductID          uint64  `json:"product_id" binding:"required"`
 	DealPriceCent      int     `json:"deal_price_cent" binding:"required,gt=0"`

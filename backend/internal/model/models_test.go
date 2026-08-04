@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -170,6 +171,18 @@ func TestMultiStockSchemaDefaultsAndChecksRemainBackwardCompatible(t *testing.T)
 	}
 	if err := db.Create(&invalidOrder).Error; err == nil {
 		t.Fatal("non-positive order quantity was accepted")
+	}
+}
+
+func TestImageBackfillRunPrimaryKeyColumnIsExplicit(t *testing.T) {
+	field, ok := reflect.TypeOf(ImageBackfillRun{}).FieldByName("ID")
+	if !ok {
+		t.Fatal("ImageBackfillRun.ID field is missing")
+	}
+
+	tag := field.Tag.Get("gorm")
+	if !strings.Contains(tag, "column:id") {
+		t.Fatalf("ImageBackfillRun.ID gorm tag must explicitly bind to column:id, got %q", tag)
 	}
 }
 

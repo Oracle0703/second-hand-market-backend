@@ -17,6 +17,8 @@ func TestParseMigrationSelectionRequiresExactlyOneAllowlistedMigration(t *testin
 	for _, args := range [][]string{
 		{"--migration", "0001_init"},
 		{"--migration=0002_buyer_domain"},
+		{"--migration=0005_legacy_file_records_table"},
+		{"--migration=0006_product_stock_adjustments"},
 	} {
 		spec, err := parseMigrationSelection(args)
 		if err != nil {
@@ -340,9 +342,12 @@ func TestRunRejectsInvalid0004SourcesBeforeDatabaseAccess(t *testing.T) {
 
 func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 	wantStatements := map[string]int{
-		"0001_init":                13,
-		"0002_buyer_domain":        5,
-		"0003_buyer_auth_provider": 2,
+		"0001_init":                      13,
+		"0002_buyer_domain":              5,
+		"0003_buyer_auth_provider":       2,
+		"0004_image_backfill_ledger":     2,
+		"0005_legacy_file_records_table": 1,
+		"0006_product_stock_adjustments": 1,
 	}
 	for migrationID, expectedCount := range wantStatements {
 		spec := migrationCatalog[migrationID]
@@ -353,6 +358,18 @@ func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 		if len(statements) != expectedCount {
 			t.Fatalf("%s statements = %d, want %d", migrationID, len(statements), expectedCount)
 		}
+	}
+}
+
+func TestLegacyFileRecordsMigrationRenamesTableForCurrentModel(t *testing.T) {
+	spec := migrationCatalog["0005_legacy_file_records_table"]
+	statements, err := loadMigrationStatementsFromDir("../../migrations", spec)
+	if err != nil {
+		t.Fatalf("load legacy file records migration: %v", err)
+	}
+	source := strings.Join(statements, "\n")
+	if !strings.Contains(source, "RENAME TABLE file_records TO files") {
+		t.Fatalf("legacy migration must rename file_records to files, got: %s", source)
 	}
 }
 

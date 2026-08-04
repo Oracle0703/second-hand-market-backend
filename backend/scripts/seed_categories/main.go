@@ -134,7 +134,7 @@ func seedDefaultCategoriesWithMySQLLock(db *gorm.DB) (resultErr error) {
 }
 
 func seedDefaultCategoriesTransaction(db *gorm.DB) error {
-	return db.Transaction(func(transaction *gorm.DB) error {
+	return db.Session(&gorm.Session{NewDB: true}).Transaction(func(transaction *gorm.DB) error {
 		seenRoots := make(map[string]struct{}, len(defaultCategorySeeds))
 		for rootIndex, seed := range defaultCategorySeeds {
 			rootName := strings.TrimSpace(seed.Name)

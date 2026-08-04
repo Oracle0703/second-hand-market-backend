@@ -78,7 +78,7 @@
 ### 7.1 Checklist
 - [x] 补齐 `merchant/account` 与 `merchant/account/password` 接口到后端 API 清单
 - [x] 明确 `merchant/profile` 与 `merchant/account` 职责边界
-- [x] 明确 `stock` 在本期二手单件场景的定义（固定为 1，保留字段）
+- [x] 明确 `stock` 当前为可用库存字段，库存变更通过独立调整入口记录流水
 
 ### 7.2 本轮修改文件
 1. `docs/backend-api-checklist.md`
@@ -96,9 +96,9 @@
    - `merchant/profile`：商家主体资料 + 审核状态
    - `merchant/account`：当前登录账号资料 + 安全设置
 3. 在 specs、前端页面、数据模型、API 文档统一 `stock` 约束：
-   - 本期不允许 `stock > 1`
-   - `stock` 固定为 `1`
-   - 作为后续扩展保留字段
+   - `stock` 表示当前可用库存
+   - 创建商品库存必须为大于 `0` 的整数
+   - 手动补库存、减少库存、线下售出扣减通过独立调整入口记录流水
 
 ### 7.4 当前可开工评估
 结论：经过本轮补丁，文档仍然满足并强化了“可直接进入开发实现”的标准。  

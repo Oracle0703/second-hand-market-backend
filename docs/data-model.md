@@ -11,10 +11,11 @@
 2. `merchants` 1:N `products`（商品）。
 3. `categories`（分类字典）1:N `products`。
 4. `products` 1:N `product_images`（商品图片）。
-5. `products` 1:N `orders`（轻量订单）。
-6. `orders` 1:N `order_events`（订单事件流）。
-7. `merchants` 1:N `merchant_audit_logs`（审核日志）。
-8. 所有关键动作写入 `operation_logs`。
+5. `products` 1:N `product_stock_adjustments`（库存调整流水）。
+6. `products` 1:N `orders`（轻量订单）。
+7. `orders` 1:N `order_events`（订单事件流）。
+8. `merchants` 1:N `merchant_audit_logs`（审核日志）。
+9. 所有关键动作写入 `operation_logs`。
 
 ## 2. 核心数据表
 
@@ -134,7 +135,7 @@
 | price_cent | int | 售价（分） |
 | original_price_cent | int null | 原价（分） |
 | condition_level | varchar(16) | `LIKE_NEW/GOOD/FAIR/POOR` |
-| stock | int | 总库存，必须大于等于 0 |
+| stock | int | 总库存，必须大于等于 0；手动调整通过 `product_stock_adjustments` 记录流水 |
 | reserved_stock | int | 已被活动订单预占的库存，默认 0 |
 | cover_file_id | bigint null | 封面图文件 ID |
 | status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` |
@@ -158,9 +159,11 @@
 4. `idx_active_order(active_order_id)`
 
 约束说明：
-1. `stock >= 0`。
-2. `0 <= reserved_stock <= stock`。
-3. `active_order_id` 与 `LOCKED` 字段暂时保留用于兼容旧流程，但不再通过 Schema 强化；多库存事务切换属于后续 F-07。
+1. `stock >= 0`；创建商品时业务层要求 `stock` 为大于 `0` 的整数。
+2. `0 <= reserved_stock <= stock`（Schema 检查约束）。
+3. 手动补库存、减少库存、线下售出扣减通过库存调整接口更新 `stock` 并写 `product_stock_adjustments` 流水；调整时不得使 `stock < reserved_stock`。
+4. `active_order_id` 与 `LOCKED` 字段暂时保留用于兼容旧流程，但不再通过 Schema 强化；订单预占/释放/扣减及同商品多活动订单的完整事务切换属于后续 F-07。
+5. 在 F-07 落地前，订单主流程仍保持轻量模型：创建订单锁定商品，完成订单转 `SOLD`；`reserved_stock` 先落 Schema，业务默认保持 0。
 
 ### 2.7 product_images（商品图片）
 
@@ -175,7 +178,34 @@
 索引建议：
 1. `idx_product_sort(product_id, sort_order)`
 
-### 2.8 orders（轻量订单）
+### 2.8 product_stock_adjustments（库存调整流水）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | bigint PK | 主键 |
+| product_id | bigint | 商品 ID |
+| merchant_id | bigint | 商家 ID |
+| adjustment_type | varchar(32) | `INCREASE/DECREASE/MARK_SOLD` |
+| quantity | int | 本次调整数量 |
+| stock_before | int | 调整前库存 |
+| stock_after | int | 调整后库存 |
+| status_before | varchar(16) | 调整前商品状态 |
+| status_after | varchar(16) | 调整后商品状态 |
+| reason | varchar(255) | 调整原因 |
+| operator_id | bigint | 操作商家账号 ID |
+| created_at | datetime | 调整时间 |
+
+索引建议：
+1. `idx_product_stock_adjustment_created(product_id, created_at)`
+2. `idx_merchant_stock_adjustment_created(merchant_id, created_at)`
+
+规则说明：
+1. `INCREASE` 增加库存，商品状态保持不变。
+2. `DECREASE` 减少库存，不能扣成负数；`ON_SHELF` 扣到 `0` 时转 `OFF_SHELF`。
+3. `MARK_SOLD` 表示线下售出扣减；扣到 `0` 时商品转 `SOLD`，不创建订单。
+4. `LOCKED/SOLD/CLOSED` 商品不允许手动调整库存。
+
+### 2.9 orders（轻量订单）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -208,7 +238,7 @@
 3. 预占、释放、扣减及并发终态必须由 F-07（Issue #17）的事务逻辑保证，不能依赖唯一索引。
 4. `0004_merchant_multi_stock` 当前只允许在隔离 MySQL 中验收；不得在仍有业务写入的环境单独部署。活跃环境必须等 F-07 事务逻辑完成，并在同一次另行授权的维护发布中停写、执行 preflight/up/postflight 后再恢复写入。
 
-### 2.9 order_events（订单事件）
+### 2.10 order_events（订单事件）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -225,7 +255,7 @@
 索引建议：
 1. `idx_order_created(order_id, created_at)`
 
-### 2.10 files（文件元数据）
+### 2.11 files（文件元数据）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -244,7 +274,7 @@
 1. `uk_object_key(object_key)`
 2. `idx_biz_type_created(biz_type, created_at)`
 
-### 2.11 operation_logs（操作审计日志）
+### 2.12 operation_logs（操作审计日志）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -271,7 +301,7 @@
 2. `idx_resource(resource_type, resource_id, created_at)`
 3. `idx_merchant_created(merchant_id, created_at)`
 
-### 2.12 auth_sessions（登录会话）
+### 2.13 auth_sessions（登录会话）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -310,7 +340,12 @@
 - `COMPLETED`
 - `CLOSED`
 
-### 3.4 管理员角色
+### 3.4 库存调整类型
+- `INCREASE`：补充库存
+- `DECREASE`：减少库存
+- `MARK_SOLD`：线下售出扣减
+
+### 3.5 管理员角色
 - `SUPER_ADMIN`
 - `ADMIN`
 
@@ -318,9 +353,10 @@
 1. 创建订单必须与商品 `ON_SHELF -> LOCKED` 在同一事务中完成。
 2. 完成订单必须与商品 `LOCKED -> SOLD` 在同一事务中完成。
 3. 关闭订单必须与商品 `LOCKED -> OFF_SHELF` 在同一事务中完成。
-4. 任何状态变更必须同时写 `operation_logs`。
-5. 非法状态变更统一返回业务错误码 `10005`。
-6. 删除策略采用软删除；审核/审计相关表禁止物理删除。
+4. 手动调整库存必须与 `product_stock_adjustments` 流水写入在同一事务中完成。
+5. 任何状态变更必须同时写 `operation_logs`。
+6. 非法状态变更统一返回业务错误码 `10005`。
+7. 删除策略采用软删除；审核/审计相关表禁止物理删除。
 
 ## 5. 预留扩展（子账号与 RBAC）
 1. `merchant_accounts.role` 已支持 `STAFF`。

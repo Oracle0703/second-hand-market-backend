@@ -9,7 +9,9 @@ import (
 	"github.com/glebarez/sqlite"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
+	"second-hand-market-backend/backend/internal/media"
 	"second-hand-market-backend/backend/internal/model"
 )
 
@@ -22,6 +24,66 @@ func TestMigrateSchemaCreatesApplicationTables(t *testing.T) {
 		if !db.Migrator().HasTable(target) {
 			t.Fatalf("missing migrated table for %T", target)
 		}
+	}
+	if !db.Migrator().HasTable(&model.ProductStockAdjustment{}) {
+		t.Fatalf("expected product_stock_adjustments table to be created")
+	}
+}
+
+func TestMigrateSchemaUsesExplicitFileTableName(t *testing.T) {
+	db := newDatabaseOperationsTestDB(t)
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("migrate schema: %v", err)
+	}
+	if !db.Migrator().HasTable("files") {
+		t.Fatal("FileRecord must use the explicit SQL migration table name files")
+	}
+	if db.Migrator().HasTable("file_records") {
+		t.Fatal("FileRecord must not create GORM default table file_records")
+	}
+}
+
+func TestMigrateSchemaCreatesImageBackfillLedger(t *testing.T) {
+	db := newDatabaseOperationsTestDB(t)
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("migrate schema: %v", err)
+	}
+	for _, target := range []any{&model.ImageBackfillRun{}, &model.ImageBackfillItem{}} {
+		if !db.Migrator().HasTable(target) {
+			t.Fatalf("missing migrated table for %T", target)
+		}
+	}
+
+	run := model.ImageBackfillRun{ID: "IMGTEST1", ProfileVersion: media.DetailProfileVersion}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatalf("create backfill run: %v", err)
+	}
+	item := model.ImageBackfillItem{
+		RunID:           run.ID,
+		FileID:          10,
+		SourceObjectKey: "product_image/F10.jpg",
+		TargetObjectKey: "product_image/detail-v1/F10.jpg",
+		ProfileVersion:  media.DetailProfileVersion,
+		Status:          "PENDING",
+		CleanupStatus:   "NOT_SCHEDULED",
+	}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("create backfill item: %v", err)
+	}
+	duplicate := item
+	duplicate.ID = 0
+	if err := db.Create(&duplicate).Error; err == nil {
+		t.Fatal("duplicate run/file backfill item was accepted")
+	}
+	anotherRun := model.ImageBackfillRun{ID: "IMGTEST2", ProfileVersion: media.DetailProfileVersion}
+	if err := db.Create(&anotherRun).Error; err != nil {
+		t.Fatalf("create second backfill run: %v", err)
+	}
+	anotherItem := item
+	anotherItem.ID = 0
+	anotherItem.RunID = anotherRun.ID
+	if err := db.Create(&anotherItem).Error; err != nil {
+		t.Fatalf("same file in a different run should remain allowed: %v", err)
 	}
 }
 
@@ -120,7 +182,7 @@ func TestSeedDefaultCategoriesIsIdempotent(t *testing.T) {
 func newDatabaseOperationsTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:database_operations_%d?mode=memory&cache=shared", time.Now().UnixNano())
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

@@ -193,6 +193,7 @@ func (s *Server) registerRoutes() {
 			merchant.POST("/products/:id/on-shelf", middleware.RequireFullMerchantScope(), s.handleProductOnShelf)
 			merchant.POST("/products/:id/off-shelf", middleware.RequireFullMerchantScope(), s.handleProductOffShelf)
 			merchant.POST("/products/:id/close", middleware.RequireFullMerchantScope(), s.handleProductClose)
+			merchant.POST("/products/:id/stock-adjustments", middleware.RequireFullMerchantScope(), s.handleProductStockAdjustment)
 
 			merchant.POST("/orders", middleware.RequireFullMerchantScope(), s.handleCreateOrder)
 			merchant.GET("/orders", middleware.RequireFullMerchantScope(), s.handleOrderList)

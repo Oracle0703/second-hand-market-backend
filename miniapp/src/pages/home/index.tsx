@@ -237,7 +237,7 @@ export default function HomePage() {
             <View key={item.id} className="home-product-card">
               <View className="home-product-cover-wrap" onClick={() => goDetail(item.id)}>
                 {item.cover_url ? (
-                  <Image className="home-product-cover" src={resolveAssetURL(item.cover_url)} mode="aspectFill" />
+                  <Image className="home-product-cover" src={resolveAssetURL(item.cover_url)} mode="aspectFill" lazyLoad />
                 ) : (
                   <View className="home-product-placeholder">
                     <Text className="home-product-placeholder-text">暂无图片</Text>

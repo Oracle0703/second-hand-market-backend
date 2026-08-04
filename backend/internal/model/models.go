@@ -60,6 +60,12 @@ const (
 	IntentClosed    = "CLOSED"
 )
 
+const (
+	StockAdjustmentIncrease = "INCREASE"
+	StockAdjustmentDecrease = "DECREASE"
+	StockAdjustmentMarkSold = "MARK_SOLD"
+)
+
 type Merchant struct {
 	ID            uint64  `gorm:"primaryKey"`
 	MerchantNo    string  `gorm:"size:32;uniqueIndex"`
@@ -168,6 +174,21 @@ type ProductImage struct {
 	CreatedAt time.Time
 }
 
+type ProductStockAdjustment struct {
+	ID             uint64 `gorm:"primaryKey"`
+	ProductID      uint64 `gorm:"index:idx_product_stock_adjustment_created,priority:1"`
+	MerchantID     uint64 `gorm:"index:idx_merchant_stock_adjustment_created,priority:1"`
+	AdjustmentType string `gorm:"size:32"`
+	Quantity       int
+	StockBefore    int
+	StockAfter     int
+	StatusBefore   string `gorm:"size:16"`
+	StatusAfter    string `gorm:"size:16"`
+	Reason         string `gorm:"size:255"`
+	OperatorID     uint64
+	CreatedAt      time.Time `gorm:"index:idx_product_stock_adjustment_created,priority:2;index:idx_merchant_stock_adjustment_created,priority:2"`
+}
+
 type Order struct {
 	ID                 uint64 `gorm:"primaryKey"`
 	OrderNo            string `gorm:"size:32;uniqueIndex"`
@@ -211,6 +232,39 @@ type FileRecord struct {
 	UploaderID   *uint64
 	ScanStatus   string    `gorm:"size:16"`
 	CreatedAt    time.Time `gorm:"index:idx_biz_type_created,priority:2"`
+}
+
+func (FileRecord) TableName() string {
+	return "files"
+}
+
+type ImageBackfillRun struct {
+	ID             string `gorm:"column:id;primaryKey;size:64"`
+	ProfileVersion string `gorm:"size:32;index"`
+	CreatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
+type ImageBackfillItem struct {
+	ID               uint64  `gorm:"primaryKey"`
+	RunID            string  `gorm:"size:64;uniqueIndex:uk_backfill_run_file,priority:1;index"`
+	FileID           uint64  `gorm:"uniqueIndex:uk_backfill_run_file,priority:2;index"`
+	SourceObjectKey  string  `gorm:"size:255"`
+	TargetObjectKey  string  `gorm:"size:255"`
+	ProfileVersion   string  `gorm:"size:32;index"`
+	SourceSHA256     *string `gorm:"size:64"`
+	OutputSHA256     *string `gorm:"size:64"`
+	SourceSizeBytes  int64
+	OutputSizeBytes  *int64
+	Status           string `gorm:"size:16;index"`
+	Attempts         int
+	ErrorCode        *string `gorm:"size:64"`
+	CommittedAt      *time.Time
+	CleanupAfter     *time.Time `gorm:"index"`
+	CleanupStatus    string     `gorm:"size:16;index"`
+	CleanupErrorCode *string    `gorm:"size:64"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type OperationLog struct {

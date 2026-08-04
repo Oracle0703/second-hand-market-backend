@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions } from '@ant-design/pro-components'
 import { Alert, Button, Image, Space, Tag, message } from 'antd'
+import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { getStatusColor, getStatusText, PRODUCT_STATUS_META, type ProductStatus } from '@/constants/status'
 import { api } from '@/services/api'
 import { centToYuanText } from '@/utils/price'
 import { resolveAssetURL } from '@/utils/url'
+import { StockAdjustmentModal } from './components/StockAdjustmentModal'
+import { canAdjustProductStock } from './stock-adjustment'
 
 type ProductDetail = {
   id: number
@@ -26,6 +29,7 @@ export function DetailPage() {
   const { productId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [stockAdjustOpen, setStockAdjustOpen] = useState(false)
   const detail = useQuery({
     queryKey: ['product-detail', productId],
     queryFn: async () => (await api.productDetail(productId)).data.data.product as ProductDetail
@@ -69,6 +73,11 @@ export function DetailPage() {
     <Button key="back-list" onClick={backToList}>
       返回列表
     </Button>,
+    canAdjustProductStock(product.status) && (
+      <Button key="adjust-stock" onClick={() => setStockAdjustOpen(true)}>
+        调整库存
+      </Button>
+    ),
     (product.status === 'DRAFT' || product.status === 'OFF_SHELF') && (
       <Button key="edit" onClick={() => navigate(`/merchant/products/${product.id}/edit`)}>
         编辑
@@ -114,6 +123,17 @@ export function DetailPage() {
       ) : null}
 
       {(transitionMutation.error || createOrderMutation.error) ? <Alert type="error" showIcon message={((transitionMutation.error ?? createOrderMutation.error) as Error).message} style={{ marginBottom: 16 }} /> : null}
+
+      <StockAdjustmentModal
+        open={stockAdjustOpen}
+        product={{ id: product.id, title: product.title, status: product.status, stock: product.stock }}
+        onCancel={() => setStockAdjustOpen(false)}
+        onSuccess={async () => {
+          setStockAdjustOpen(false)
+          await queryClient.invalidateQueries({ queryKey: ['product-detail', productId] })
+          await queryClient.invalidateQueries({ queryKey: ['merchant-products'] })
+        }}
+      />
 
       <ProDescriptions<ProductDetail>
         column={2}

@@ -159,13 +159,7 @@ func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
 	}
 	merchantToken := str(loginFull.Data["access_token"])
 
-	imgPresign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "PRODUCT_IMAGE", "file_name": "p1.jpg", "file_size": 1000, "mime_type": "image/jpeg",
-	}, map[string]string{"Authorization": "Bearer " + merchantToken})
-	if imgPresign.Code != 0 {
-		t.Fatalf("img presign failed: %+v", imgPresign)
-	}
-	imgID := numToUint64(imgPresign.Data["file_id"])
+	imgID := uploadProductImage(t, srv, merchantToken, encodedUploadImage(t, "image/jpeg"), "image/jpeg").ID
 
 	categories := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/categories?level=2", nil, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if categories.Code != 0 {

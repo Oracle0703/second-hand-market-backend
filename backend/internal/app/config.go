@@ -46,39 +46,42 @@ var knownUnsafeProductionJWTSecrets = map[string]struct{}{
 }
 
 type Config struct {
-	AppEnv                     string
-	Addr                       string
-	DBTarget                   string
-	DBDriver                   string
-	DBDSN                      string
-	DBExpectedDatabase         string
-	DBExpectedServerUUID       string
-	DBExpectedUser             string
-	JWTAccessSecret            string
-	JWTRefreshSecret           string
-	AccessTTL                  time.Duration
-	RefreshTTL                 time.Duration
-	AutoMigrate                bool
-	SeedDefaults               bool
-	FileStorageProvider        string
-	FileUploadLocalDir         string
-	FilePublicBaseURL          string
-	FileUploadMaxBytes         int64
-	ImageCompressTargetBytes   int64
-	ImageProcessorDriver       string
-	ImageProcessorBin          string
-	BuyerWechatLoginMode       string
-	BuyerWechatAppID           string
-	BuyerWechatAppSecret       string
-	BuyerWechatCode2SessionURL string
-	BuyerWechatHTTPTimeout     time.Duration
-	BuyerDouyinLoginMode       string
-	BuyerDouyinAppID           string
-	BuyerDouyinAppSecret       string
-	BuyerDouyinCode2SessionURL string
-	BuyerDouyinHTTPTimeout     time.Duration
+	AppEnv                       string
+	Addr                         string
+	DBTarget                     string
+	DBDriver                     string
+	DBDSN                        string
+	DBExpectedDatabase           string
+	DBExpectedServerUUID         string
+	DBExpectedUser               string
+	JWTAccessSecret              string
+	JWTRefreshSecret             string
+	AccessTTL                    time.Duration
+	RefreshTTL                   time.Duration
+	AutoMigrate                  bool
+	SeedDefaults                 bool
+	FileStorageProvider          string
+	FileUploadLocalDir           string
+	FilePublicBaseURL            string
+	PublicUploadBaseURL          string
+	FileUploadMaxBytes           int64
+	ImageCompressTargetBytes     int64
+	ImageProcessorDriver         string
+	ImageProcessorBin            string
+	RequireDetailV1ProductImages bool
+	BuyerWechatLoginMode         string
+	BuyerWechatAppID             string
+	BuyerWechatAppSecret         string
+	BuyerWechatCode2SessionURL   string
+	BuyerWechatHTTPTimeout       time.Duration
+	BuyerDouyinLoginMode         string
+	BuyerDouyinAppID             string
+	BuyerDouyinAppSecret         string
+	BuyerDouyinCode2SessionURL   string
+	BuyerDouyinHTTPTimeout       time.Duration
 
-	runtimeLoadErr error
+	runtimeLoadErr                  error
+	requireDetailV1ProductImagesSet bool
 }
 
 func LoadConfig() Config {
@@ -100,6 +103,7 @@ func LoadConfig() Config {
 		FileStorageProvider:        getEnv("FILE_STORAGE_PROVIDER", "local"),
 		FileUploadLocalDir:         getEnv("FILE_UPLOAD_LOCAL_DIR", "uploads"),
 		FilePublicBaseURL:          getEnv("FILE_PUBLIC_BASE_URL", ""),
+		PublicUploadBaseURL:        getEnv("PUBLIC_UPLOAD_BASE_URL", ""),
 		FileUploadMaxBytes:         int64(getEnvInt("FILE_UPLOAD_MAX_MB", 40)) * 1024 * 1024,
 		ImageCompressTargetBytes:   int64(getEnvInt("IMAGE_COMPRESS_TARGET_MB", 20)) * 1024 * 1024,
 		ImageProcessorDriver:       getEnv("IMAGE_PROCESSOR_DRIVER", "vips"),
@@ -117,6 +121,7 @@ func LoadConfig() Config {
 	}
 	cfg.loadRuntimeBool("AUTO_MIGRATE", &cfg.AutoMigrate)
 	cfg.loadRuntimeBool("SEED_DEFAULTS", &cfg.SeedDefaults)
+	cfg.loadRuntimeBoolFlag("REQUIRE_DETAIL_V1_PRODUCT_IMAGES", &cfg.RequireDetailV1ProductImages, &cfg.requireDetailV1ProductImagesSet)
 	if value := os.Getenv("ACCESS_TTL_SECONDS"); value != "" {
 		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
 			cfg.AccessTTL = time.Duration(seconds) * time.Second
@@ -137,9 +142,16 @@ func LoadConfig() Config {
 }
 
 func (c *Config) loadRuntimeBool(name string, target *bool) {
+	c.loadRuntimeBoolFlag(name, target, nil)
+}
+
+func (c *Config) loadRuntimeBoolFlag(name string, target *bool, seen *bool) {
 	raw, ok := os.LookupEnv(name)
 	if !ok {
 		return
+	}
+	if seen != nil {
+		*seen = true
 	}
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
@@ -203,6 +215,17 @@ func (c Config) ValidateRuntime() error {
 			return fmt.Errorf("SEED_DEFAULTS must be false when APP_ENV is production or DB_TARGET is remote-development")
 		}
 	}
+	if env == appEnvProduction {
+		if !c.requireDetailV1ProductImagesSet {
+			return fmt.Errorf("REQUIRE_DETAIL_V1_PRODUCT_IMAGES must be explicitly configured in production")
+		}
+		if !strings.EqualFold(strings.TrimSpace(c.ImageProcessorDriver), "vips") {
+			return fmt.Errorf("IMAGE_PROCESSOR_DRIVER must be vips in production")
+		}
+	}
+	if err := validatePublicUploadBaseURL(c.PublicUploadBaseURL); err != nil {
+		return err
+	}
 	if target == dbTargetRemoteDevelopment {
 		if err := validateRemoteDevelopmentDatabase(c); err != nil {
 			return err
@@ -264,6 +287,27 @@ func normalizeDBTarget(value string) string {
 
 func normalizeBuyerLoginMode(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validatePublicUploadBaseURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL must be a valid HTTP(S) URL ending at /uploads")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL must use http or https")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL must not include query or fragment")
+	}
+	if strings.TrimRight(parsed.Path, "/") != "/uploads" {
+		return fmt.Errorf("PUBLIC_UPLOAD_BASE_URL path must be /uploads")
+	}
+	return nil
 }
 
 func validateProductionJWTSecret(name, value string) error {

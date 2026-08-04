@@ -75,12 +75,7 @@ func rejectMerchant(t *testing.T, srv *app.Server, adminToken string, merchantID
 
 func productImageAndCategory(t *testing.T, srv *app.Server, merchantToken string) (uint64, uint64) {
 	t.Helper()
-	img := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "PRODUCT_IMAGE", "file_name": "p.jpg", "file_size": 1000, "mime_type": "image/jpeg",
-	}, map[string]string{"Authorization": "Bearer " + merchantToken})
-	if img.Code != 0 {
-		t.Fatalf("image presign failed: %+v", img)
-	}
+	img := uploadProductImage(t, srv, merchantToken, encodedUploadImage(t, "image/jpeg"), "image/jpeg")
 	cats := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/categories?level=2", nil, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if cats.Code != 0 {
 		t.Fatalf("categories failed: %+v", cats)
@@ -94,7 +89,7 @@ func productImageAndCategory(t *testing.T, srv *app.Server, merchantToken string
 	if categoryID == 0 {
 		categoryID = numToUint64(row["ID"])
 	}
-	return numToUint64(img.Data["file_id"]), categoryID
+	return img.ID, categoryID
 }
 
 func createAndOnShelfProduct(t *testing.T, srv *app.Server, merchantToken string) uint64 {

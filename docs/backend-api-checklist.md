@@ -131,28 +131,37 @@ onboarding scope 黑名单：
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), condition_level(R), stock(O,仅允许1), image_file_ids(R[])` | `product_id, product_no, status, stock, created_at` | MERCHANT(full) |
-| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), condition_level(O), image_file_ids(O[])` | `product_id, status, stock, updated_at` | MERCHANT(full) |
+| `/merchant/products` | POST | 创建商品 | `title(R), description(R), category_id(R), price_cent(R), original_price_cent(R), condition_level(R), stock(R,>0), image_file_ids(R[])` | `product_id, product_no, status, stock, created_at` | MERCHANT(full) |
+| `/merchant/products/:id` | PUT | 编辑商品 | `id(path,R), title(O), description(O), category_id(O), price_cent(O), original_price_cent(O), condition_level(O), stock(O), image_file_ids(O[])` | `product_id, status, stock, updated_at` | MERCHANT(full) |
 | `/merchant/products/:id` | GET | 商品详情 | `id(path,R)` | `product{id,title,status,category,price_cent,condition_level,stock,images[],active_order_id}` | MERCHANT(full) |
 | `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,updated_at}], total,page,page_size` | MERCHANT(full) |
 | `/merchant/products/:id/on-shelf` | POST | 上架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 | `/merchant/products/:id/off-shelf` | POST | 下架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 | `/merchant/products/:id/close` | POST | 关闭商品 | `id(path,R), reason(O)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
+| `/merchant/products/:id/stock-adjustments` | POST | 调整库存 | `id(path,R), adjustment_type(R:INCREASE/DECREASE/MARK_SOLD), quantity(R,>0), reason(R,2-255)` | `product_id, movement_id, adjustment_type, quantity, stock_before, stock_after, status_before, status_after, adjusted_at` | MERCHANT(full) |
 
 编辑约束：
-1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、图片），不含 `stock`。
+1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、图片），兼容保留 `stock` 编辑；需要审计原因的库存变化应使用库存调整接口。
 2. `ON_SHELF`：仅允许 `description,image_file_ids`。
 3. `LOCKED/SOLD/CLOSED`：禁止编辑。
-4. `stock` 为保留字段，本期固定 `1`，不支持编辑。
+4. `stock` 是当前可用库存，必须为正整数；手动增加、减少、线下售出扣减使用 `/stock-adjustments` 记录流水。
+
+库存调整规则：
+1. `INCREASE`：库存增加，商品状态不变。
+2. `DECREASE`：库存减少，不能扣成负数；`ON_SHELF` 扣到 `0` 时自动转 `OFF_SHELF`。
+3. `MARK_SOLD`：按线下售出扣减库存；扣到 `0` 时商品转 `SOLD`，不创建订单，不计入订单销售额。
+4. `LOCKED/SOLD/CLOSED` 商品不允许库存调整。
 
 失败场景：
 1. 跨商家访问返回 `10003`。
 2. 非法状态流转返回 `10005`。
 3. 分类不存在或非二级分类返回 `10001`。
-4. 创建商品时 `stock` 传入且不为 `1` 返回 `10001`。
+4. 创建商品或调整库存时数量小于等于 `0` 返回 `10001`。
+5. 库存扣减数量大于当前库存返回 `10005`。
 
 幂等说明：
 1. `on-shelf/off-shelf/close` 重复请求且目标状态已达成时返回成功（`code=0`，`idempotent=true`）。
+2. `stock-adjustments` 支持 `Idempotency-Key`；相同幂等键和相同请求体重复提交只执行一次。
 
 ## 8. 轻量订单模块（orders-lite）
 
@@ -358,7 +367,36 @@ onboarding scope 黑名单：
 }
 ```
 
-### 11.7 创建订单（`POST /api/v1/merchant/orders`）
+### 11.7 调整库存（`POST /api/v1/merchant/products/:id/stock-adjustments`）
+
+```json
+{
+  "adjustment_type": "MARK_SOLD",
+  "quantity": 1,
+  "reason": "客户线下购买"
+}
+```
+
+```json
+{
+  "code": 0,
+  "message": "OK",
+  "request_id": "req_01HRC2",
+  "data": {
+    "product_id": 12001,
+    "movement_id": 81001,
+    "adjustment_type": "MARK_SOLD",
+    "quantity": 1,
+    "stock_before": 1,
+    "stock_after": 0,
+    "status_before": "ON_SHELF",
+    "status_after": "SOLD",
+    "adjusted_at": "2026-03-10T10:10:00+08:00"
+  }
+}
+```
+
+### 11.8 创建订单（`POST /api/v1/merchant/orders`）
 
 ```json
 {
@@ -383,7 +421,7 @@ onboarding scope 黑名单：
 }
 ```
 
-### 11.8 完成订单（`POST /api/v1/merchant/orders/:id/complete`）
+### 11.9 完成订单（`POST /api/v1/merchant/orders/:id/complete`）
 
 ```json
 {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -282,6 +283,31 @@ func TestSeedDefaultCategoriesSerializesConcurrentRuns(t *testing.T) {
 	}
 	if count != 20 {
 		t.Fatalf("category count after concurrent seeds = %d, want 20", count)
+	}
+}
+
+func TestSeedDefaultCategoriesTransactionIgnoresPriorRawScanStatement(t *testing.T) {
+	db := newCategorySeedTestDB(t)
+	err := db.Connection(func(connection *gorm.DB) error {
+		var lockResult sql.NullInt64
+		if err := connection.Raw("SELECT 1").Scan(&lockResult).Error; err != nil {
+			t.Fatalf("prime raw scan statement: %v", err)
+		}
+		if !lockResult.Valid || lockResult.Int64 != 1 {
+			t.Fatalf("raw scan result = %+v", lockResult)
+		}
+		return seedDefaultCategoriesTransaction(connection)
+	})
+	if err != nil {
+		t.Fatalf("seed after raw scan statement: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&model.Category{}).Count(&count).Error; err != nil {
+		t.Fatalf("count categories: %v", err)
+	}
+	if count != 20 {
+		t.Fatalf("category count = %d, want 20", count)
 	}
 }
 

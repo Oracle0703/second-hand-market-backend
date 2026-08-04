@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"image"
+	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"image/png"
 	"strings"
@@ -56,9 +58,10 @@ func (p UploadPolicy) ValidateOriginalSize(size int64) error {
 }
 
 type ProcessRequest struct {
-	FileName  string
-	InputMIME string
-	Content   []byte
+	FileName      string
+	InputMIME     string
+	OutputProfile string
+	Content       []byte
 }
 
 type ProcessResult struct {
@@ -90,6 +93,9 @@ func NewPassthroughProcessor(policy UploadPolicy) PassthroughProcessor {
 func (p PassthroughProcessor) Process(_ context.Context, req ProcessRequest) (ProcessResult, error) {
 	if err := p.policy.ValidateOriginalSize(int64(len(req.Content))); err != nil {
 		return ProcessResult{}, err
+	}
+	if req.OutputProfile == DetailProfileVersion {
+		return p.processDetail(req)
 	}
 
 	detected := DetectImageMIME(req.Content)
@@ -131,6 +137,48 @@ func (p PassthroughProcessor) Process(_ context.Context, req ProcessRequest) (Pr
 		Content:    output.Bytes(),
 		Width:      decoded.Bounds().Dx(),
 		Height:     decoded.Bounds().Dy(),
+	}, nil
+}
+
+func (p PassthroughProcessor) processDetail(req ProcessRequest) (ProcessResult, error) {
+	detected := DetectImageMIME(req.Content)
+	if detected != "image/jpeg" && detected != "image/png" {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(req.Content))
+	if err != nil || decoded.Bounds().Dx() <= 0 || decoded.Bounds().Dy() <= 0 {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	if (detected == "image/jpeg" && format != "jpeg") || (detected == "image/png" && format != "png") {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+
+	policy := DefaultDetailImagePolicy()
+	bounds := decoded.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if maxInt(width, height) > policy.MaxEdge {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+	draw.Draw(canvas, canvas.Bounds(), decoded, bounds.Min, draw.Over)
+
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, canvas, &jpeg.Options{Quality: 82}); err != nil {
+		return ProcessResult{}, common.ErrInvalidUpload
+	}
+	width, height, err = ValidateDetailJPEG(policy, output.Bytes())
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	return ProcessResult{
+		OutputMIME: "image/jpeg",
+		OutputExt:  ".jpg",
+		Content:    output.Bytes(),
+		Width:      width,
+		Height:     height,
 	}, nil
 }
 
