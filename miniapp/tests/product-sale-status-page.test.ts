@@ -17,6 +17,7 @@ vi.mock('@tarojs/taro', () => ({
     navigateTo: vi.fn(),
     previewImage: vi.fn()
   },
+  useDidShow: vi.fn(),
   useRouter: () => ({ params: { id: '1' } }),
   useShareAppMessage: vi.fn()
 }))

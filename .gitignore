@@ -154,3 +154,8 @@ backend/uploads/
 /deploy/remote-dev-db/secrets/*
 *.bak
 *.stable.*
+
+# Repository-local Go build/test caches (never commit)
+/backend/.gocache*/
+/backend/.gotmp*/
+/backend/.gotemp*/

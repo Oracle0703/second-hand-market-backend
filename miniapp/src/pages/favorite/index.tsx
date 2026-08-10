@@ -1,6 +1,6 @@
 import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
-import Taro from '@tarojs/taro'
+import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { BuyerFavoriteItem, listFavorites, removeFavorite } from '../../services/buyer'
 import { promptAndCallStore } from '../../utils/contact'
@@ -12,6 +12,15 @@ export default function FavoritePage() {
   const query = useQuery({
     queryKey: ['buyer-favorites'],
     queryFn: () => listFavorites(1, 50)
+  })
+  const hasShownRef = React.useRef(false)
+
+  useDidShow(() => {
+    if (!hasShownRef.current) {
+      hasShownRef.current = true
+      return
+    }
+    void query.refetch().catch(() => undefined)
   })
 
   const removeMutation = useMutation({

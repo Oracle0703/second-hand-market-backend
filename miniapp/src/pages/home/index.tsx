@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react'
 import Taro, { useDidShow, useReachBottom } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { BuyerProduct, fetchBuyerProducts } from '../../services/buyer'
-import { hasStoreLocation, STORE_GUIDE_VIDEO, STORE_LOCATION } from '../../constants/store'
+import { hasStoreGuideVideo, hasStoreLocation, STORE_GUIDE_VIDEO, STORE_LOCATION } from '../../constants/store'
 import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
 import { resolveAssetURL } from '../../utils/url'
@@ -35,6 +35,7 @@ export default function HomePage() {
   const hasMore = items.length < total
   const heroItems = useMemo(() => items.slice(0, 5), [items])
   const locationConfigured = hasStoreLocation(STORE_LOCATION)
+  const storeGuideVideoConfigured = hasStoreGuideVideo(STORE_GUIDE_VIDEO)
 
   const loadProducts = async (targetPage: number, replace = false) => {
     if (loadingRef.current) {
@@ -197,16 +198,18 @@ export default function HomePage() {
           >
             拨打电话
           </Button>
-          <Button
-            className="home-location-btn home-location-btn-secondary"
-            size="mini"
-            onClick={(event) => {
-              event.stopPropagation()
-              handleOpenStoreGuide()
-            }}
-          >
-            {STORE_GUIDE_VIDEO.url.trim() ? '视频导航' : '视频导航'}
-          </Button>
+          {storeGuideVideoConfigured ? (
+            <Button
+              className="home-location-btn home-location-btn-secondary"
+              size="mini"
+              onClick={(event) => {
+                event.stopPropagation()
+                handleOpenStoreGuide()
+              }}
+            >
+              视频导航
+            </Button>
+          ) : null}
           <Button
             className="home-location-btn home-location-btn-primary"
             size="mini"

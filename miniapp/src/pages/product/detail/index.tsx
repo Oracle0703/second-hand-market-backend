@@ -1,6 +1,6 @@
 import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
-import Taro, { useRouter, useShareAppMessage } from '@tarojs/taro'
+import Taro, { useDidShow, useRouter, useShareAppMessage } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
 import { promptAndCallStore } from '../../../utils/contact'
@@ -17,6 +17,15 @@ export default function ProductDetailPage() {
     queryKey: ['buyer-product-detail', id],
     queryFn: async () => fetchBuyerProductDetail(id),
     enabled: id > 0
+  })
+  const hasShownRef = React.useRef(false)
+
+  useDidShow(() => {
+    if (!hasShownRef.current) {
+      hasShownRef.current = true
+      return
+    }
+    void detail.refetch().catch(() => undefined)
   })
 
   const favoriteMutation = useMutation({
