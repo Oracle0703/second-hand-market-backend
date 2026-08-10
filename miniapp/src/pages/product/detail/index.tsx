@@ -5,6 +5,7 @@ import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/component
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
 import { promptAndCallStore } from '../../../utils/contact'
 import { centToYuanText } from '../../../utils/price'
+import { canContactForProduct, getProductStatusText } from '../../../utils/product-status'
 import { resolveAssetURL } from '../../../utils/url'
 
 export default function ProductDetailPage() {
@@ -60,7 +61,7 @@ export default function ProductDetailPage() {
             </View>
             <View style={{ marginTop: '8rpx', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <Text style={{ color: '#6f7c77' }}>仅剩 {product.stock} 件</Text>
-              <Text className="status-badge">{product.status}</Text>
+              <Text className="status-badge">{getProductStatusText(product.status)}</Text>
             </View>
           </View>
 
@@ -104,9 +105,11 @@ export default function ProductDetailPage() {
             >
               {product.is_favorited ? '取消收藏' : '收藏'}
             </Button>
-            <Button className="btn-primary" onClick={() => void promptAndCallStore()}>
-              我想要
-            </Button>
+            {canContactForProduct(product.status, product.can_submit_intent) ? (
+              <Button className="btn-primary" onClick={() => void promptAndCallStore()}>
+                我想要
+              </Button>
+            ) : null}
           </View>
         </View>
       ) : null}

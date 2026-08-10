@@ -385,19 +385,22 @@ func (s *Server) handleProductList(c *gin.Context) {
 	common.Success(c, common.PageResult[item]{Items: items, Total: total, Page: page, PageSize: size})
 }
 
-func (s *Server) checkProductReadyForOnShelf(tx *gorm.DB, productID uint64) error {
+func (s *Server) checkProductReadyForOnShelf(tx *gorm.DB, product model.Product) error {
 	var count int64
-	if err := tx.Model(&model.ProductImage{}).Where("product_id = ?", productID).Count(&count).Error; err != nil {
+	if err := tx.Model(&model.ProductImage{}).Where("product_id = ?", product.ID).Count(&count).Error; err != nil {
 		return err
 	}
 	if count == 0 {
 		return common.ErrInvalidArgument
 	}
+	if product.Stock-product.ReservedStock <= 0 || product.ActiveOrderID != nil {
+		return common.ErrInvalidTransition
+	}
 	return nil
 }
 
 func canDeleteProductByStatus(status string) bool {
-	return status == model.ProductDraft || status == model.ProductOffShelf || status == model.ProductClosed
+	return status == model.ProductDraft || status == model.ProductOffShelf
 }
 
 func (s *Server) cleanupLocalFilesByObjectKeys(keys []string) {
@@ -597,7 +600,7 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
 		err := s.DB.Transaction(func(tx *gorm.DB) error {
-			product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)
+			product, err := s.loadOwnedProductForUpdate(tx, id, actor.MerchantID)
 			if err != nil {
 				return err
 			}
@@ -614,7 +617,7 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 				return common.ErrInvalidTransition
 			}
 			if toStatus == model.ProductOnShelf {
-				if err := s.checkProductReadyForOnShelf(tx, product.ID); err != nil {
+				if err := s.checkProductReadyForOnShelf(tx, product); err != nil {
 					return err
 				}
 				now := time.Now()
@@ -623,10 +626,6 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 			if toStatus == model.ProductOffShelf {
 				now := time.Now()
 				product.OffShelfAt = &now
-			}
-			if toStatus == model.ProductClosed {
-				now := time.Now()
-				product.ClosedAt = &now
 			}
 			product.Status = toStatus
 			product.UpdatedBy = actor.UserID
@@ -671,13 +670,4 @@ func (s *Server) handleProductOffShelf(c *gin.Context) {
 		return
 	}
 	s.doProductStatusChange(c, id, model.ProductOffShelf, "product_off_shelf")
-}
-
-func (s *Server) handleProductClose(c *gin.Context) {
-	id, err := parseUintParam(c, "id")
-	if err != nil {
-		common.Fail(c, err)
-		return
-	}
-	s.doProductStatusChange(c, id, model.ProductClosed, "product_close")
 }

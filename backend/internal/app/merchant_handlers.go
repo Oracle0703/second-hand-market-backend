@@ -198,7 +198,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	}
 
 	common.Success(c, gin.H{
-		"product_stats":              countByStatus("products", "status", []string{model.ProductDraft, model.ProductOnShelf, model.ProductLocked, model.ProductOffShelf, model.ProductSold, model.ProductClosed}),
+		"product_stats":              countByStatus("products", "status", []string{model.ProductDraft, model.ProductOnShelf, model.ProductLocked, model.ProductOffShelf, model.ProductSold}),
 		"order_stats":                countByStatus("orders", "status", []string{model.OrderCreated, model.OrderCompleted, model.OrderClosed}),
 		"on_shelf_total_amount_cent": onShelfTotalAmountCent,
 	})

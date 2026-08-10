@@ -5,6 +5,7 @@ import { Button, Text, View } from '@tarojs/components'
 import { BuyerFavoriteItem, listFavorites, removeFavorite } from '../../services/buyer'
 import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
+import { canContactForProduct, getProductStatusText } from '../../utils/product-status'
 
 export default function FavoritePage() {
   const queryClient = useQueryClient()
@@ -36,15 +37,18 @@ export default function FavoritePage() {
                   原价 ¥{centToYuanText(item.original_price_cent ?? item.price_cent)}
                 </Text>
                 <Text style={{ marginLeft: '12rpx', color: '#6f7c77' }}>仅剩 {item.stock} 件</Text>
+                <Text className="status-badge" style={{ marginLeft: '12rpx' }}>{getProductStatusText(item.status)}</Text>
               </View>
             </View>
             <View style={{ marginTop: '10rpx', display: 'flex', gap: '12rpx' }}>
               <Button className="btn-secondary" size="mini" onClick={() => removeMutation.mutate(item.product_id)}>
                 取消收藏
               </Button>
-              <Button className="btn-primary" size="mini" onClick={() => void promptAndCallStore()}>
-                我想要
-              </Button>
+              {canContactForProduct(item.status) ? (
+                <Button className="btn-primary" size="mini" onClick={() => void promptAndCallStore()}>
+                  我想要
+                </Button>
+              ) : null}
             </View>
           </View>
         ))}

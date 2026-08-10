@@ -3,7 +3,8 @@ import type { LoginResponse, LoginType } from '../types/auth'
 
 export type AdjustProductStockPayload = {
   adjustment_type: 'INCREASE' | 'DECREASE' | 'MARK_SOLD'
-  quantity: number
+  quantity?: number
+  all_remaining?: boolean
   reason: string
 }
 
@@ -99,9 +100,6 @@ export const api = {
   },
   productOffShelf(productId: string | number) {
     return http.post(`/merchant/products/${productId}/off-shelf`, {})
-  },
-  productClose(productId: string | number, reason?: string) {
-    return http.post(`/merchant/products/${productId}/close`, reason ? { reason } : {})
   },
   adjustProductStock(productId: string | number, payload: AdjustProductStockPayload) {
     return http.post<APIResponse<AdjustProductStockResponse>>(`/merchant/products/${productId}/stock-adjustments`, payload)

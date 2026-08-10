@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ProductStatus } from '@/constants/status'
-import { canAdjustProductStock, STOCK_ADJUSTMENT_TYPE_OPTIONS } from './stock-adjustment'
+import { canAdjustProductStock, getStockAdjustmentTypeOptions } from './stock-adjustment'
 
 describe('stock adjustment helpers', () => {
-  it('allows only draft, on-shelf, and off-shelf products to be adjusted', () => {
-    const allowed: ProductStatus[] = ['DRAFT', 'ON_SHELF', 'OFF_SHELF']
-    const denied: ProductStatus[] = ['LOCKED', 'SOLD', 'CLOSED']
+  it('allows draft, on-shelf, off-shelf, and sold products to be adjusted', () => {
+    const allowed: ProductStatus[] = ['DRAFT', 'ON_SHELF', 'OFF_SHELF', 'SOLD']
+    const denied: ProductStatus[] = ['LOCKED']
 
     for (const status of allowed) {
       expect(canAdjustProductStock(status)).toBe(true)
@@ -15,11 +15,15 @@ describe('stock adjustment helpers', () => {
     }
   })
 
-  it('exposes the three supported stock adjustment types', () => {
-    expect(STOCK_ADJUSTMENT_TYPE_OPTIONS.map((item) => item.value)).toEqual(['INCREASE', 'DECREASE', 'MARK_SOLD'])
+  it('derives supported stock adjustment types from product status', () => {
+    expect(getStockAdjustmentTypeOptions('DRAFT').map((item) => item.value)).toEqual(['INCREASE', 'DECREASE'])
+    expect(getStockAdjustmentTypeOptions('ON_SHELF').map((item) => item.value)).toEqual(['INCREASE', 'DECREASE', 'MARK_SOLD'])
+    expect(getStockAdjustmentTypeOptions('OFF_SHELF').map((item) => item.value)).toEqual(['INCREASE', 'DECREASE', 'MARK_SOLD'])
+    expect(getStockAdjustmentTypeOptions('SOLD').map((item) => item.value)).toEqual(['INCREASE'])
+    expect(getStockAdjustmentTypeOptions('LOCKED')).toEqual([])
   })
 
-  it('keeps locked, sold, and closed products out of the stock adjustment entry', () => {
-    expect(['LOCKED', 'SOLD', 'CLOSED'].every((status) => !canAdjustProductStock(status as ProductStatus))).toBe(true)
+  it('does not expose mark sold for draft products', () => {
+    expect(getStockAdjustmentTypeOptions('DRAFT').map((item) => item.value)).not.toContain('MARK_SOLD')
   })
 })

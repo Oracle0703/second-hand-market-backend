@@ -62,15 +62,15 @@ export function ListPage() {
   const [previewImageURLs, setPreviewImageURLs] = useState<string[]>([])
   const [previewImageIDs, setPreviewImageIDs] = useState<number[]>([])
   const [stockAdjustProduct, setStockAdjustProduct] = useState<StockAdjustmentProduct | null>(null)
+  const [markSoldAllRemaining, setMarkSoldAllRemaining] = useState(false)
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
     queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
   })
   const transitionMutation = useMutation({
-    mutationFn: async ({ id, action }: { id: number; action: 'on' | 'off' | 'close' }) => {
+    mutationFn: async ({ id, action }: { id: number; action: 'on' | 'off' }) => {
       if (action === 'on') return api.productOnShelf(id)
-      if (action === 'off') return api.productOffShelf(id)
-      return api.productClose(id)
+      return api.productOffShelf(id)
     },
     onSuccess: () => {
       actionRef.current?.reload()
@@ -267,21 +267,29 @@ export function ListPage() {
             </>
           )}
           {canAdjustProductStock(row.status) && (
-            <Button type="link" onClick={() => setStockAdjustProduct({ id: row.id, title: row.title, status: row.status, stock: row.stock })}>
+            <Button
+              type="link"
+              onClick={() => {
+                setMarkSoldAllRemaining(false)
+                setStockAdjustProduct({ id: row.id, title: row.title, status: row.status, stock: row.stock })
+              }}
+            >
               调整库存
             </Button>
           )}
-          {(row.status === 'DRAFT' || row.status === 'ON_SHELF' || row.status === 'OFF_SHELF') && (
+          {(row.status === 'ON_SHELF' || row.status === 'OFF_SHELF') && row.stock > 0 ? (
             <Button
               type="link"
               danger
-              loading={transitionMutation.isPending}
-              onClick={() => transitionMutation.mutate({ id: row.id, action: 'close' })}
+              onClick={() => {
+                setMarkSoldAllRemaining(true)
+                setStockAdjustProduct({ id: row.id, title: row.title, status: row.status, stock: row.stock })
+              }}
             >
-              关闭
+              设为售罄
             </Button>
-          )}
-          {(row.status === 'DRAFT' || row.status === 'OFF_SHELF' || row.status === 'CLOSED') && (
+          ) : null}
+          {(row.status === 'DRAFT' || row.status === 'OFF_SHELF') && (
             <Button type="link" danger loading={deleteMutation.isPending} onClick={() => handleDeleteProduct(row)}>
               删除
             </Button>
@@ -333,8 +341,13 @@ export function ListPage() {
       <StockAdjustmentModal
         open={Boolean(stockAdjustProduct)}
         product={stockAdjustProduct}
-        onCancel={() => setStockAdjustProduct(null)}
+        markSoldAllRemaining={markSoldAllRemaining}
+        onCancel={() => {
+          setMarkSoldAllRemaining(false)
+          setStockAdjustProduct(null)
+        }}
         onSuccess={async () => {
+          setMarkSoldAllRemaining(false)
           setStockAdjustProduct(null)
           actionRef.current?.reload()
         }}

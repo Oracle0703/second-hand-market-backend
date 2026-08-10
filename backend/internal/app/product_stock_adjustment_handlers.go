@@ -14,15 +14,24 @@ import (
 )
 
 func canAdjustProductStock(status string) bool {
-	return status == model.ProductDraft || status == model.ProductOnShelf || status == model.ProductOffShelf
+	return status == model.ProductDraft || status == model.ProductOnShelf || status == model.ProductOffShelf || status == model.ProductSold
 }
 
-func calculateStockAdjustment(product model.Product, adjustmentType string, quantity int) (int, string, error) {
+func calculateStockAdjustment(product model.Product, adjustmentType string, quantity int, allRemaining bool) (int, int, string, error) {
 	if !canAdjustProductStock(product.Status) || product.ActiveOrderID != nil {
-		return 0, "", common.ErrInvalidTransition
+		return 0, 0, "", common.ErrInvalidTransition
 	}
-	if quantity <= 0 {
-		return 0, "", common.ErrInvalidArgument
+	if product.Status == model.ProductSold {
+		if adjustmentType != model.StockAdjustmentIncrease || quantity <= 0 || allRemaining {
+			return 0, 0, "", common.ErrInvalidTransition
+		}
+		return quantity, product.Stock + quantity, model.ProductOffShelf, nil
+	}
+	if allRemaining && adjustmentType != model.StockAdjustmentMarkSold {
+		return 0, 0, "", common.ErrInvalidArgument
+	}
+	if quantity <= 0 && !allRemaining {
+		return 0, 0, "", common.ErrInvalidArgument
 	}
 
 	stockAfter := product.Stock
@@ -32,24 +41,30 @@ func calculateStockAdjustment(product model.Product, adjustmentType string, quan
 		stockAfter = product.Stock + quantity
 	case model.StockAdjustmentDecrease:
 		if quantity > product.Stock {
-			return 0, "", common.ErrInvalidTransition
+			return 0, 0, "", common.ErrInvalidTransition
 		}
 		stockAfter = product.Stock - quantity
 		if product.Status == model.ProductOnShelf && stockAfter == 0 {
 			statusAfter = model.ProductOffShelf
 		}
 	case model.StockAdjustmentMarkSold:
+		if (product.Status != model.ProductOnShelf && product.Status != model.ProductOffShelf) || product.Stock <= 0 || product.ReservedStock != 0 {
+			return 0, 0, "", common.ErrInvalidTransition
+		}
+		if allRemaining {
+			quantity = product.Stock
+		}
 		if quantity > product.Stock {
-			return 0, "", common.ErrInvalidTransition
+			return 0, 0, "", common.ErrInvalidTransition
 		}
 		stockAfter = product.Stock - quantity
 		if stockAfter == 0 {
 			statusAfter = model.ProductSold
 		}
 	default:
-		return 0, "", common.ErrInvalidArgument
+		return 0, 0, "", common.ErrInvalidArgument
 	}
-	return stockAfter, statusAfter, nil
+	return quantity, stockAfter, statusAfter, nil
 }
 
 func (s *Server) loadOwnedProductForUpdate(tx *gorm.DB, productID uint64, merchantID uint64) (model.Product, error) {
@@ -88,7 +103,7 @@ func (s *Server) handleProductStockAdjustment(c *gin.Context) {
 		return
 	}
 
-	payload := gin.H{"id": id, "adjustment_type": req.AdjustmentType, "quantity": req.Quantity, "reason": req.Reason}
+	payload := gin.H{"id": id, "adjustment_type": req.AdjustmentType, "quantity": req.Quantity, "all_remaining": req.AllRemaining, "reason": req.Reason}
 	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
 		err := s.DB.Transaction(func(tx *gorm.DB) error {
@@ -98,7 +113,7 @@ func (s *Server) handleProductStockAdjustment(c *gin.Context) {
 			}
 			stockBefore := product.Stock
 			statusBefore := product.Status
-			stockAfter, statusAfter, err := calculateStockAdjustment(product, req.AdjustmentType, req.Quantity)
+			appliedQuantity, stockAfter, statusAfter, err := calculateStockAdjustment(product, req.AdjustmentType, req.Quantity, req.AllRemaining)
 			if err != nil {
 				return err
 			}
@@ -123,7 +138,7 @@ func (s *Server) handleProductStockAdjustment(c *gin.Context) {
 				ProductID:      product.ID,
 				MerchantID:     actor.MerchantID,
 				AdjustmentType: req.AdjustmentType,
-				Quantity:       req.Quantity,
+				Quantity:       appliedQuantity,
 				StockBefore:    stockBefore,
 				StockAfter:     stockAfter,
 				StatusBefore:   statusBefore,
@@ -139,7 +154,7 @@ func (s *Server) handleProductStockAdjustment(c *gin.Context) {
 			from, to := statusBefore, statusAfter
 			s.writeOperationLog(c, tx, "product", product.ID, "product_stock_adjust", &from, &to, common.CodeOK, &actor.MerchantID, gin.H{
 				"adjustment_type": req.AdjustmentType,
-				"quantity":        req.Quantity,
+				"quantity":        appliedQuantity,
 				"stock_before":    stockBefore,
 				"stock_after":     stockAfter,
 				"reason":          req.Reason,
@@ -149,7 +164,7 @@ func (s *Server) handleProductStockAdjustment(c *gin.Context) {
 			resp["product_id"] = product.ID
 			resp["movement_id"] = movement.ID
 			resp["adjustment_type"] = req.AdjustmentType
-			resp["quantity"] = req.Quantity
+			resp["quantity"] = appliedQuantity
 			resp["stock_before"] = stockBefore
 			resp["stock_after"] = stockAfter
 			resp["status_before"] = statusBefore

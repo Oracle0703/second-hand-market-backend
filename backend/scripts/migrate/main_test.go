@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
@@ -19,6 +21,7 @@ func TestParseMigrationSelectionRequiresExactlyOneAllowlistedMigration(t *testin
 		{"--migration=0002_buyer_domain"},
 		{"--migration=0005_legacy_file_records_table"},
 		{"--migration=0006_product_stock_adjustments"},
+		{"--migration=0007_product_sold_out_state"},
 	} {
 		spec, err := parseMigrationSelection(args)
 		if err != nil {
@@ -348,6 +351,7 @@ func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 		"0004_image_backfill_ledger":     2,
 		"0005_legacy_file_records_table": 1,
 		"0006_product_stock_adjustments": 1,
+		"0007_product_sold_out_state":    2,
 	}
 	for migrationID, expectedCount := range wantStatements {
 		spec := migrationCatalog[migrationID]
@@ -358,6 +362,36 @@ func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 		if len(statements) != expectedCount {
 			t.Fatalf("%s statements = %d, want %d", migrationID, len(statements), expectedCount)
 		}
+	}
+}
+
+func TestProductSoldOutStateMigrationCatalog(t *testing.T) {
+	const source = "UPDATE products SET status = 'OFF_SHELF' WHERE status = 'CLOSED';\n" +
+		"UPDATE products SET status = 'OFF_SHELF' WHERE status = 'SOLD' AND stock > 0;\n"
+	wantHash := sha256.Sum256([]byte(source))
+	want := migrationSource{
+		FileName: "0007_product_sold_out_state.up.sql",
+		SHA256:   hex.EncodeToString(wantHash[:]),
+	}
+
+	spec, err := parseMigrationSelection([]string{"--migration", "0007_product_sold_out_state"})
+	if err != nil {
+		t.Fatalf("select 0007: %v", err)
+	}
+	if len(spec.Sources) != 1 || spec.Sources[0] != want {
+		t.Fatalf("0007 sources = %+v, want [%+v]", spec.Sources, want)
+	}
+
+	statements, err := loadMigrationStatementsFromDir("../../migrations", spec)
+	if err != nil {
+		t.Fatalf("load 0007: %v", err)
+	}
+	wantStatements := []string{
+		"UPDATE products SET status = 'OFF_SHELF' WHERE status = 'CLOSED'",
+		"UPDATE products SET status = 'OFF_SHELF' WHERE status = 'SOLD' AND stock > 0",
+	}
+	if strings.Join(statements, "|") != strings.Join(wantStatements, "|") {
+		t.Fatalf("0007 statements = %q, want %q", statements, wantStatements)
 	}
 }
 

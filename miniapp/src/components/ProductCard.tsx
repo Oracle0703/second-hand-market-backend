@@ -2,6 +2,7 @@ import React from 'react'
 import { Image, Text, View } from '@tarojs/components'
 import { BuyerProduct } from '../services/buyer'
 import { centToYuanText } from '../utils/price'
+import { getProductStatusText } from '../utils/product-status'
 import { resolveAssetURL } from '../utils/url'
 
 type Props = {
@@ -25,7 +26,7 @@ export const ProductCard: React.FC<Props> = ({ product, onClick }) => {
         </View>
         <View style={{ marginTop: '8rpx', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text style={{ color: '#6f7c77' }}>仅剩 {product.stock} 件</Text>
-          <Text className="status-badge">{product.status}</Text>
+          <Text className="status-badge">{getProductStatusText(product.status)}</Text>
         </View>
       </View>
     </View>

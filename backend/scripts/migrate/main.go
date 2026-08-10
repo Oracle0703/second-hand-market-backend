@@ -68,19 +68,32 @@ var migrationCatalog = map[string]migrationSpec{
 		},
 	},
 	"0004_image_backfill_ledger": {
-		ID:       "0004_image_backfill_ledger",
-		FileName: "0004_image_backfill_ledger.up.sql",
-		SHA256:   "fe3fe80737b7ebb1786e7dc9ba6a021fa69c9523af44c7994a66513e1ab0c159",
+		ID: "0004_image_backfill_ledger",
+		Sources: []migrationSource{{
+			FileName: "0004_image_backfill_ledger.up.sql",
+			SHA256:   "fe3fe80737b7ebb1786e7dc9ba6a021fa69c9523af44c7994a66513e1ab0c159",
+		}},
 	},
 	"0005_legacy_file_records_table": {
-		ID:       "0005_legacy_file_records_table",
-		FileName: "0005_legacy_file_records_table.up.sql",
-		SHA256:   "fcbce9f568ff40b0a8809eb9b5920946db2cca9b9869f1bfae95955ae5883fca",
+		ID: "0005_legacy_file_records_table",
+		Sources: []migrationSource{{
+			FileName: "0005_legacy_file_records_table.up.sql",
+			SHA256:   "fcbce9f568ff40b0a8809eb9b5920946db2cca9b9869f1bfae95955ae5883fca",
+		}},
 	},
 	"0006_product_stock_adjustments": {
-		ID:       "0006_product_stock_adjustments",
-		FileName: "0006_product_stock_adjustments.up.sql",
-		SHA256:   "b19343cffc234d9de3c9b82dc56b75729a76b7c959bf218dff0ac80591d7664e",
+		ID: "0006_product_stock_adjustments",
+		Sources: []migrationSource{{
+			FileName: "0006_product_stock_adjustments.up.sql",
+			SHA256:   "b19343cffc234d9de3c9b82dc56b75729a76b7c959bf218dff0ac80591d7664e",
+		}},
+	},
+	"0007_product_sold_out_state": {
+		ID: "0007_product_sold_out_state",
+		Sources: []migrationSource{{
+			FileName: "0007_product_sold_out_state.up.sql",
+			SHA256:   "1ddaea62f22d198c6659bfadc0dfbdc071a35606f38bd9a926345ee3941bff58",
+		}},
 	},
 }
 

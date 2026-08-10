@@ -30,16 +30,16 @@ export function DetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [stockAdjustOpen, setStockAdjustOpen] = useState(false)
+  const [markSoldAllRemaining, setMarkSoldAllRemaining] = useState(false)
   const detail = useQuery({
     queryKey: ['product-detail', productId],
     queryFn: async () => (await api.productDetail(productId)).data.data.product as ProductDetail
   })
 
   const transitionMutation = useMutation({
-    mutationFn: async (action: 'on' | 'off' | 'close') => {
+    mutationFn: async (action: 'on' | 'off') => {
       if (action === 'on') return api.productOnShelf(productId)
-      if (action === 'off') return api.productOffShelf(productId)
-      return api.productClose(productId)
+      return api.productOffShelf(productId)
     },
     onSuccess: async () => {
       message.success('状态更新成功')
@@ -74,7 +74,13 @@ export function DetailPage() {
       返回列表
     </Button>,
     canAdjustProductStock(product.status) && (
-      <Button key="adjust-stock" onClick={() => setStockAdjustOpen(true)}>
+      <Button
+        key="adjust-stock"
+        onClick={() => {
+          setMarkSoldAllRemaining(false)
+          setStockAdjustOpen(true)
+        }}
+      >
         调整库存
       </Button>
     ),
@@ -98,11 +104,18 @@ export function DetailPage() {
         创建订单
       </Button>
     ),
-    (product.status === 'DRAFT' || product.status === 'ON_SHELF' || product.status === 'OFF_SHELF') && (
-      <Button key="close" danger loading={transitionMutation.isPending} onClick={() => transitionMutation.mutate('close')}>
-        关闭商品
+    (product.status === 'ON_SHELF' || product.status === 'OFF_SHELF') && product.stock > 0 ? (
+      <Button
+        key="mark-sold"
+        danger
+        onClick={() => {
+          setMarkSoldAllRemaining(true)
+          setStockAdjustOpen(true)
+        }}
+      >
+        设为售罄
       </Button>
-    )
+    ) : null
   ].filter(Boolean)
 
   return (
@@ -127,8 +140,13 @@ export function DetailPage() {
       <StockAdjustmentModal
         open={stockAdjustOpen}
         product={{ id: product.id, title: product.title, status: product.status, stock: product.stock }}
-        onCancel={() => setStockAdjustOpen(false)}
+        markSoldAllRemaining={markSoldAllRemaining}
+        onCancel={() => {
+          setMarkSoldAllRemaining(false)
+          setStockAdjustOpen(false)
+        }}
         onSuccess={async () => {
+          setMarkSoldAllRemaining(false)
           setStockAdjustOpen(false)
           await queryClient.invalidateQueries({ queryKey: ['product-detail', productId] })
           await queryClient.invalidateQueries({ queryKey: ['merchant-products'] })

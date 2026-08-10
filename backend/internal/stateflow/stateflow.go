@@ -5,20 +5,13 @@ import "second-hand-market-backend/backend/internal/model"
 var productTransitions = map[string]map[string]bool{
 	model.ProductDraft: {
 		model.ProductOnShelf: true,
-		model.ProductClosed:  true,
 	},
 	model.ProductOnShelf: {
 		model.ProductOffShelf: true,
 		model.ProductLocked:   true,
-		model.ProductClosed:   true,
 	},
 	model.ProductOffShelf: {
 		model.ProductOnShelf: true,
-		model.ProductClosed:  true,
-	},
-	model.ProductLocked: {
-		model.ProductSold:     true,
-		model.ProductOffShelf: true,
 	},
 }
 

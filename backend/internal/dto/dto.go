@@ -63,7 +63,8 @@ type UpdateProductRequest struct {
 
 type AdjustProductStockRequest struct {
 	AdjustmentType string `json:"adjustment_type" binding:"required,oneof=INCREASE DECREASE MARK_SOLD"`
-	Quantity       int    `json:"quantity" binding:"required,gt=0"`
+	Quantity       int    `json:"quantity" binding:"omitempty,gt=0"`
+	AllRemaining   bool   `json:"all_remaining"`
 	Reason         string `json:"reason" binding:"required,min=2,max=255"`
 }
 

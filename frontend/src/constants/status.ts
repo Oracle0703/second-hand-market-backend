@@ -1,4 +1,4 @@
-export type ProductStatus = 'DRAFT' | 'ON_SHELF' | 'LOCKED' | 'OFF_SHELF' | 'SOLD' | 'CLOSED'
+export type ProductStatus = 'DRAFT' | 'ON_SHELF' | 'LOCKED' | 'OFF_SHELF' | 'SOLD'
 export type OrderStatus = 'CREATED' | 'COMPLETED' | 'CLOSED'
 export type IntentStatus = 'NEW' | 'CONTACTED' | 'CLOSED'
 export type MerchantReviewStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
@@ -14,8 +14,7 @@ export const PRODUCT_STATUS_META: Record<ProductStatus, StatusMeta> = {
   ON_SHELF: { text: '在售', color: 'success' },
   LOCKED: { text: '锁定', color: 'gold' },
   OFF_SHELF: { text: '下架', color: 'processing' },
-  SOLD: { text: '已成交', color: 'blue' },
-  CLOSED: { text: '已关闭', color: 'default' }
+  SOLD: { text: '售罄', color: 'blue' }
 }
 
 export const ORDER_STATUS_META: Record<OrderStatus, StatusMeta> = {

@@ -20,15 +20,14 @@ type StatusRow = {
   color: string
 }
 
-const PRODUCT_STATUS_ORDER = ['draft', 'on_shelf', 'locked', 'off_shelf', 'sold', 'closed']
+const PRODUCT_STATUS_ORDER = ['draft', 'on_shelf', 'locked', 'off_shelf', 'sold']
 const ORDER_STATUS_ORDER = ['created', 'completed', 'closed']
 const PRODUCT_STATUS_COLORS: Record<string, string> = {
   draft: '#9ca3af',
   on_shelf: '#22c55e',
   locked: '#f59e0b',
   off_shelf: '#3b82f6',
-  sold: '#2563eb',
-  closed: '#6b7280'
+  sold: '#2563eb'
 }
 const ORDER_STATUS_COLORS: Record<string, string> = {
   created: '#3b82f6',

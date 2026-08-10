@@ -34,7 +34,7 @@ func (s *Server) handleCreateOrder(c *gin.Context) {
 	}
 	var order model.Order
 	err = s.DB.Transaction(func(tx *gorm.DB) error {
-		product, err := s.loadOwnedProduct(tx, req.ProductID, actor.MerchantID)
+		product, err := s.loadOwnedProductForUpdate(tx, req.ProductID, actor.MerchantID)
 		if err != nil {
 			return err
 		}
@@ -44,10 +44,14 @@ func (s *Server) handleCreateOrder(c *gin.Context) {
 		if !stateflow.CanTransitionProduct(product.Status, model.ProductLocked) {
 			return common.ErrInvalidTransition
 		}
+		if product.Stock-product.ReservedStock < 1 {
+			return common.ErrInvalidTransition
+		}
 		order = model.Order{
 			OrderNo:            common.BuildBizNo("O"),
 			MerchantID:         actor.MerchantID,
 			ProductID:          product.ID,
+			Quantity:           1,
 			DealPriceCent:      req.DealPriceCent,
 			BuyerContactMasked: req.BuyerContactMasked,
 			Remark:             req.Remark,
@@ -64,6 +68,7 @@ func (s *Server) handleCreateOrder(c *gin.Context) {
 		now := time.Now()
 		fromStatus := product.Status
 		product.Status = model.ProductLocked
+		product.ReservedStock += order.Quantity
 		product.ActiveOrderID = &order.ID
 		product.LockedAt = &now
 		product.UpdatedBy = actor.UserID
@@ -171,31 +176,34 @@ func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action strin
 	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
 		err := s.DB.Transaction(func(tx *gorm.DB) error {
-			order, err := s.loadOwnedOrder(tx, id, actor.MerchantID)
+			order, err := s.loadOwnedOrderForUpdate(tx, id, actor.MerchantID)
 			if err != nil {
 				return err
 			}
 			fromOrder := order.Status
 			if order.Status == toStatus {
+				product, err := s.loadOwnedProductForUpdate(tx, order.ProductID, actor.MerchantID)
+				if err != nil {
+					return err
+				}
 				resp["order_id"] = order.ID
 				resp["from_status"] = order.Status
 				resp["to_status"] = order.Status
 				resp["idempotent"] = true
-				if toStatus == model.OrderCompleted {
-					resp["product_status"] = model.ProductSold
-				} else {
-					resp["product_status"] = model.ProductOffShelf
-				}
+				resp["product_status"] = product.Status
 				return nil
 			}
 			if !stateflow.CanTransitionOrder(order.Status, toStatus) {
 				return common.ErrInvalidTransition
 			}
-			product, err := s.loadOwnedProduct(tx, order.ProductID, actor.MerchantID)
+			product, err := s.loadOwnedProductForUpdate(tx, order.ProductID, actor.MerchantID)
 			if err != nil {
 				return err
 			}
-			if product.Status != model.ProductLocked {
+			if product.Status != model.ProductLocked || product.ActiveOrderID == nil || *product.ActiveOrderID != order.ID {
+				return common.ErrInvalidTransition
+			}
+			if order.Quantity <= 0 || product.ReservedStock < order.Quantity || product.Stock < order.Quantity {
 				return common.ErrInvalidTransition
 			}
 
@@ -204,12 +212,19 @@ func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action strin
 			now := time.Now()
 			if toStatus == model.OrderCompleted {
 				order.CompletedAt = &now
-				product.Status = model.ProductSold
-				product.SoldAt = &now
+				product.Stock -= order.Quantity
+				product.ReservedStock -= order.Quantity
+				if product.Stock == 0 {
+					product.Status = model.ProductSold
+					product.SoldAt = &now
+				} else {
+					product.Status = model.ProductOnShelf
+				}
 				resp["completed_at"] = now.Format(time.RFC3339)
 			} else {
 				order.ClosedAt = &now
 				order.CloseReason = note
+				product.ReservedStock -= order.Quantity
 				product.Status = model.ProductOffShelf
 				product.OffShelfAt = &now
 				resp["closed_at"] = now.Format(time.RFC3339)

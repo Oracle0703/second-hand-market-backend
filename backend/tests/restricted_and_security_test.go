@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -93,10 +94,14 @@ func productImageAndCategory(t *testing.T, srv *app.Server, merchantToken string
 }
 
 func createAndOnShelfProduct(t *testing.T, srv *app.Server, merchantToken string) uint64 {
+	return createAndOnShelfProductWithStock(t, srv, merchantToken, 1)
+}
+
+func createAndOnShelfProductWithStock(t *testing.T, srv *app.Server, merchantToken string, stock int) uint64 {
 	t.Helper()
 	imgID, categoryID := productImageAndCategory(t, srv, merchantToken)
 	create := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/products", map[string]interface{}{
-		"title": "测试商品", "description": "desc", "category_id": categoryID, "price_cent": 10000, "original_price_cent": 12000, "condition_level": "GOOD", "stock": 1, "image_file_ids": []uint64{imgID},
+		"title": "测试商品", "description": "desc", "category_id": categoryID, "price_cent": 10000, "original_price_cent": 12000, "condition_level": "GOOD", "stock": stock, "image_file_ids": []uint64{imgID},
 	}, map[string]string{"Authorization": "Bearer " + merchantToken})
 	if create.Code != 0 {
 		t.Fatalf("create product failed: %+v", create)
@@ -352,16 +357,35 @@ func TestOrderProductTransactionConsistency(t *testing.T) {
 	if completedOrder.Status != model.OrderCompleted || completedOrder.IsActive {
 		t.Fatalf("completed order mismatch: status=%s is_active=%v", completedOrder.Status, completedOrder.IsActive)
 	}
-	if completedProduct.Status != model.ProductSold || completedProduct.ActiveOrderID != nil {
-		t.Fatalf("completed product mismatch: status=%s active_order_id=%v", completedProduct.Status, completedProduct.ActiveOrderID)
+	if completedProduct.Status != model.ProductSold || completedProduct.Stock != 0 || completedProduct.ReservedStock != 0 || completedProduct.ActiveOrderID != nil {
+		t.Fatalf(
+			"completed product mismatch: status=%s stock=%d reserved_stock=%d active_order_id=%v",
+			completedProduct.Status,
+			completedProduct.Stock,
+			completedProduct.ReservedStock,
+			completedProduct.ActiveOrderID,
+		)
 	}
 
-	productForClose := createAndOnShelfProduct(t, srv, token)
+	productForClose := createAndOnShelfProductWithStock(t, srv, token, 5)
 	createCloseOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productForClose, "deal_price_cent": 9900}, map[string]string{"Authorization": "Bearer " + token})
 	if createCloseOrder.Code != 0 {
 		t.Fatalf("create order for close failed: %+v", createCloseOrder)
 	}
 	orderForClose := numToUint64(createCloseOrder.Data["order_id"])
+	var reservedProduct model.Product
+	if err := srv.DB.Where("id = ?", productForClose).First(&reservedProduct).Error; err != nil {
+		t.Fatalf("load reserved product failed: %v", err)
+	}
+	if reservedProduct.Status != model.ProductLocked || reservedProduct.Stock != 5 || reservedProduct.ReservedStock != 1 || reservedProduct.ActiveOrderID == nil || *reservedProduct.ActiveOrderID != orderForClose {
+		t.Fatalf(
+			"reserved product mismatch: status=%s stock=%d reserved_stock=%d active_order_id=%v",
+			reservedProduct.Status,
+			reservedProduct.Stock,
+			reservedProduct.ReservedStock,
+			reservedProduct.ActiveOrderID,
+		)
+	}
 	closeResp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/orders/%d/close", orderForClose), map[string]interface{}{"reason": "cancel"}, map[string]string{"Authorization": "Bearer " + token})
 	if closeResp.Code != 0 {
 		t.Fatalf("close failed: %+v", closeResp)
@@ -377,8 +401,133 @@ func TestOrderProductTransactionConsistency(t *testing.T) {
 	if closedOrder.Status != model.OrderClosed || closedOrder.IsActive {
 		t.Fatalf("closed order mismatch: status=%s is_active=%v", closedOrder.Status, closedOrder.IsActive)
 	}
-	if closedProduct.Status != model.ProductOffShelf || closedProduct.ActiveOrderID != nil {
-		t.Fatalf("closed product mismatch: status=%s active_order_id=%v", closedProduct.Status, closedProduct.ActiveOrderID)
+	if closedProduct.Status != model.ProductOffShelf || closedProduct.Stock != 5 || closedProduct.ReservedStock != 0 || closedProduct.ActiveOrderID != nil {
+		t.Fatalf(
+			"closed product mismatch: status=%s stock=%d reserved_stock=%d active_order_id=%v",
+			closedProduct.Status,
+			closedProduct.Stock,
+			closedProduct.ReservedStock,
+			closedProduct.ActiveOrderID,
+		)
+	}
+}
+
+func TestOrderCompletionReturnsRemainingStockToOnShelf(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "partial_complete")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createAndOnShelfProductWithStock(t, srv, token, 5)
+
+	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 10000}, map[string]string{"Authorization": "Bearer " + token})
+	if createOrder.Code != 0 {
+		t.Fatalf("create order failed: %+v", createOrder)
+	}
+	orderID := numToUint64(createOrder.Data["order_id"])
+
+	complete := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/orders/%d/complete", orderID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if complete.Code != 0 || str(complete.Data["product_status"]) != model.ProductOnShelf {
+		t.Fatalf("complete order failed: %+v", complete)
+	}
+
+	var product model.Product
+	if err := srv.DB.Where("id = ?", productID).First(&product).Error; err != nil {
+		t.Fatalf("load product failed: %v", err)
+	}
+	if product.Status != model.ProductOnShelf || product.Stock != 4 || product.ReservedStock != 0 || product.ActiveOrderID != nil {
+		t.Fatalf(
+			"partially sold product mismatch: status=%s stock=%d reserved_stock=%d active_order_id=%v",
+			product.Status,
+			product.Stock,
+			product.ReservedStock,
+			product.ActiveOrderID,
+		)
+	}
+
+	repeat := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/orders/%d/complete", orderID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if repeat.Code != 0 || str(repeat.Data["product_status"]) != model.ProductOnShelf {
+		t.Fatalf("repeated complete should return current product status: %+v", repeat)
+	}
+}
+
+func TestLockedProductCannotBeOffShelvedDirectly(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "locked_off_shelf")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createAndOnShelfProduct(t, srv, token)
+	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 10000}, map[string]string{"Authorization": "Bearer " + token})
+	if createOrder.Code != 0 {
+		t.Fatalf("create order failed: %+v", createOrder)
+	}
+	orderID := numToUint64(createOrder.Data["order_id"])
+
+	offShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/off-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if offShelf.Code != 10005 {
+		t.Fatalf("locked product off-shelf should be denied: %+v", offShelf)
+	}
+
+	var product model.Product
+	if err := srv.DB.Where("id = ?", productID).First(&product).Error; err != nil {
+		t.Fatalf("load product failed: %v", err)
+	}
+	if product.Status != model.ProductLocked || product.ActiveOrderID == nil || *product.ActiveOrderID != orderID || product.ReservedStock != 1 {
+		t.Fatalf("locked product binding changed: status=%s active_order_id=%v reserved_stock=%d", product.Status, product.ActiveOrderID, product.ReservedStock)
+	}
+	var order model.Order
+	if err := srv.DB.Where("id = ?", orderID).First(&order).Error; err != nil {
+		t.Fatalf("load order failed: %v", err)
+	}
+	if order.Status != model.OrderCreated || !order.IsActive {
+		t.Fatalf("active order changed: status=%s is_active=%v", order.Status, order.IsActive)
+	}
+}
+
+func TestOrderActionRequiresMatchingProductBinding(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "order_binding")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+	productID := createAndOnShelfProduct(t, srv, token)
+	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 10000}, map[string]string{"Authorization": "Bearer " + token})
+	if createOrder.Code != 0 {
+		t.Fatalf("create order failed: %+v", createOrder)
+	}
+	orderID := numToUint64(createOrder.Data["order_id"])
+	wrongOrderID := orderID + 1
+	if err := srv.DB.Model(&model.Product{}).Where("id = ?", productID).Update("active_order_id", wrongOrderID).Error; err != nil {
+		t.Fatalf("replace active order binding failed: %v", err)
+	}
+
+	complete := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/orders/%d/complete", orderID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+	if complete.Code != 10005 {
+		t.Fatalf("mismatched product binding should reject order action: %+v", complete)
+	}
+
+	var order model.Order
+	if err := srv.DB.Where("id = ?", orderID).First(&order).Error; err != nil {
+		t.Fatalf("load order failed: %v", err)
+	}
+	if order.Status != model.OrderCreated || !order.IsActive {
+		t.Fatalf("mismatched order changed: status=%s is_active=%v", order.Status, order.IsActive)
 	}
 }
 
@@ -410,14 +559,86 @@ func TestProductLifecycleStatusTransitions(t *testing.T) {
 		t.Fatalf("on shelf again failed: %+v", onShelfAgain)
 	}
 
-	closeResp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/close", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
-	if closeResp.Code != 0 || str(closeResp.Data["to_status"]) != model.ProductClosed {
-		t.Fatalf("close product failed: %+v", closeResp)
+	closeRequest := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/close", productID), nil)
+	closeRequest.Header.Set("Authorization", "Bearer "+token)
+	closeRecorder := httptest.NewRecorder()
+	srv.Router.ServeHTTP(closeRecorder, closeRequest)
+	if closeRecorder.Code != http.StatusNotFound {
+		t.Fatalf("product close route status = %d, want %d", closeRecorder.Code, http.StatusNotFound)
 	}
+}
 
-	reOnShelf := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
-	if reOnShelf.Code != 10005 {
-		t.Fatalf("closed product should not re-on-shelf: %+v", reOnShelf)
+func TestProductOnShelfRequiresAvailableInventory(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "product_on_shelf_guards")
+	approveMerchant(t, srv, adminToken, merchantID)
+
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+
+	for _, testCase := range []struct {
+		name     string
+		wantCode int
+		setup    func(t *testing.T, productID uint64)
+	}{
+		{
+			name:     "no images",
+			wantCode: 10001,
+			setup: func(t *testing.T, productID uint64) {
+				if err := srv.DB.Where("product_id = ?", productID).Delete(&model.ProductImage{}).Error; err != nil {
+					t.Fatalf("delete product images: %v", err)
+				}
+			},
+		},
+		{
+			name:     "no available stock",
+			wantCode: 10005,
+			setup: func(t *testing.T, productID uint64) {
+				if err := srv.DB.Model(&model.Product{}).Where("id = ?", productID).Updates(map[string]interface{}{"stock": 1, "reserved_stock": 1}).Error; err != nil {
+					t.Fatalf("reserve all product stock: %v", err)
+				}
+			},
+		},
+		{
+			name:     "stock zero",
+			wantCode: 10005,
+			setup: func(t *testing.T, productID uint64) {
+				if err := srv.DB.Model(&model.Product{}).Where("id = ?", productID).Updates(map[string]interface{}{"stock": 0, "reserved_stock": 0}).Error; err != nil {
+					t.Fatalf("set product stock to zero: %v", err)
+				}
+			},
+		},
+		{
+			name:     "active order",
+			wantCode: 10005,
+			setup: func(t *testing.T, productID uint64) {
+				if err := srv.DB.Model(&model.Product{}).Where("id = ?", productID).Update("active_order_id", uint64(999999)).Error; err != nil {
+					t.Fatalf("set active order: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			productID := createDraftProduct(t, srv, token)
+			testCase.setup(t, productID)
+
+			response := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/on-shelf", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
+			if response.Code != testCase.wantCode {
+				t.Fatalf("on-shelf error code = %d, want %d: %+v", response.Code, testCase.wantCode, response)
+			}
+
+			var product model.Product
+			if err := srv.DB.Where("id = ?", productID).First(&product).Error; err != nil {
+				t.Fatalf("load product: %v", err)
+			}
+			if product.Status != model.ProductDraft {
+				t.Fatalf("product status = %s, want %s", product.Status, model.ProductDraft)
+			}
+		})
 	}
 }
 
@@ -475,22 +696,6 @@ func TestProductEditRulesByStatus(t *testing.T) {
 		t.Fatalf("on-shelf description update should be allowed: %+v", updateOnShelfDescription)
 	}
 
-	closeResp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/products/%d/close", productID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + token})
-	if closeResp.Code != 0 {
-		t.Fatalf("close product failed: %+v", closeResp)
-	}
-
-	updateClosed := requestJSON(
-		t,
-		srv.Router,
-		http.MethodPut,
-		fmt.Sprintf("/api/v1/merchant/products/%d", productID),
-		map[string]interface{}{"description": "closed desc"},
-		map[string]string{"Authorization": "Bearer " + token},
-	)
-	if updateClosed.Code != 10005 {
-		t.Fatalf("closed product update should be denied: %+v", updateClosed)
-	}
 }
 
 func TestProductDeleteRemovesImageRecords(t *testing.T) {
@@ -651,6 +856,16 @@ func TestDashboardStatsExcludeDeletedProducts(t *testing.T) {
 	}
 	if int64(draftCnt) != 1 {
 		t.Fatalf("deleted products should be excluded from dashboard stats, expected draft=1 got=%v (keep=%d deleted=%d)", draftCnt, keepProductID, deleteProductID)
+	}
+	if _, exists := productStats["closed"]; exists {
+		t.Fatalf("product stats must not expose closed: %+v", productStats)
+	}
+	orderStats, ok := dashboard.Data["order_stats"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dashboard order_stats format invalid: %+v", dashboard.Data["order_stats"])
+	}
+	if _, exists := orderStats["closed"]; !exists {
+		t.Fatalf("order stats must retain closed: %+v", orderStats)
 	}
 }
 

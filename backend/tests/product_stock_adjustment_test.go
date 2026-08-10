@@ -94,6 +94,94 @@ func TestProductStockAdjustmentMarkSold(t *testing.T) {
 	}
 }
 
+func TestProductStockAdjustmentMarkSoldAndSoldRecoveryRules(t *testing.T) {
+	srv := newTestServer(t)
+	token := approvedMerchantTokenForStockAdjustment(t, srv, "stock_sold_rules")
+
+	draftProductID := createDraftProduct(t, srv, token)
+	draftMarkSold := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/merchant/products/%d/stock-adjustments", draftProductID),
+		map[string]interface{}{"adjustment_type": "MARK_SOLD", "quantity": 1, "reason": "草稿售罄"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if draftMarkSold.Code != 10005 {
+		t.Fatalf("draft product mark sold should be rejected: %+v", draftMarkSold)
+	}
+
+	productID := createAndOnShelfProductWithStock(t, srv, token, 4)
+	partialMarkSold := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/merchant/products/%d/stock-adjustments", productID),
+		map[string]interface{}{"adjustment_type": "MARK_SOLD", "quantity": 1, "reason": "部分售出"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if partialMarkSold.Code != 0 || numToUint64(partialMarkSold.Data["stock_after"]) != 3 || str(partialMarkSold.Data["status_after"]) != model.ProductOnShelf {
+		t.Fatalf("partial mark sold should keep on-shelf status: %+v", partialMarkSold)
+	}
+
+	allRemaining := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/merchant/products/%d/stock-adjustments", productID),
+		map[string]interface{}{"adjustment_type": "MARK_SOLD", "all_remaining": true, "reason": "全部售出"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if allRemaining.Code != 0 || numToUint64(allRemaining.Data["quantity"]) != 3 || numToUint64(allRemaining.Data["stock_after"]) != 0 || str(allRemaining.Data["status_after"]) != model.ProductSold {
+		t.Fatalf("all remaining mark sold should apply actual remaining stock: %+v", allRemaining)
+	}
+	var allRemainingMovement model.ProductStockAdjustment
+	if err := srv.DB.Where("id = ?", numToUint64(allRemaining.Data["movement_id"])).First(&allRemainingMovement).Error; err != nil {
+		t.Fatalf("load all remaining stock movement failed: %v", err)
+	}
+	if allRemainingMovement.AdjustmentType != "MARK_SOLD" || allRemainingMovement.Quantity != 3 || allRemainingMovement.StockBefore != 3 || allRemainingMovement.StockAfter != 0 || allRemainingMovement.StatusAfter != model.ProductSold {
+		t.Fatalf("all remaining stock movement mismatch: %+v", allRemainingMovement)
+	}
+
+	restock := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/merchant/products/%d/stock-adjustments", productID),
+		map[string]interface{}{"adjustment_type": "INCREASE", "quantity": 2, "reason": "补货恢复"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if restock.Code != 0 || numToUint64(restock.Data["stock_after"]) != 2 || str(restock.Data["status_after"]) != model.ProductOffShelf {
+		t.Fatalf("sold product increase should restore it to off-shelf: %+v", restock)
+	}
+
+	soldProductID := createAndOnShelfProduct(t, srv, token)
+	markSold := requestJSON(
+		t,
+		srv.Router,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/merchant/products/%d/stock-adjustments", soldProductID),
+		map[string]interface{}{"adjustment_type": "MARK_SOLD", "quantity": 1, "reason": "售罄测试"},
+		map[string]string{"Authorization": "Bearer " + token},
+	)
+	if markSold.Code != 0 {
+		t.Fatalf("prepare sold product failed: %+v", markSold)
+	}
+	for _, adjustmentType := range []string{"DECREASE", "MARK_SOLD"} {
+		adjustment := requestJSON(
+			t,
+			srv.Router,
+			http.MethodPost,
+			fmt.Sprintf("/api/v1/merchant/products/%d/stock-adjustments", soldProductID),
+			map[string]interface{}{"adjustment_type": adjustmentType, "quantity": 1, "reason": "售罄后调整"},
+			map[string]string{"Authorization": "Bearer " + token},
+		)
+		if adjustment.Code != 10005 {
+			t.Fatalf("sold product %s should be rejected: %+v", adjustmentType, adjustment)
+		}
+	}
+}
+
 func TestProductStockAdjustmentRejectsInvalidStatesAndInsufficientStock(t *testing.T) {
 	srv := newTestServer(t)
 	token := approvedMerchantTokenForStockAdjustment(t, srv, "stock_invalid")

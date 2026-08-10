@@ -35,7 +35,6 @@ const (
 	ProductLocked   = "LOCKED"
 	ProductOffShelf = "OFF_SHELF"
 	ProductSold     = "SOLD"
-	ProductClosed   = "CLOSED"
 
 	OrderCreated   = "CREATED"
 	OrderCompleted = "COMPLETED"
