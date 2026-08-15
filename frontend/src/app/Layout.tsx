@@ -6,7 +6,8 @@ import {
   LogoutOutlined,
   OrderedListOutlined,
   SettingOutlined,
-  ShoppingOutlined
+  ShoppingOutlined,
+  TagsOutlined
 } from '@ant-design/icons'
 import { ProLayout, type MenuDataItem } from '@ant-design/pro-components'
 import { Button } from 'antd'
@@ -23,6 +24,7 @@ const adminMenus: MenuDataItem[] = [
 const merchantMenus: MenuDataItem[] = [
   { path: '/merchant/dashboard', name: '全局', icon: <HomeOutlined /> },
   { path: '/merchant/products', name: '商品', icon: <ShoppingOutlined /> },
+  { path: '/merchant/categories', name: '商品分类', icon: <TagsOutlined /> },
   { path: '/merchant/orders', name: '订单', icon: <OrderedListOutlined /> },
   { path: '/merchant/intents', name: '意向', icon: <AppstoreOutlined /> },
   { path: '/merchant/account', name: '账户', icon: <SettingOutlined /> },

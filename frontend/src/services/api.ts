@@ -50,6 +50,15 @@ export const api = {
     if (parentId) params.parent_id = parentId
     return http.get('/merchant/categories', { params })
   },
+  createCategory(payload: { level: 1 | 2; parent_id?: number; name: string; sort?: number }) {
+    return http.post('/merchant/categories', payload)
+  },
+  updateCategory(categoryId: string | number, payload: Partial<{ name: string; sort: number; status: string }>) {
+    return http.put(`/merchant/categories/${categoryId}`, payload)
+  },
+  deleteCategory(categoryId: string | number) {
+    return http.delete(`/merchant/categories/${categoryId}`)
+  },
   presign(payload: { biz_type: string; file_name: string; file_size: number; mime_type: string }) {
     return http.post('/files/presign', payload)
   },

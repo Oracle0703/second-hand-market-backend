@@ -1,3 +1,4 @@
+import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -17,12 +18,21 @@ vi.mock('../services/http', () => ({
 vi.mock('@ant-design/pro-components', () => ({
   ProLayout: ({
     actionsRender,
-    children
+    children,
+    route
   }: {
     actionsRender?: () => ReactNode[]
     children?: ReactNode
+    route?: { routes?: Array<{ path?: string; name?: string }> }
   }) => (
     <div>
+      <nav>
+        {route?.routes?.map((item) => (
+          <a key={item.path} href={item.path}>
+            {item.name}
+          </a>
+        ))}
+      </nav>
       {actionsRender?.()}
       {children}
     </div>
@@ -139,5 +149,13 @@ describe('Layout logout', () => {
     expect(mockPost).toHaveBeenCalledTimes(1)
     expect(useAuthStore.getState().accessToken).toBe('')
     expect(useAuthStore.getState().user).toBeNull()
+  })
+
+  it('shows the merchant category menu for merchant users', () => {
+    setAuthenticatedUser('OWNER')
+
+    renderLayout()
+
+    expect(screen.getByRole('link', { name: '商品分类' })).toHaveAttribute('href', '/merchant/categories')
   })
 })

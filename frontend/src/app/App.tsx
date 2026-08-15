@@ -10,6 +10,7 @@ const RegisterStatusPage = lazy(() => import('@/pages/auth/RegisterStatusPage').
 const AdminReviewsPage = lazy(() => import('@/pages/admin/merchants/ReviewsPage').then((m) => ({ default: m.ReviewsPage })))
 const DashboardPage = lazy(() => import('@/pages/merchant/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 const ProductListPage = lazy(() => import('@/pages/merchant/products/ListPage').then((m) => ({ default: m.ListPage })))
+const CategoryListPage = lazy(() => import('@/pages/merchant/categories/ListPage').then((m) => ({ default: m.ListPage })))
 const OrderListPage = lazy(() => import('@/pages/merchant/orders/ListPage').then((m) => ({ default: m.ListPage })))
 const ProductCreatePage = lazy(() => import('@/pages/merchant/products/CreatePage').then((m) => ({ default: m.CreatePage })))
 const ProductEditPage = lazy(() => import('@/pages/merchant/products/EditPage').then((m) => ({ default: m.EditPage })))
@@ -50,6 +51,7 @@ export function App() {
             <Route element={<RequireAuth role="MERCHANT" scope="full" />}>
               <Route path="/merchant/dashboard" element={loadable(<DashboardPage />)} />
               <Route path="/merchant/products" element={loadable(<ProductListPage />)} />
+              <Route path="/merchant/categories" element={loadable(<CategoryListPage />)} />
               <Route path="/merchant/products/new" element={loadable(<ProductCreatePage />)} />
               <Route path="/merchant/products/:productId" element={loadable(<ProductDetailPage />)} />
               <Route path="/merchant/products/:productId/edit" element={loadable(<ProductEditPage />)} />
