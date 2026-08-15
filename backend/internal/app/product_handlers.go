@@ -15,17 +15,6 @@ import (
 	"second-hand-market-backend/backend/internal/stateflow"
 )
 
-func (s *Server) ensureLevel2Category(categoryID uint64) error {
-	var category model.Category
-	if err := s.DB.Where("id = ?", categoryID).First(&category).Error; err != nil {
-		return common.ErrInvalidArgument
-	}
-	if category.Level != 2 || category.Status != model.CategoryEnabled {
-		return common.ErrInvalidArgument
-	}
-	return nil
-}
-
 func (s *Server) handleCreateProduct(c *gin.Context) {
 	actor, err := actorFromContext(c)
 	if err != nil {
@@ -41,7 +30,7 @@ func (s *Server) handleCreateProduct(c *gin.Context) {
 		common.Fail(c, common.ErrInvalidArgument)
 		return
 	}
-	if err := s.ensureLevel2Category(req.CategoryID); err != nil {
+	if err := s.ensureMerchantLevel2Category(s.DB, actor.MerchantID, req.CategoryID); err != nil {
 		common.Fail(c, err)
 		return
 	}
@@ -131,7 +120,7 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 			if !allowed["category_id"] {
 				return common.ErrInvalidTransition
 			}
-			if err := s.ensureLevel2Category(*req.CategoryID); err != nil {
+			if err := s.ensureMerchantLevel2Category(tx, actor.MerchantID, *req.CategoryID); err != nil {
 				return err
 			}
 			product.CategoryID = *req.CategoryID

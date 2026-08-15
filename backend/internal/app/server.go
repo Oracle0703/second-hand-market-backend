@@ -183,6 +183,9 @@ func (s *Server) registerRoutes() {
 			merchant.GET("/account", middleware.RequireFullMerchantScope(), s.handleMerchantAccount)
 			merchant.PUT("/account/password", middleware.RequireFullMerchantScope(), s.handleMerchantChangePassword)
 			merchant.GET("/categories", middleware.RequireFullMerchantScope(), s.handleCategories)
+			merchant.POST("/categories", middleware.RequireFullMerchantScope(), s.handleCreateCategory)
+			merchant.PUT("/categories/:id", middleware.RequireFullMerchantScope(), s.handleUpdateCategory)
+			merchant.DELETE("/categories/:id", middleware.RequireFullMerchantScope(), s.handleDeleteCategory)
 			merchant.GET("/dashboard", middleware.RequireFullMerchantScope(), s.handleDashboard)
 
 			merchant.POST("/products", middleware.RequireFullMerchantScope(), s.handleCreateProduct)

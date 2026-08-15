@@ -39,6 +39,19 @@ type UpdatePasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required,min=8,max=128"`
 }
 
+type CreateCategoryRequest struct {
+	Level    int8    `json:"level" binding:"required"`
+	ParentID *uint64 `json:"parent_id"`
+	Name     string  `json:"name" binding:"required"`
+	Sort     int     `json:"sort"`
+}
+
+type UpdateCategoryRequest struct {
+	Name   *string `json:"name"`
+	Sort   *int    `json:"sort"`
+	Status *string `json:"status"`
+}
+
 type CreateProductRequest struct {
 	Title             string   `json:"title" binding:"required,min=2,max=128"`
 	Description       string   `json:"description" binding:"required,min=2,max=5000"`
