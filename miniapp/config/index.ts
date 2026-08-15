@@ -56,6 +56,7 @@ export default defineConfig((merge) =>
     plugins: [],
     defineConstants: {
       __API_BASE_URL__: JSON.stringify(APIBaseURL),
+      __MERCHANT_NO__: JSON.stringify(process.env.TARO_APP_MERCHANT_NO || ''),
       __DEV_MODE__: JSON.stringify(IsDev)
     },
     alias: {

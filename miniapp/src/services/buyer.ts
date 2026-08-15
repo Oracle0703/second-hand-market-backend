@@ -1,5 +1,7 @@
 import { apiRequest } from './request'
 
+declare const __MERCHANT_NO__: string
+
 type RawCategoryItem = {
   id?: number
   ID?: number
@@ -62,18 +64,31 @@ export type BuyerIntent = {
   product: { id: number; title: string; cover_url: string }
 }
 
+function merchantNo(): string {
+  return (typeof __MERCHANT_NO__ === 'string' && __MERCHANT_NO__.trim()) || ''
+}
+
+function withMerchantData(params: Record<string, unknown> = {}) {
+  return { ...params, merchant_no: merchantNo() }
+}
+
+function withMerchantPath(path: string) {
+  const separator = path.includes('?') ? '&' : '?'
+  return `${path}${separator}merchant_no=${encodeURIComponent(merchantNo())}`
+}
+
 export function fetchBuyerProducts(params: Record<string, unknown>) {
   return apiRequest<{ items: BuyerProduct[]; total: number; page: number; page_size: number }>({
     method: 'GET',
     path: '/buyer/products',
-    data: params
+    data: withMerchantData(params)
   })
 }
 
 export function fetchBuyerProductDetail(id: string | number) {
   return apiRequest<{ product: BuyerProduct & { images: string[]; merchant: { id: number; name: string } } }>({
     method: 'GET',
-    path: `/buyer/products/${id}`
+    path: withMerchantPath(`/buyer/products/${id}`)
   })
 }
 
@@ -81,7 +96,7 @@ export function fetchBuyerCategories(params: Record<string, unknown> = {}) {
   return apiRequest<{ items: RawCategoryItem[] }>({
     method: 'GET',
     path: '/buyer/categories',
-    data: params
+    data: withMerchantData(params)
   }).then((result) => ({
     items: (result.items || []).map((item) => ({
       id: item.id ?? item.ID ?? 0,
@@ -124,14 +139,14 @@ export function listFavorites(page = 1, pageSize = 20) {
   return apiRequest<{ items: BuyerFavoriteItem[]; total: number; page: number; page_size: number }>({
     method: 'GET',
     path: '/buyer/favorites',
-    data: { page, page_size: pageSize }
+    data: withMerchantData({ page, page_size: pageSize })
   })
 }
 
 export function addFavorite(productID: number) {
   return apiRequest<{ product_id: number; is_favorited: boolean }>({
     method: 'POST',
-    path: '/buyer/favorites',
+    path: withMerchantPath('/buyer/favorites'),
     data: { product_id: productID }
   })
 }
@@ -139,14 +154,14 @@ export function addFavorite(productID: number) {
 export function removeFavorite(productID: number) {
   return apiRequest<{ product_id: number; is_favorited: boolean }>({
     method: 'DELETE',
-    path: `/buyer/favorites/${productID}`
+    path: withMerchantPath(`/buyer/favorites/${productID}`)
   })
 }
 
 export function reportView(productID: number) {
   return apiRequest<{ product_id: number; last_viewed_at: string; view_count: number }>({
     method: 'POST',
-    path: '/buyer/histories/views',
+    path: withMerchantPath('/buyer/histories/views'),
     data: { product_id: productID }
   })
 }
@@ -155,14 +170,14 @@ export function listHistories(page = 1, pageSize = 20) {
   return apiRequest<{ items: BuyerHistoryItem[]; total: number; page: number; page_size: number }>({
     method: 'GET',
     path: '/buyer/histories',
-    data: { page, page_size: pageSize }
+    data: withMerchantData({ page, page_size: pageSize })
   })
 }
 
 export function clearHistories(productID?: number) {
   return apiRequest<{ success: boolean }>({
     method: 'DELETE',
-    path: '/buyer/histories',
+    path: withMerchantPath('/buyer/histories'),
     data: productID ? { product_id: productID } : undefined
   })
 }
@@ -176,7 +191,7 @@ export function createIntent(payload: {
 }) {
   return apiRequest<{ intent_id: number; intent_no: string; status: string; created_at: string }>({
     method: 'POST',
-    path: '/buyer/intents',
+    path: withMerchantPath('/buyer/intents'),
     data: payload
   })
 }
@@ -185,7 +200,7 @@ export function listIntents(params: Record<string, unknown> = {}) {
   return apiRequest<{ items: BuyerIntent[]; total: number; page: number; page_size: number }>({
     method: 'GET',
     path: '/buyer/intents',
-    data: params
+    data: withMerchantData(params)
   })
 }
 
