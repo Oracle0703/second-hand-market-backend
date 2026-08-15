@@ -48,7 +48,7 @@ second-hand-market-backend/
 │   │   ├── filesvc/                 # 文件上传抽象
 │   │   └── common/                  # 错误码、工具、常量
 │   ├── migrations/                  # 数据库迁移脚本
-│   ├── scripts/                     # 本地开发脚本（含管理员初始化、分类初始化）
+│   ├── scripts/                     # 本地开发脚本（含管理员初始化、分类初始化、历史商户分类回填）
 │   ├── configs/                     # 配置模板
 │   ├── tests/                       # 集成测试
 │   ├── go.mod
@@ -85,10 +85,11 @@ second-hand-market-backend/
 ## 5. 初始化脚本约定
 1. `backend/scripts/migrate`：唯一负责 schema 初始化或迁移的显式命令。
 2. `backend/scripts/bootstrap_admin`：每次使用调用者显式提供的身份和密码创建一个管理员，不执行迁移。
-3. `backend/scripts/seed_categories`：导入一级/二级分类字典，不执行迁移。
-4. 三个命令必须显式设置 `DB_DRIVER` 和 `DB_DSN`，不得回退到仓库内的本地数据库文件。
-5. bootstrap 密码必须通过 `ADMIN_PASSWORD` 显式提供，不得写入仓库、命令摘要或日志。
-6. bootstrap 与分类 seed 需要幂等，可重复执行；长驻 API 不得调用上述操作。
+3. `backend/scripts/seed_categories`：维护内置一级/二级默认分类，不执行迁移。
+4. `backend/scripts/backfill_merchant_categories`：为历史商户复制默认分类，并将旧商品分类映射到商户分类。
+5. 上述命令必须显式设置 `DB_DRIVER` 和 `DB_DSN`，不得回退到仓库内的本地数据库文件。
+6. bootstrap 密码必须通过 `ADMIN_PASSWORD` 显式提供，不得写入仓库、命令摘要或日志。
+7. bootstrap、分类 seed 与商户分类 backfill 需要幂等，可重复执行；长驻 API 不得调用上述操作。
 
 ## 6. 测试目录与约定
 1. 单元测试与源代码同目录：`*_test.go`。

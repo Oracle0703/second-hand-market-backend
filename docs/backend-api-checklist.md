@@ -117,15 +117,21 @@ onboarding scope 黑名单：
 1. 非 `PENDING` 执行 `approve/reject` 返回 `10005`。
 2. `reject` 未传 `reason` 返回 `10001`。
 
-## 6. 分类字典模块（categories）
+## 6. 商家分类管理模块（categories）
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/categories` | GET | 查询分类字典 | `level(O:1/2), parent_id(O), status(O)` | `items[{id,parent_id,level,name,status,sort}]` | MERCHANT(full) |
+| `/merchant/categories` | GET | 查询当前商家分类 | `level(O:1/2), parent_id(O), status(O)` | `items[{id,merchant_id,parent_id,level,name,status,sort}]` | MERCHANT(full) |
+| `/merchant/categories` | POST | 新建当前商家分类 | `level(R:1/2), parent_id(level=2必填), name(R), sort(O)` | `id,merchant_id,parent_id,level,name,status,sort,created_at,updated_at` | MERCHANT(full) |
+| `/merchant/categories/:id` | PUT | 编辑当前商家分类 | `id(path,R), name(O), sort(O), status(O:ENABLED/DISABLED)` | `item{id,merchant_id,parent_id,level,name,status,sort}` | MERCHANT(full) |
+| `/merchant/categories/:id` | DELETE | 删除当前商家分类 | `id(path,R)` | `success` | MERCHANT(full) |
 
 说明：
-1. 新建/编辑商品页面先请求一级分类，再根据 `parent_id` 请求二级分类。
-2. 本期不提供分类增删改接口。
+1. 分类按 `merchant_id` 隔离，商家只能查询和管理自己的一级/二级分类。
+2. 新商家注册时复制一份内置默认分类；历史商家使用 `backend/scripts/backfill_merchant_categories` 显式回填，不依赖服务启动自动变更生产数据。
+3. 一级分类 `parent_id` 为空；二级分类必须挂在当前商家的一级分类下。
+4. 删除一级分类要求无二级子分类；删除二级分类要求当前商家无商品引用。
+5. 新建/编辑商品页面先请求一级分类，再根据 `parent_id` 请求二级分类。
 
 ## 7. 商品管理模块（products）
 
@@ -155,7 +161,7 @@ onboarding scope 黑名单：
 失败场景：
 1. 跨商家访问返回 `10003`。
 2. 非法状态流转返回 `10005`。
-3. 分类不存在或非二级分类返回 `10001`。
+3. 分类不存在、非当前商家分类、非启用二级分类返回 `10001`。
 4. 创建商品或调整库存时数量小于等于 `0` 返回 `10001`。
 5. 库存扣减数量大于当前库存返回 `10005`。
 

@@ -4,7 +4,7 @@
 1. 前端为单应用（React + TypeScript + Vite），通过响应式布局同时支持 PC 和移动端。
 2. 页面按角色与 scope 鉴权：未登录、平台管理员、商家主账号（`full/onboarding`）。
 3. 商品状态采用：`DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED`。
-4. 分类采用两级字典，页面通过分类查询接口动态加载。
+4. 分类采用商户自有两级分类，页面通过当前商家的分类接口动态加载并支持商家自主管理。
 5. `stock` 为当前可用库存；商品列表和详情提供“调整库存”入口，创建/编辑页保留基础库存输入。
 
 ## 1. 路由与信息架构
@@ -19,6 +19,7 @@
 | 管理员区 | 全局操作日志页 | `/admin/logs` |
 | 商家区 | 仪表盘页 | `/merchant/dashboard` |
 | 商家区 | 商品列表页 | `/merchant/products` |
+| 商家区 | 商品分类页 | `/merchant/categories` |
 | 商家区 | 新建商品页 | `/merchant/products/new` |
 | 商家区 | 商品编辑页 | `/merchant/products/:productId/edit` |
 | 商家区 | 商品详情页 | `/merchant/products/:productId` |
@@ -113,6 +114,20 @@
   - 拉取统计：`GET /api/v1/merchant/dashboard`
 - 状态展示规则：
   - 商品统计需包含 `LOCKED` 数量。
+
+#### 商品分类页（`/merchant/categories`）
+- 角色：MerchantOwner。
+- 核心内容：一级分类列表、二级分类列表、新增/编辑/启停/删除操作。
+- 关键动作 -> 接口：
+  - 查询一级/二级分类：`GET /api/v1/merchant/categories`
+  - 新增分类：`POST /api/v1/merchant/categories`
+  - 编辑分类：`PUT /api/v1/merchant/categories/:id`
+  - 删除分类：`DELETE /api/v1/merchant/categories/:id`
+- 交互规则：
+  - 新增一级分类无需父级；新增二级分类必须选择当前商家的一级分类。
+  - 分类名称必填，排序值为非负整数，状态支持 `ENABLED/DISABLED`。
+  - 删除一级分类前需先删除其二级分类；删除已被商品引用的二级分类由后端拒绝并提示用户。
+  - 分类变更后刷新商品新建/编辑页的分类选项。
 
 #### 商品列表页（`/merchant/products`）
 - 角色：MerchantOwner。
@@ -246,7 +261,7 @@
 1. 权限守卫：
    - 未登录访问受限页跳转登录。
    - `token_scope=onboarding` 登录后统一跳转 `/register/status`。
-   - `token_scope=onboarding` 访问商品/订单/仪表盘/账号设置/商家日志路由时强制回跳 `/register/status`。
+   - `token_scope=onboarding` 访问商品分类/商品/订单/仪表盘/账号设置/商家日志路由时强制回跳 `/register/status`。
    - 管理员与商家路由互斥访问。
 2. 错误处理：
    - 401 统一触发登录失效逻辑。
@@ -278,5 +293,5 @@
 1. 页面路由、鉴权守卫、角色路由隔离已完成。
 2. 审核页、商品页、订单页均已建立“动作 -> 接口”映射。
 3. 商品编辑字段限制已按状态实现并联调后端校验。
-4. 分类级联选择已接入分类查询接口。
+4. 分类管理页已接入查询、新增、编辑、启停和删除接口；商品页分类级联选择读取当前商家分类。
 5. 移动端关键页面通过真机检查（iOS Safari / Android Chrome）。

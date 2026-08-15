@@ -6,6 +6,7 @@
 3. 游客请求默认携带 `X-Device-Id`。
 4. 本期购买意向必须登录。
 5. 本文只覆盖买家侧与意向闭环必需接口，不扩展支付/售后/聊天。
+6. 每个商户小程序入口必须配置自己的 `merchant_no`；买家浏览、收藏、浏览记录、意向和“我的汇总”接口均按 `merchant_no` 限定当前商户数据。
 
 ---
 
@@ -15,7 +16,7 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/products` |
-| 请求参数 | `keyword(O), category_id(O), page(O), page_size(O), sort(O:latest/price_asc/price_desc)` |
+| 请求参数 | `merchant_no(R), keyword(O), category_id(O), page(O), page_size(O), sort(O:latest/price_asc/price_desc)` |
 | 响应字段 | `items[{id,title,price_cent,condition_level,cover_url,status,merchant_id,merchant_name,is_favorited}], total,page,page_size` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -23,7 +24,8 @@
 
 规则：
 1. 默认仅返回 `ON_SHELF`。
-2. 不返回商家后台管理字段（如内部状态变更日志）。
+2. 仅返回 `merchant_no` 对应商户的商品。
+3. 不返回商家后台管理字段（如内部状态变更日志）。
 
 ---
 
@@ -33,7 +35,7 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/products/:id` |
-| 请求参数 | `id(path,R)` |
+| 请求参数 | `id(path,R), merchant_no(R)` |
 | 响应字段 | `product{id,title,description,price_cent,condition_level,status,images[],merchant{id,name},is_favorited,can_submit_intent}` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -42,6 +44,7 @@
 规则：
 1. `OFF_SHELF/SOLD/LOCKED` 可查看详情但 `can_submit_intent=false`。
 2. `DRAFT/CLOSED` 返回 `10004`（对买家不可见）。
+3. 商品不属于 `merchant_no` 对应商户时返回 `10004`。
 
 ---
 
@@ -51,14 +54,14 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/categories` |
-| 请求参数 | `level(O:1/2), parent_id(O)` |
+| 请求参数 | `merchant_no(R), level(O:1/2), parent_id(O)` |
 | 响应字段 | `items[{id,parent_id,level,name,sort}]` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`120 req/min/device` |
 
 规则：
-1. 仅返回 `ENABLED` 分类。
+1. 仅返回 `merchant_no` 对应商户的 `ENABLED` 分类。
 
 ---
 
@@ -126,7 +129,7 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/favorites` |
-| 请求参数 | `page(O), page_size(O)` |
+| 请求参数 | `merchant_no(R), page(O), page_size(O)` |
 | 响应字段 | `items[{product_id,title,cover_url,price_cent,status,favorited_at}], total,page,page_size` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -138,7 +141,7 @@
 | --- | --- |
 | method | `POST` |
 | path | `/api/v1/buyer/favorites` |
-| 请求参数 | `product_id(R)` |
+| 请求参数 | `merchant_no(R), product_id(R)` |
 | 响应字段 | `product_id, is_favorited` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -150,7 +153,7 @@
 | --- | --- |
 | method | `DELETE` |
 | path | `/api/v1/buyer/favorites/:product_id` |
-| 请求参数 | `product_id(path,R)` |
+| 请求参数 | `merchant_no(R), product_id(path,R)` |
 | 响应字段 | `product_id, is_favorited` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -158,7 +161,7 @@
 
 规则：
 1. owner = 登录买家或 device_id 游客。
-2. 仅允许对买家可见商品操作收藏。
+2. 仅允许对 `merchant_no` 对应商户下的买家可见商品操作收藏。
 
 ---
 
@@ -170,7 +173,7 @@
 | --- | --- |
 | method | `POST` |
 | path | `/api/v1/buyer/histories/views` |
-| 请求参数 | `product_id(R), viewed_at(O)` |
+| 请求参数 | `merchant_no(R), product_id(R), viewed_at(O)` |
 | 响应字段 | `product_id, last_viewed_at, view_count` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -182,7 +185,7 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/histories` |
-| 请求参数 | `page(O), page_size(O)` |
+| 请求参数 | `merchant_no(R), page(O), page_size(O)` |
 | 响应字段 | `items[{product_id,title,cover_url,price_cent,status,last_viewed_at,view_count}], total,page,page_size` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -194,7 +197,7 @@
 | --- | --- |
 | method | `DELETE` |
 | path | `/api/v1/buyer/histories` |
-| 请求参数 | `product_id(O)`（为空表示清空全部） |
+| 请求参数 | `merchant_no(R), product_id(O)`（为空表示清空当前商户下全部） |
 | 响应字段 | `success` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
@@ -210,7 +213,7 @@
 | --- | --- |
 | method | `POST` |
 | path | `/api/v1/buyer/intents` |
-| 请求参数 | `product_id(R), contact_name(O), contact_phone(O), contact_wechat(O), message(O)` |
+| 请求参数 | `merchant_no(R), product_id(R), contact_name(O), contact_phone(O), contact_wechat(O), message(O)` |
 | 响应字段 | `intent_id, intent_no, status, created_at` |
 | 游客可访问 | 否 |
 | 是否必须登录 | 是 |
@@ -218,8 +221,8 @@
 
 规则：
 1. `contact_phone/contact_wechat` 至少一个必填。
-2. 商品必须为 `ON_SHELF`。
-3. 同买家同商品仅允许 1 条未关闭意向（冲突返回 `10010`）。
+2. 商品必须属于 `merchant_no` 对应商户且状态为 `ON_SHELF`。
+3. 同买家同商户同商品仅允许 1 条未关闭意向（冲突返回 `10010`）。
 
 ### 7.2 我的意向列表
 
@@ -227,7 +230,7 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/intents` |
-| 请求参数 | `status(O:NEW/CONTACTED/CLOSED), page(O), page_size(O)` |
+| 请求参数 | `merchant_no(R), status(O:NEW/CONTACTED/CLOSED), page(O), page_size(O)` |
 | 响应字段 | `items[{id,intent_no,product{id,title,cover_url},status,buyer_status_text,created_at,updated_at}], total,page,page_size` |
 | 游客可访问 | 否 |
 | 是否必须登录 | 是 |
@@ -239,14 +242,14 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/intents/:id` |
-| 请求参数 | `id(path,R)` |
+| 请求参数 | `id(path,R), merchant_no(R)` |
 | 响应字段 | `intent{id,intent_no,status,buyer_status_text,product,contact_masked,message,created_at,updated_at}` |
 | 游客可访问 | 否 |
 | 是否必须登录 | 是 |
 | 是否需要限流 | 是，`120 req/min/buyer` |
 
 规则：
-1. 买家仅可查看自己的意向。
+1. 买家仅可查看自己在 `merchant_no` 对应商户下的意向。
 2. 不返回商家内部备注和处理人信息。
 
 ---
@@ -257,11 +260,14 @@
 | --- | --- |
 | method | `GET` |
 | path | `/api/v1/buyer/me/summary` |
-| 请求参数 | 无 |
+| 请求参数 | `merchant_no(R)` |
 | 响应字段 | `is_login, profile{buyer_id?,nickname?,avatar_url?}, counters{favorites,histories,intents_open}` |
 | 游客可访问 | 是 |
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`120 req/min/owner` |
+
+规则：
+1. `favorites/histories/intents_open` 仅统计 `merchant_no` 对应商户下的数据。
 
 ---
 

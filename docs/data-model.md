@@ -9,13 +9,14 @@
 ## 1. 实体关系概览
 1. `merchants`（商家主体）1:N `merchant_accounts`（商家账号）。
 2. `merchants` 1:N `products`（商品）。
-3. `categories`（分类字典）1:N `products`。
-4. `products` 1:N `product_images`（商品图片）。
-5. `products` 1:N `product_stock_adjustments`（库存调整流水）。
-6. `products` 1:N `orders`（轻量订单）。
-7. `orders` 1:N `order_events`（订单事件流）。
-8. `merchants` 1:N `merchant_audit_logs`（审核日志）。
-9. 所有关键动作写入 `operation_logs`。
+3. `merchants` 1:N `categories`（商户自有分类）。
+4. `categories`（分类字典）1:N `products`。
+5. `products` 1:N `product_images`（商品图片）。
+6. `products` 1:N `product_stock_adjustments`（库存调整流水）。
+7. `products` 1:N `orders`（轻量订单）。
+8. `orders` 1:N `order_events`（订单事件流）。
+9. `merchants` 1:N `merchant_audit_logs`（审核日志）。
+10. 所有关键动作写入 `operation_logs`。
 
 ## 2. 核心数据表
 
@@ -104,6 +105,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint PK | 主键 |
+| merchant_id | bigint null | 商家 ID；历史全局分类可为空，运行时业务只使用商户分类 |
 | parent_id | bigint null | 父分类 ID，一级分类为空 |
 | level | tinyint | `1/2` |
 | name | varchar(64) | 分类名称 |
@@ -114,13 +116,15 @@
 | deleted_at | datetime null | 软删除时间 |
 
 索引建议：
-1. `idx_parent(parent_id, sort)`
-2. `idx_level_status(level, status, sort)`
-3. `uk_parent_name(parent_id, name)`
+1. `idx_merchant_parent(merchant_id, parent_id, sort)`
+2. `idx_merchant_level_status(merchant_id, level, status, sort)`
+3. `uk_parent_name(merchant_id, parent_id, name)`
 
 约束说明：
-1. 商品 `category_id` 必须引用二级分类（`level=2`）。
-2. 本期分类数据由初始化脚本维护，不通过后台页面维护。
+1. 商品 `category_id` 必须引用当前商家的启用二级分类（`level=2,status=ENABLED`）。
+2. 一级分类 `parent_id` 为空；二级分类 `parent_id` 必须指向同商家的一级分类。
+3. 新商家注册时复制内置默认分类；历史商家通过 `backfill_merchant_categories` 显式初始化。
+4. 删除一级分类要求无二级子分类；删除二级分类要求无商品引用。
 
 ### 2.6 products（商品）
 
