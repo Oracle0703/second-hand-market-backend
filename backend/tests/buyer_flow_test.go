@@ -54,6 +54,8 @@ func withMerchantNo(path string, merchantNo string) string {
 
 func TestBuyerAuthRefreshLogout(t *testing.T) {
 	srv := newTestServer(t)
+	merchantID, _, _ := registerMerchant(t, srv, "buyer-auth-summary")
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	headers := map[string]string{"X-Device-Id": "dev-auth-001"}
 
 	login := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/wechat-login", map[string]interface{}{
@@ -65,7 +67,7 @@ func TestBuyerAuthRefreshLogout(t *testing.T) {
 	access := str(login.Data["access_token"])
 	refresh := str(login.Data["refresh_token"])
 
-	summary := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/me/summary", nil, map[string]string{"Authorization": "Bearer " + access, "X-Device-Id": "dev-auth-001"})
+	summary := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/me/summary", merchantNo), nil, map[string]string{"Authorization": "Bearer " + access, "X-Device-Id": "dev-auth-001"})
 	if summary.Code != 0 {
 		t.Fatalf("buyer summary failed: %+v", summary)
 	}
@@ -354,6 +356,69 @@ func TestBuyerHistoriesDedupAndClear(t *testing.T) {
 	itemsAfter, _ := listAfter.Data["items"].([]interface{})
 	if len(itemsAfter) != 0 {
 		t.Fatalf("histories should be empty after clear: %+v", listAfter)
+	}
+}
+
+func TestBuyerSummaryRequiresMerchantNoAndCountsCurrentMerchant(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantOneID, merchantOneUser, merchantOnePassword := registerMerchant(t, srv, "buyersummary1")
+	merchantTwoID, merchantTwoUser, merchantTwoPassword := registerMerchant(t, srv, "buyersummary2")
+	approveMerchant(t, srv, adminToken, merchantOneID)
+	approveMerchant(t, srv, adminToken, merchantTwoID)
+	merchantOne := merchantLogin(t, srv, merchantOneUser, merchantOnePassword)
+	merchantTwo := merchantLogin(t, srv, merchantTwoUser, merchantTwoPassword)
+	merchantOneToken := str(merchantOne.Data["access_token"])
+	merchantTwoToken := str(merchantTwo.Data["access_token"])
+	merchantOneNo := merchantNoByID(t, srv, merchantOneID)
+	merchantTwoNo := merchantNoByID(t, srv, merchantTwoID)
+	productOneID := createAndOnShelfProduct(t, srv, merchantOneToken)
+	productTwoID := createAndOnShelfProduct(t, srv, merchantTwoToken)
+
+	login := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/wechat-login", map[string]interface{}{
+		"code": "wx-summary-001", "device_id": "dev-summary-001", "nickname": "buyer-summary",
+	}, nil)
+	if login.Code != 0 {
+		t.Fatalf("buyer login failed: %+v", login)
+	}
+	headers := map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"]), "X-Device-Id": "dev-summary-001"}
+
+	for _, scoped := range []struct {
+		merchantNo string
+		productID  uint64
+		wechat     string
+	}{
+		{merchantNo: merchantOneNo, productID: productOneID, wechat: "wx_summary_one"},
+		{merchantNo: merchantTwoNo, productID: productTwoID, wechat: "wx_summary_two"},
+	} {
+		if resp := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/favorites", scoped.merchantNo), map[string]interface{}{"product_id": scoped.productID}, headers); resp.Code != 0 {
+			t.Fatalf("favorite add failed: %+v", resp)
+		}
+		if resp := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", scoped.merchantNo), map[string]interface{}{"product_id": scoped.productID}, headers); resp.Code != 0 {
+			t.Fatalf("history view failed: %+v", resp)
+		}
+		if resp := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/intents", scoped.merchantNo), map[string]interface{}{
+			"product_id":     scoped.productID,
+			"contact_wechat": scoped.wechat,
+		}, headers); resp.Code != 0 {
+			t.Fatalf("intent create failed: %+v", resp)
+		}
+	}
+
+	missing := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/me/summary", nil, headers)
+	if missing.Code == 0 {
+		t.Fatal("buyer summary without merchant_no succeeded")
+	}
+
+	for _, merchantNo := range []string{merchantOneNo, merchantTwoNo} {
+		summary := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/me/summary", merchantNo), nil, headers)
+		if summary.Code != 0 {
+			t.Fatalf("buyer summary failed: %+v", summary)
+		}
+		counters := summary.Data["counters"].(map[string]interface{})
+		if numToUint64(counters["favorites"]) != 1 || numToUint64(counters["histories"]) != 1 || numToUint64(counters["intents_open"]) != 1 {
+			t.Fatalf("summary counters should be scoped to merchant %s: %+v", merchantNo, summary)
+		}
 	}
 }
 

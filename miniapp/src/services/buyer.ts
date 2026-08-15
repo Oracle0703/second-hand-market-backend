@@ -211,6 +211,7 @@ export function fetchSummary() {
     counters: { favorites: number; histories: number; intents_open: number }
   }>({
     method: 'GET',
-    path: '/buyer/me/summary'
+    path: '/buyer/me/summary',
+    data: withMerchantData()
   })
 }

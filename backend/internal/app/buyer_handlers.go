@@ -1215,11 +1215,16 @@ func (s *Server) handleBuyerSummary(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 
 	favorites := int64(0)
 	histories := int64(0)
-	_ = s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND is_active = ?", owner.OwnerKey, true).Count(&favorites).Error
-	_ = s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND is_active = ?", owner.OwnerKey, true).Count(&histories).Error
+	_ = s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true).Count(&favorites).Error
+	_ = s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true).Count(&histories).Error
 
 	isLogin := owner.BuyerID != nil
 	profile := gin.H{}
@@ -1229,7 +1234,7 @@ func (s *Server) handleBuyerSummary(c *gin.Context) {
 		if err := s.DB.Where("id = ?", *owner.BuyerID).First(&buyer).Error; err == nil {
 			profile = gin.H{"buyer_id": buyer.ID, "nickname": buyer.Nickname, "avatar_url": buyer.AvatarURL}
 		}
-		_ = s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND is_open = ?", *owner.BuyerID, true).Count(&intentsOpen).Error
+		_ = s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND is_open = ?", *owner.BuyerID, merchant.ID, true).Count(&intentsOpen).Error
 	}
 
 	common.Success(c, gin.H{

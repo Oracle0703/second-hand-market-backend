@@ -21,6 +21,7 @@ describe('buyer merchant scope', () => {
     await buyer.listFavorites()
     await buyer.listHistories()
     await buyer.listIntents({ status: 'NEW' })
+    await buyer.fetchSummary()
 
     expect(mockApiRequest).toHaveBeenNthCalledWith(1, expect.objectContaining({
       method: 'GET',
@@ -46,6 +47,11 @@ describe('buyer merchant scope', () => {
       method: 'GET',
       path: '/buyer/intents',
       data: { status: 'NEW', merchant_no: 'M20260815001' }
+    }))
+    expect(mockApiRequest).toHaveBeenNthCalledWith(6, expect.objectContaining({
+      method: 'GET',
+      path: '/buyer/me/summary',
+      data: { merchant_no: 'M20260815001' }
     }))
   })
 
