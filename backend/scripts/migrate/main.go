@@ -95,6 +95,13 @@ var migrationCatalog = map[string]migrationSpec{
 			SHA256:   "1ddaea62f22d198c6659bfadc0dfbdc071a35606f38bd9a926345ee3941bff58",
 		}},
 	},
+	"0008_merchant_categories": {
+		ID: "0008_merchant_categories",
+		Sources: []migrationSource{{
+			FileName: "0008_merchant_categories.up.sql",
+			SHA256:   "2d57c95fc561be29b00cf262376c2ffc906d503024f7fca3a1b3774f495478db",
+		}},
+	},
 }
 
 type migrationDependencies struct {

@@ -141,24 +141,21 @@ func (s *Server) handleMerchantChangePassword(c *gin.Context) {
 }
 
 func (s *Server) handleCategories(c *gin.Context) {
-	allowedRootNames := make([]string, 0, len(defaultCategorySeeds))
-	for _, seed := range defaultCategorySeeds {
-		name := strings.TrimSpace(seed.Name)
-		if name != "" {
-			allowedRootNames = append(allowedRootNames, name)
-		}
+	actor, err := actorFromContext(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
 	}
 
-	query := s.DB.Model(&model.Category{}).Where("categories.status = ?", model.CategoryEnabled)
+	query := s.DB.Model(&model.Category{}).Where("categories.merchant_id = ?", actor.MerchantID)
+	status := strings.TrimSpace(c.Query("status"))
+	if status == "" {
+		status = model.CategoryEnabled
+	}
+	query = query.Where("categories.status = ?", status)
 	level := strings.TrimSpace(c.Query("level"))
 	parentID := strings.TrimSpace(c.Query("parent_id"))
 	if level != "" {
-		if level == "1" {
-			query = query.Where("categories.name IN ?", allowedRootNames)
-		}
-		if level == "2" && parentID == "" {
-			query = query.Joins("JOIN categories AS p ON p.id = categories.parent_id").Where("p.name IN ?", allowedRootNames)
-		}
 		query = query.Where("categories.level = ?", level)
 	}
 	if parentID != "" {

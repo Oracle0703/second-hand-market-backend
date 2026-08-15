@@ -58,6 +58,9 @@ func (s *Server) handleRegister(c *gin.Context) {
 		if err := tx.Create(&acct).Error; err != nil {
 			return err
 		}
+		if err := EnsureMerchantDefaultCategories(tx, merchant.ID); err != nil {
+			return err
+		}
 		logItem := model.MerchantAuditLog{MerchantID: merchant.ID, Action: "SUBMIT", FromStatus: "", ToStatus: model.ReviewPending, OperatorType: model.UserTypeMerchant, OperatorID: acct.ID}
 		return tx.Create(&logItem).Error
 	}); err != nil {
