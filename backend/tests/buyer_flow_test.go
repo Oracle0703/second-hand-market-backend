@@ -3,8 +3,12 @@ package tests
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"second-hand-market-backend/backend/internal/app"
+	"second-hand-market-backend/backend/internal/model"
 )
 
 func buyerLogin(t *testing.T, srv interface{ Router() http.Handler }, code, deviceID string) apiResp {
@@ -30,6 +34,23 @@ func buyerMiniappLogin(t *testing.T, srv interface{ Router() http.Handler }, pro
 type serverAdapter struct{ h http.Handler }
 
 func (s serverAdapter) Router() http.Handler { return s.h }
+
+func merchantNoByID(t *testing.T, srv *app.Server, merchantID uint64) string {
+	t.Helper()
+	var merchant model.Merchant
+	if err := srv.DB.First(&merchant, merchantID).Error; err != nil {
+		t.Fatalf("load merchant number: %v", err)
+	}
+	return merchant.MerchantNo
+}
+
+func withMerchantNo(path string, merchantNo string) string {
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "merchant_no=" + merchantNo
+}
 
 func TestBuyerAuthRefreshLogout(t *testing.T) {
 	srv := newTestServer(t)
@@ -109,10 +130,11 @@ func TestBuyerGuestProductsBrowse(t *testing.T) {
 	approveMerchant(t, srv, adminToken, merchantID)
 	merchant := merchantLogin(t, srv, username, password)
 	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	productID := createAndOnShelfProduct(t, srv, merchantToken)
 
 	headers := map[string]string{"X-Device-Id": "dev-browse-001"}
-	list := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/products", nil, headers)
+	list := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/products", merchantNo), nil, headers)
 	if list.Code != 0 {
 		t.Fatalf("buyer guest products list failed: %+v", list)
 	}
@@ -130,7 +152,7 @@ func TestBuyerGuestProductsBrowse(t *testing.T) {
 	if str(firstListItem["cover_url"]) == "" {
 		t.Fatalf("buyer products list cover_url should be returned: %+v", list)
 	}
-	detail := requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d", productID), nil, headers)
+	detail := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo(fmt.Sprintf("/api/v1/buyer/products/%d", productID), merchantNo), nil, headers)
 	if detail.Code != 0 {
 		t.Fatalf("buyer guest products detail failed: %+v", detail)
 	}
@@ -146,9 +168,66 @@ func TestBuyerGuestProductsBrowse(t *testing.T) {
 	}
 }
 
+func TestBuyerProductsAndCategoriesRequireMerchantNoAndStayScoped(t *testing.T) {
+	srv := newTestServer(t)
+	merchantOneID, merchantOneUser, merchantOnePassword := registerMerchant(t, srv, "buyer_scope_1")
+	merchantTwoID, merchantTwoUser, merchantTwoPassword := registerMerchant(t, srv, "buyer_scope_2")
+	adminToken := adminAccessToken(t, srv)
+	approveMerchant(t, srv, adminToken, merchantOneID)
+	approveMerchant(t, srv, adminToken, merchantTwoID)
+	loginOne := merchantLogin(t, srv, merchantOneUser, merchantOnePassword)
+	loginTwo := merchantLogin(t, srv, merchantTwoUser, merchantTwoPassword)
+	if loginOne.Code != 0 || loginTwo.Code != 0 {
+		t.Fatalf("merchant login failed: one=%+v two=%+v", loginOne, loginTwo)
+	}
+	tokenOne := str(loginOne.Data["access_token"])
+	tokenTwo := str(loginTwo.Data["access_token"])
+	merchantOneNo := merchantNoByID(t, srv, merchantOneID)
+	merchantTwoNo := merchantNoByID(t, srv, merchantTwoID)
+
+	productOneID := createAndOnShelfProduct(t, srv, tokenOne)
+	productTwoID := createAndOnShelfProduct(t, srv, tokenTwo)
+
+	missing := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/products", nil, nil)
+	if missing.Code == 0 {
+		t.Fatal("buyer products without merchant_no succeeded")
+	}
+
+	listOne := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/products?merchant_no="+merchantOneNo, nil, nil)
+	if listOne.Code != 0 {
+		t.Fatalf("buyer scoped list code = %d data=%v", listOne.Code, listOne.Data)
+	}
+	items := listOne.Data["items"].([]interface{})
+	if len(items) != 1 || numToUint64(items[0].(map[string]interface{})["id"]) != productOneID {
+		t.Fatalf("merchant one list leaked or missed products: %+v, product two=%d", items, productTwoID)
+	}
+
+	crossDetail := requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d?merchant_no=%s", productTwoID, merchantOneNo), nil, nil)
+	if crossDetail.Code == 0 {
+		t.Fatal("buyer detail leaked product from another merchant")
+	}
+
+	categories := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/categories?level=1&merchant_no="+merchantTwoNo, nil, nil)
+	if categories.Code != 0 {
+		t.Fatalf("buyer categories code = %d data=%v", categories.Code, categories.Data)
+	}
+	categoryItems := categories.Data["items"].([]interface{})
+	if len(categoryItems) != 3 {
+		t.Fatalf("merchant two categories = %d, want 3", len(categoryItems))
+	}
+	for _, item := range categoryItems {
+		row := item.(map[string]interface{})
+		if got := numToUint64(row["merchant_id"]); got != merchantTwoID {
+			t.Fatalf("buyer category merchant_id = %d, want %d row=%+v", got, merchantTwoID, row)
+		}
+	}
+}
+
 func TestBuyerCategoriesUseLowercaseFields(t *testing.T) {
 	srv := newTestServer(t)
-	resp := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/categories?level=1", nil, map[string]string{"X-Device-Id": "dev-cat-001"})
+	merchantID, _, _ := registerMerchant(t, srv, "buyer_categories")
+	merchantNo := merchantNoByID(t, srv, merchantID)
+	resp := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/categories?level=1", merchantNo), nil, map[string]string{"X-Device-Id": "dev-cat-001"})
 	if resp.Code != 0 {
 		t.Fatalf("buyer categories failed: %+v", resp)
 	}
@@ -178,15 +257,16 @@ func TestBuyerFavoritesCRUD(t *testing.T) {
 	approveMerchant(t, srv, adminToken, merchantID)
 	merchant := merchantLogin(t, srv, username, password)
 	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	productID := createAndOnShelfProduct(t, srv, merchantToken)
 
 	headers := map[string]string{"X-Device-Id": "dev-fav-001"}
-	add := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/favorites", map[string]interface{}{"product_id": productID}, headers)
+	add := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/favorites", merchantNo), map[string]interface{}{"product_id": productID}, headers)
 	if add.Code != 0 {
 		t.Fatalf("favorite add failed: %+v", add)
 	}
 
-	list1 := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/favorites", nil, headers)
+	list1 := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/favorites", merchantNo), nil, headers)
 	if list1.Code != 0 {
 		t.Fatalf("favorite list failed: %+v", list1)
 	}
@@ -202,12 +282,12 @@ func TestBuyerFavoritesCRUD(t *testing.T) {
 		t.Fatalf("favorite list original_price_cent should be returned: %+v", list1)
 	}
 
-	del := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/buyer/favorites/%d", productID), nil, headers)
+	del := requestJSON(t, srv.Router, http.MethodDelete, withMerchantNo(fmt.Sprintf("/api/v1/buyer/favorites/%d", productID), merchantNo), nil, headers)
 	if del.Code != 0 {
 		t.Fatalf("favorite delete failed: %+v", del)
 	}
 
-	list2 := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/favorites", nil, headers)
+	list2 := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/favorites", merchantNo), nil, headers)
 	if list2.Code != 0 {
 		t.Fatalf("favorite list2 failed: %+v", list2)
 	}
@@ -224,18 +304,19 @@ func TestBuyerHistoriesDedupAndClear(t *testing.T) {
 	approveMerchant(t, srv, adminToken, merchantID)
 	merchant := merchantLogin(t, srv, username, password)
 	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	productID := createAndOnShelfProduct(t, srv, merchantToken)
 
 	headers := map[string]string{"X-Device-Id": "dev-his-001"}
-	v1 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/histories/views", map[string]interface{}{"product_id": productID}, headers)
+	v1 := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", merchantNo), map[string]interface{}{"product_id": productID}, headers)
 	if v1.Code != 0 || numToUint64(v1.Data["view_count"]) != 1 {
 		t.Fatalf("first view failed: %+v", v1)
 	}
-	v2 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/histories/views", map[string]interface{}{"product_id": productID}, headers)
+	v2 := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", merchantNo), map[string]interface{}{"product_id": productID}, headers)
 	if v2.Code != 0 || numToUint64(v2.Data["view_count"]) != 1 {
 		t.Fatalf("second view should be deduped in 30s: %+v", v2)
 	}
-	v3 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/histories/views", map[string]interface{}{
+	v3 := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", merchantNo), map[string]interface{}{
 		"product_id": productID,
 		"viewed_at":  time.Now().Add(31 * time.Second).Format(time.RFC3339),
 	}, headers)
@@ -243,7 +324,7 @@ func TestBuyerHistoriesDedupAndClear(t *testing.T) {
 		t.Fatalf("third view should increase count: %+v", v3)
 	}
 
-	list := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/histories", nil, headers)
+	list := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/histories", merchantNo), nil, headers)
 	if list.Code != 0 {
 		t.Fatalf("history list failed: %+v", list)
 	}
@@ -262,11 +343,11 @@ func TestBuyerHistoriesDedupAndClear(t *testing.T) {
 		t.Fatalf("history original_price_cent should be returned: %+v", list)
 	}
 
-	clear := requestJSON(t, srv.Router, http.MethodDelete, "/api/v1/buyer/histories", nil, headers)
+	clear := requestJSON(t, srv.Router, http.MethodDelete, withMerchantNo("/api/v1/buyer/histories", merchantNo), nil, headers)
 	if clear.Code != 0 {
 		t.Fatalf("clear histories failed: %+v", clear)
 	}
-	listAfter := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/histories", nil, headers)
+	listAfter := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/histories", merchantNo), nil, headers)
 	if listAfter.Code != 0 {
 		t.Fatalf("history list after clear failed: %+v", listAfter)
 	}
@@ -283,14 +364,15 @@ func TestBuyerGuestMergeIdempotent(t *testing.T) {
 	approveMerchant(t, srv, adminToken, merchantID)
 	merchant := merchantLogin(t, srv, username, password)
 	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	productID := createAndOnShelfProduct(t, srv, merchantToken)
 
 	guestHeaders := map[string]string{"X-Device-Id": "dev-merge-001"}
-	fav := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/favorites", map[string]interface{}{"product_id": productID}, guestHeaders)
+	fav := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/favorites", merchantNo), map[string]interface{}{"product_id": productID}, guestHeaders)
 	if fav.Code != 0 {
 		t.Fatalf("guest favorite failed: %+v", fav)
 	}
-	view := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/histories/views", map[string]interface{}{"product_id": productID}, guestHeaders)
+	view := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", merchantNo), map[string]interface{}{"product_id": productID}, guestHeaders)
 	if view.Code != 0 {
 		t.Fatalf("guest history failed: %+v", view)
 	}
@@ -329,6 +411,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 	approveMerchant(t, srv, adminToken, merchantID)
 	merchant := merchantLogin(t, srv, username, password)
 	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	productID := createAndOnShelfProduct(t, srv, merchantToken)
 
 	buyerLoginResp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/wechat-login", map[string]interface{}{
@@ -339,7 +422,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 	}
 	buyerToken := str(buyerLoginResp.Data["access_token"])
 
-	create1 := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+	create1 := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/intents", merchantNo), map[string]interface{}{
 		"product_id":    productID,
 		"contact_phone": "13800138000",
 		"message":       "有意向，方便联系",
@@ -349,7 +432,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 	}
 	intentID := numToUint64(create1.Data["intent_id"])
 
-	createConflict := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+	createConflict := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/intents", merchantNo), map[string]interface{}{
 		"product_id":    productID,
 		"contact_phone": "13800138000",
 	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
@@ -367,7 +450,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 		t.Fatalf("merchant contacted failed: %+v", markContacted)
 	}
 
-	buyerList := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/intents", nil, map[string]string{"Authorization": "Bearer " + buyerToken})
+	buyerList := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/intents", merchantNo), nil, map[string]string{"Authorization": "Bearer " + buyerToken})
 	if buyerList.Code != 0 {
 		t.Fatalf("buyer intent list failed: %+v", buyerList)
 	}
@@ -384,7 +467,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 		t.Fatalf("merchant close intent failed: %+v", closeIntent)
 	}
 
-	buyerDetail := requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/intents/%d", intentID), nil, map[string]string{"Authorization": "Bearer " + buyerToken})
+	buyerDetail := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo(fmt.Sprintf("/api/v1/buyer/intents/%d", intentID), merchantNo), nil, map[string]string{"Authorization": "Bearer " + buyerToken})
 	if buyerDetail.Code != 0 {
 		t.Fatalf("buyer intent detail failed: %+v", buyerDetail)
 	}
@@ -393,7 +476,7 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 		t.Fatalf("buyer detail status mapping mismatch: %+v", buyerDetail)
 	}
 
-	createAfterClose := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+	createAfterClose := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/intents", merchantNo), map[string]interface{}{
 		"product_id":     productID,
 		"contact_wechat": "wx_after_close",
 	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
@@ -409,6 +492,7 @@ func TestBuyerIntentInvalidProductStatusAndPrivilegeBoundary(t *testing.T) {
 	approveMerchant(t, srv, adminToken, merchantID)
 	merchant := merchantLogin(t, srv, username, password)
 	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	draftProductID := createDraftProduct(t, srv, merchantToken)
 
 	buyerLoginResp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/auth/wechat-login", map[string]interface{}{
@@ -419,7 +503,7 @@ func TestBuyerIntentInvalidProductStatusAndPrivilegeBoundary(t *testing.T) {
 	}
 	buyerToken := str(buyerLoginResp.Data["access_token"])
 
-	invalidStatus := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/buyer/intents", map[string]interface{}{
+	invalidStatus := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/intents", merchantNo), map[string]interface{}{
 		"product_id":    draftProductID,
 		"contact_phone": "13900139000",
 	}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-guard-001"})

@@ -85,6 +85,18 @@ func (s *Server) resolveBuyerOwner(c *gin.Context, requireDeviceForGuest bool) (
 	return buyerOwner{OwnerType: model.OwnerTypeDevice, OwnerKey: ownerKeyForDevice(deviceID), DeviceID: &device}, nil
 }
 
+func (s *Server) resolveBuyerMerchantScope(c *gin.Context) (model.Merchant, error) {
+	merchantNo := strings.TrimSpace(c.Query("merchant_no"))
+	if merchantNo == "" {
+		return model.Merchant{}, common.ErrInvalidArgument
+	}
+	var merchant model.Merchant
+	if err := s.DB.Where("merchant_no = ?", merchantNo).First(&merchant).Error; err != nil {
+		return model.Merchant{}, s.dbError(err)
+	}
+	return merchant, nil
+}
+
 func (s *Server) checkRateLimit(scope, key string, limit int, window time.Duration) error {
 	if !s.limiter.allow(scope, key, limit, window) {
 		return common.ErrRateLimit
@@ -205,7 +217,12 @@ func (s *Server) handleBuyerCategories(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	query := s.DB.Model(&model.Category{}).Where("status = ?", model.CategoryEnabled)
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	query := s.DB.Model(&model.Category{}).Where("merchant_id = ? AND status = ?", merchant.ID, model.CategoryEnabled)
 	if v := c.Query("level"); v != "" {
 		query = query.Where("level = ?", v)
 	}
@@ -230,8 +247,13 @@ func (s *Server) handleBuyerProducts(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.Product{}).Where("status = ?", model.ProductOnShelf)
+	query := s.DB.Model(&model.Product{}).Where("merchant_id = ? AND status = ?", merchant.ID, model.ProductOnShelf)
 	if kw := strings.TrimSpace(c.Query("keyword")); kw != "" {
 		query = query.Where("title LIKE ?", "%"+kw+"%")
 	}
@@ -306,13 +328,18 @@ func (s *Server) handleBuyerProductDetail(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchantScope, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	id, err := parseUintParam(c, "id")
 	if err != nil {
 		common.Fail(c, err)
 		return
 	}
 	var product model.Product
-	if err := s.DB.Where("id = ?", id).First(&product).Error; err != nil {
+	if err := s.DB.Where("id = ? AND merchant_id = ?", id, merchantScope.ID).First(&product).Error; err != nil {
 		common.Fail(c, s.dbError(err))
 		return
 	}
@@ -375,9 +402,9 @@ func (s *Server) handleBuyerProductDetail(c *gin.Context) {
 	}})
 }
 
-func (s *Server) loadBuyerVisibleProduct(productID uint64) (model.Product, error) {
+func (s *Server) loadBuyerVisibleProduct(productID uint64, merchantID uint64) (model.Product, error) {
 	var product model.Product
-	if err := s.DB.Where("id = ?", productID).First(&product).Error; err != nil {
+	if err := s.DB.Where("id = ? AND merchant_id = ?", productID, merchantID).First(&product).Error; err != nil {
 		return model.Product{}, s.dbError(err)
 	}
 	if !isBuyerProductDetailVisible(product.Status) {
@@ -623,8 +650,13 @@ func (s *Server) handleBuyerFavoriteList(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND is_active = ?", owner.OwnerKey, true)
+	query := s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
@@ -689,6 +721,11 @@ func (s *Server) handleBuyerFavoriteAdd(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	if err := s.checkRateLimit("buyer:favorites:add", owner.OwnerKey, 60, time.Minute); err != nil {
 		common.Fail(c, err)
 		return
@@ -698,7 +735,7 @@ func (s *Server) handleBuyerFavoriteAdd(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	product, err := s.loadBuyerVisibleProduct(req.ProductID)
+	product, err := s.loadBuyerVisibleProduct(req.ProductID, merchant.ID)
 	if err != nil {
 		common.Fail(c, err)
 		return
@@ -741,6 +778,11 @@ func (s *Server) handleBuyerFavoriteDelete(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	if err := s.checkRateLimit("buyer:favorites:delete", owner.OwnerKey, 60, time.Minute); err != nil {
 		common.Fail(c, err)
 		return
@@ -750,7 +792,7 @@ func (s *Server) handleBuyerFavoriteDelete(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	if err := s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND product_id = ?", owner.OwnerKey, productID).Update("is_active", false).Error; err != nil {
+	if err := s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND merchant_id = ? AND product_id = ?", owner.OwnerKey, merchant.ID, productID).Update("is_active", false).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
@@ -759,6 +801,11 @@ func (s *Server) handleBuyerFavoriteDelete(c *gin.Context) {
 
 func (s *Server) handleBuyerHistoryView(c *gin.Context) {
 	owner, err := s.resolveBuyerOwner(c, true)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
 	if err != nil {
 		common.Fail(c, err)
 		return
@@ -777,7 +824,7 @@ func (s *Server) handleBuyerHistoryView(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	product, err := s.loadBuyerVisibleProduct(req.ProductID)
+	product, err := s.loadBuyerVisibleProduct(req.ProductID, merchant.ID)
 	if err != nil {
 		common.Fail(c, err)
 		return
@@ -851,8 +898,13 @@ func (s *Server) handleBuyerHistoryList(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND is_active = ?", owner.OwnerKey, true)
+	query := s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
@@ -917,11 +969,16 @@ func (s *Server) handleBuyerHistoryDelete(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	if err := s.checkRateLimit("buyer:histories:delete", owner.OwnerKey, 30, time.Minute); err != nil {
 		common.Fail(c, err)
 		return
 	}
-	query := s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ?", owner.OwnerKey)
+	query := s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND merchant_id = ?", owner.OwnerKey, merchant.ID)
 	if v := strings.TrimSpace(c.Query("product_id")); v != "" {
 		query = query.Where("product_id = ?", v)
 	}
@@ -940,6 +997,11 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 	}
 	if actor.UserType != model.UserTypeBuyer {
 		common.Fail(c, common.ErrForbidden)
+		return
+	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
 		return
 	}
 	if err := s.checkRateLimit("buyer:intent:min", fmt.Sprintf("%d", actor.UserID), 5, time.Minute); err != nil {
@@ -969,7 +1031,7 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 	}
 
 	var product model.Product
-	if err := s.DB.Where("id = ?", req.ProductID).First(&product).Error; err != nil {
+	if err := s.DB.Where("id = ? AND merchant_id = ?", req.ProductID, merchant.ID).First(&product).Error; err != nil {
 		common.Fail(c, s.dbError(err))
 		return
 	}
@@ -981,7 +1043,7 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
 	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
 		var cnt int64
-		if err := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND product_id = ? AND is_open = ?", actor.UserID, req.ProductID, true).Count(&cnt).Error; err != nil {
+		if err := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND product_id = ? AND is_open = ?", actor.UserID, merchant.ID, req.ProductID, true).Count(&cnt).Error; err != nil {
 			return nil, common.ErrInternal
 		}
 		if cnt > 0 {
@@ -1030,8 +1092,13 @@ func (s *Server) handleBuyerIntentList(c *gin.Context) {
 		common.Fail(c, common.ErrForbidden)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ?", actor.UserID)
+	query := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ?", actor.UserID, merchant.ID)
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -1103,13 +1170,18 @@ func (s *Server) handleBuyerIntentDetail(c *gin.Context) {
 		common.Fail(c, common.ErrForbidden)
 		return
 	}
+	merchant, err := s.resolveBuyerMerchantScope(c)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
 	id, err := parseUintParam(c, "id")
 	if err != nil {
 		common.Fail(c, err)
 		return
 	}
 	var intent model.BuyerIntent
-	if err := s.DB.Where("id = ?", id).First(&intent).Error; err != nil {
+	if err := s.DB.Where("id = ? AND merchant_id = ?", id, merchant.ID).First(&intent).Error; err != nil {
 		common.Fail(c, s.dbError(err))
 		return
 	}
