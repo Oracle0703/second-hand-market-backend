@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -118,9 +119,104 @@ func SeedDefaultCategories(db *gorm.DB) error {
 	return nil
 }
 
+func EnsureMerchantDefaultCategories(db *gorm.DB, merchantID uint64) error {
+	if merchantID == 0 {
+		return errors.New("merchant_id is required")
+	}
+	for i, seed := range defaultCategorySeeds {
+		root, err := findOrCreateMerchantCategory(db, merchantID, nil, 1, seed.Name, i+1)
+		if err != nil {
+			return err
+		}
+		seen := map[string]struct{}{}
+		sortOrder := 1
+		for _, childName := range seed.Children {
+			name := strings.TrimSpace(childName)
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			if _, err := findOrCreateMerchantCategory(db, merchantID, &root.ID, 2, name, sortOrder); err != nil {
+				return err
+			}
+			sortOrder++
+		}
+	}
+	return nil
+}
+
+func BackfillMerchantCategories(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var merchants []model.Merchant
+		if err := tx.Order("id ASC").Find(&merchants).Error; err != nil {
+			return err
+		}
+		for _, merchant := range merchants {
+			if err := EnsureMerchantDefaultCategories(tx, merchant.ID); err != nil {
+				return err
+			}
+			if err := remapMerchantProductsToOwnedCategories(tx, merchant.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func remapMerchantProductsToOwnedCategories(db *gorm.DB, merchantID uint64) error {
+	var products []model.Product
+	if err := db.Where("merchant_id = ?", merchantID).Order("id ASC").Find(&products).Error; err != nil {
+		return err
+	}
+	for _, product := range products {
+		var current model.Category
+		err := db.Where("id = ?", product.CategoryID).First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("product %d category %d not found", product.ID, product.CategoryID)
+		}
+		if err != nil {
+			return err
+		}
+		if current.MerchantID != nil {
+			if *current.MerchantID != merchantID {
+				return fmt.Errorf("product %d category %d belongs to merchant %d", product.ID, current.ID, *current.MerchantID)
+			}
+			continue
+		}
+		if current.Level != 2 || current.ParentID == nil {
+			return fmt.Errorf("product %d category %d is not a legacy level-2 category", product.ID, current.ID)
+		}
+		var legacyRoot model.Category
+		if err := db.Where("id = ? AND merchant_id IS NULL AND level = ?", *current.ParentID, 1).First(&legacyRoot).Error; err != nil {
+			return err
+		}
+		var ownedRoot model.Category
+		if err := db.Where("merchant_id = ? AND parent_id IS NULL AND level = ? AND name = ?", merchantID, 1, legacyRoot.Name).First(&ownedRoot).Error; err != nil {
+			return err
+		}
+		var ownedChild model.Category
+		if err := db.Where("merchant_id = ? AND parent_id = ? AND level = ? AND name = ?", merchantID, ownedRoot.ID, 2, current.Name).First(&ownedChild).Error; err != nil {
+			return err
+		}
+		if err := db.Model(&model.Product{}).Where("id = ?", product.ID).Update("category_id", ownedChild.ID).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func findOrCreateCategory(db *gorm.DB, parentID *uint64, level int8, name string, sort int) (model.Category, error) {
 	var category model.Category
-	if err := db.Model(&model.Category{}).Where("name = ?", name).First(&category).Error; err != nil {
+	query := db.Model(&model.Category{}).Where("merchant_id IS NULL AND level = ? AND name = ?", level, name)
+	if parentID == nil {
+		query = query.Where("parent_id IS NULL")
+	} else {
+		query = query.Where("parent_id = ?", *parentID)
+	}
+	if err := query.First(&category).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			category = model.Category{
 				ParentID: parentID,
@@ -150,6 +246,46 @@ func findOrCreateCategory(db *gorm.DB, parentID *uint64, level int8, name string
 		if err := db.Model(&model.Category{}).Where("id = ?", category.ID).Updates(updates).Error; err != nil {
 			return model.Category{}, err
 		}
+		category.Status = model.CategoryEnabled
+		category.Sort = sort
+	}
+	return category, nil
+}
+
+func findOrCreateMerchantCategory(db *gorm.DB, merchantID uint64, parentID *uint64, level int8, name string, sort int) (model.Category, error) {
+	name = strings.TrimSpace(name)
+	var category model.Category
+	query := db.Unscoped().Model(&model.Category{}).Where("merchant_id = ? AND level = ? AND name = ?", merchantID, level, name)
+	if parentID == nil {
+		query = query.Where("parent_id IS NULL")
+	} else {
+		query = query.Where("parent_id = ?", *parentID)
+	}
+	if err := query.First(&category).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			merchantIDValue := merchantID
+			category = model.Category{
+				MerchantID: &merchantIDValue,
+				ParentID:   parentID,
+				Level:      level,
+				Name:       name,
+				Status:     model.CategoryEnabled,
+				Sort:       sort,
+			}
+			return category, db.Create(&category).Error
+		}
+		return model.Category{}, err
+	}
+	if category.DeletedAt.Valid || category.Status != model.CategoryEnabled || category.Sort != sort {
+		updates := map[string]interface{}{
+			"deleted_at": nil,
+			"status":     model.CategoryEnabled,
+			"sort":       sort,
+		}
+		if err := db.Unscoped().Model(&model.Category{}).Where("id = ?", category.ID).Updates(updates).Error; err != nil {
+			return model.Category{}, err
+		}
+		category.DeletedAt.Valid = false
 		category.Status = model.CategoryEnabled
 		category.Sort = sort
 	}

@@ -179,6 +179,91 @@ func TestSeedDefaultCategoriesIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestEnsureMerchantDefaultCategoriesCreatesPrivateCopies(t *testing.T) {
+	db := newDatabaseOperationsTestDB(t)
+	if err := db.AutoMigrate(&model.Merchant{}, &model.Category{}); err != nil {
+		t.Fatalf("migrate merchant categories: %v", err)
+	}
+	merchantOne := model.Merchant{MerchantNo: "M1", MerchantName: "One", ContactName: "A", ContactPhone: "1", ReviewStatus: model.ReviewApproved}
+	merchantTwo := model.Merchant{MerchantNo: "M2", MerchantName: "Two", ContactName: "B", ContactPhone: "2", ReviewStatus: model.ReviewApproved}
+	if err := db.Create(&merchantOne).Error; err != nil {
+		t.Fatalf("create merchant one: %v", err)
+	}
+	if err := db.Create(&merchantTwo).Error; err != nil {
+		t.Fatalf("create merchant two: %v", err)
+	}
+
+	for run := 0; run < 2; run++ {
+		if err := EnsureMerchantDefaultCategories(db, merchantOne.ID); err != nil {
+			t.Fatalf("seed merchant one run %d: %v", run+1, err)
+		}
+	}
+	if err := EnsureMerchantDefaultCategories(db, merchantTwo.ID); err != nil {
+		t.Fatalf("seed merchant two: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&model.Category{}).Where("merchant_id IN ?", []uint64{merchantOne.ID, merchantTwo.ID}).Count(&count).Error; err != nil {
+		t.Fatalf("count merchant categories: %v", err)
+	}
+	if count != 40 {
+		t.Fatalf("merchant category count = %d, want 40", count)
+	}
+
+	var roots []model.Category
+	if err := db.Where("merchant_id = ? AND parent_id IS NULL", merchantOne.ID).Order("sort ASC").Find(&roots).Error; err != nil {
+		t.Fatalf("load roots: %v", err)
+	}
+	if len(roots) != len(defaultCategorySeeds) {
+		t.Fatalf("root count = %d, want %d", len(roots), len(defaultCategorySeeds))
+	}
+}
+
+func TestBackfillMerchantCategoriesRemapsProductsToMerchantCopies(t *testing.T) {
+	db := newDatabaseOperationsTestDB(t)
+	if err := db.AutoMigrate(&model.Merchant{}, &model.Category{}, &model.Product{}); err != nil {
+		t.Fatalf("migrate backfill schema: %v", err)
+	}
+	if err := SeedDefaultCategories(db); err != nil {
+		t.Fatalf("seed legacy categories: %v", err)
+	}
+	merchant := model.Merchant{MerchantNo: "M1", MerchantName: "One", ContactName: "A", ContactPhone: "1", ReviewStatus: model.ReviewApproved}
+	if err := db.Create(&merchant).Error; err != nil {
+		t.Fatalf("create merchant: %v", err)
+	}
+	var legacyChild model.Category
+	if err := db.Where("merchant_id IS NULL AND level = ? AND name = ?", 2, "家具").First(&legacyChild).Error; err != nil {
+		t.Fatalf("load legacy child: %v", err)
+	}
+	product := model.Product{
+		ProductNo: "P1", MerchantID: merchant.ID, Title: "Desk", Description: "Desk",
+		CategoryID: legacyChild.ID, PriceCent: 100, ConditionLevel: "GOOD",
+		Stock: 1, Status: model.ProductDraft, CreatedBy: 1, UpdatedBy: 1,
+	}
+	if err := db.Create(&product).Error; err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+
+	if err := BackfillMerchantCategories(db); err != nil {
+		t.Fatalf("backfill merchant categories: %v", err)
+	}
+
+	var updated model.Product
+	if err := db.First(&updated, product.ID).Error; err != nil {
+		t.Fatalf("load product: %v", err)
+	}
+	if updated.CategoryID == legacyChild.ID {
+		t.Fatal("product still points at legacy global category")
+	}
+	var ownedCategory model.Category
+	if err := db.First(&ownedCategory, updated.CategoryID).Error; err != nil {
+		t.Fatalf("load owned category: %v", err)
+	}
+	if ownedCategory.MerchantID == nil || *ownedCategory.MerchantID != merchant.ID || ownedCategory.Name != legacyChild.Name {
+		t.Fatalf("product category not remapped to merchant copy: %+v", ownedCategory)
+	}
+}
+
 func newDatabaseOperationsTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:database_operations_%d?mode=memory&cache=shared", time.Now().UnixNano())

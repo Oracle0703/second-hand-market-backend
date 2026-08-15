@@ -72,6 +72,25 @@ func TestMultiStockModelMetadataMatchesMigrationContract(t *testing.T) {
 	}
 }
 
+func TestCategoryModelMetadataSupportsMerchantOwnership(t *testing.T) {
+	categorySchema, err := schema.Parse(&Category{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatalf("parse category schema: %v", err)
+	}
+
+	assertFieldTagContains(t, categorySchema, "MerchantID",
+		"index:idx_merchant_parent_sort,priority:1",
+		"index:idx_merchant_level_status_sort,priority:1",
+	)
+	assertFieldTagContains(t, categorySchema, "ParentID",
+		"index:idx_merchant_parent_sort,priority:2",
+	)
+
+	indexes := categorySchema.ParseIndexes()
+	assertModelIndex(t, indexes, "idx_merchant_parent_sort", false, "MerchantID", "ParentID", "Sort")
+	assertModelIndex(t, indexes, "idx_merchant_level_status_sort", false, "MerchantID", "Level", "Status", "Sort")
+}
+
 func TestAutoMigrateCreatesMultiStockSchemaWithoutLegacyUniqueIndex(t *testing.T) {
 	db := newModelSchemaTestDB(t)
 	for run := 0; run < 2; run++ {

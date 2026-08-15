@@ -122,15 +122,16 @@ type MerchantAuditLog struct {
 }
 
 type Category struct {
-	ID        uint64         `gorm:"primaryKey" json:"id"`
-	ParentID  *uint64        `gorm:"index:idx_parent_sort,priority:1" json:"parent_id"`
-	Level     int8           `gorm:"index:idx_level_status_sort,priority:1" json:"level"`
-	Name      string         `gorm:"size:64;uniqueIndex:uk_parent_name,priority:2" json:"name"`
-	Status    string         `gorm:"size:16;index:idx_level_status_sort,priority:2" json:"status"`
-	Sort      int            `gorm:"index:idx_parent_sort,priority:2;index:idx_level_status_sort,priority:3" json:"sort"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	ID         uint64         `gorm:"primaryKey" json:"id"`
+	MerchantID *uint64        `gorm:"index:idx_merchant_parent_sort,priority:1;index:idx_merchant_level_status_sort,priority:1" json:"merchant_id"`
+	ParentID   *uint64        `gorm:"index:idx_parent_sort,priority:1;index:idx_merchant_parent_sort,priority:2;uniqueIndex:uk_parent_name,priority:1" json:"parent_id"`
+	Level      int8           `gorm:"index:idx_level_status_sort,priority:1;index:idx_merchant_level_status_sort,priority:2" json:"level"`
+	Name       string         `gorm:"size:64;uniqueIndex:uk_parent_name,priority:2" json:"name"`
+	Status     string         `gorm:"size:16;index:idx_level_status_sort,priority:2;index:idx_merchant_level_status_sort,priority:3" json:"status"`
+	Sort       int            `gorm:"index:idx_parent_sort,priority:2;index:idx_level_status_sort,priority:3;index:idx_merchant_parent_sort,priority:3;index:idx_merchant_level_status_sort,priority:4" json:"sort"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
 func (c Category) TableName() string {
