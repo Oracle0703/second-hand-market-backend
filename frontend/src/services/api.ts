@@ -44,10 +44,11 @@ export const api = {
   merchantReapply(payload: Record<string, unknown>) {
     return http.post('/merchant/reapply', payload)
   },
-  categories(level?: 1 | 2, parentId?: number) {
+  categories(level?: 1 | 2, parentId?: number, status?: string) {
     const params: Record<string, string | number> = {}
     if (level) params.level = level
     if (parentId) params.parent_id = parentId
+    if (status) params.status = status
     return http.get('/merchant/categories', { params })
   },
   createCategory(payload: { level: 1 | 2; parent_id?: number; name: string; sort?: number }) {

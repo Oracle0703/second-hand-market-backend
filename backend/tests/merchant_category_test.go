@@ -61,6 +61,32 @@ func TestMerchantCategoryCRUDIsScopedToMerchant(t *testing.T) {
 	if updateChild.Code != 0 {
 		t.Fatalf("update child failed: %+v", updateChild)
 	}
+
+	enabledOnly := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/categories?level=2", nil, map[string]string{"Authorization": "Bearer " + merchantOneToken})
+	if enabledOnly.Code != 0 {
+		t.Fatalf("enabled category list failed: %+v", enabledOnly)
+	}
+	for _, item := range enabledOnly.Data["items"].([]interface{}) {
+		row := item.(map[string]interface{})
+		if numToUint64(row["id"]) == childID {
+			t.Fatalf("disabled category leaked into default enabled list: %+v", enabledOnly)
+		}
+	}
+
+	allStatuses := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/categories?level=2&status=ALL", nil, map[string]string{"Authorization": "Bearer " + merchantOneToken})
+	if allStatuses.Code != 0 {
+		t.Fatalf("all-status category list failed: %+v", allStatuses)
+	}
+	foundDisabled := false
+	for _, item := range allStatuses.Data["items"].([]interface{}) {
+		row := item.(map[string]interface{})
+		if numToUint64(row["id"]) == childID {
+			foundDisabled = row["status"] == "DISABLED"
+		}
+	}
+	if !foundDisabled {
+		t.Fatalf("disabled category should stay visible in management all-status list: %+v", allStatuses)
+	}
 }
 
 func TestProductRejectsCrossMerchantCategory(t *testing.T) {

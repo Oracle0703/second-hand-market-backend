@@ -359,6 +359,42 @@ func TestBuyerHistoriesDedupAndClear(t *testing.T) {
 	}
 }
 
+func TestBuyerHistoryClearSingleProductKeepsOtherMerchantScopedRecords(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "buyerhisone")
+	approveMerchant(t, srv, adminToken, merchantID)
+	merchant := merchantLogin(t, srv, username, password)
+	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
+	productOneID := createAndOnShelfProduct(t, srv, merchantToken)
+	productTwoID := createAndOnShelfProduct(t, srv, merchantToken)
+
+	headers := map[string]string{"X-Device-Id": "dev-his-single-001"}
+	for _, productID := range []uint64{productOneID, productTwoID} {
+		view := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", merchantNo), map[string]interface{}{"product_id": productID}, headers)
+		if view.Code != 0 {
+			t.Fatalf("history view failed: %+v", view)
+		}
+	}
+
+	clearOne := requestJSON(t, srv.Router, http.MethodDelete, withMerchantNo(fmt.Sprintf("/api/v1/buyer/histories?product_id=%d", productOneID), merchantNo), nil, headers)
+	if clearOne.Code != 0 {
+		t.Fatalf("clear single history failed: %+v", clearOne)
+	}
+	list := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/histories", merchantNo), nil, headers)
+	if list.Code != 0 {
+		t.Fatalf("history list failed: %+v", list)
+	}
+	items := list.Data["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("history list should keep one item after clearing a single product: %+v", list)
+	}
+	if got := numToUint64(items[0].(map[string]interface{})["product_id"]); got != productTwoID {
+		t.Fatalf("remaining history product_id = %d, want %d: %+v", got, productTwoID, list)
+	}
+}
+
 func TestBuyerSummaryRequiresMerchantNoAndCountsCurrentMerchant(t *testing.T) {
 	srv := newTestServer(t)
 	adminToken := adminAccessToken(t, srv)

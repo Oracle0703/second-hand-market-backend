@@ -47,7 +47,7 @@ describe('Category ListPage', () => {
       return {
         data: {
           data: {
-            items: [{ id: 2, merchant_id: 10, parent_id: 1, level: 2, name: '沙发', status: 'ENABLED', sort: 1 }]
+            items: [{ id: 2, merchant_id: 10, parent_id: 1, level: 2, name: '沙发', status: 'DISABLED', sort: 1 }]
           }
         }
       } as never
@@ -62,6 +62,9 @@ describe('Category ListPage', () => {
 
     expect(await screen.findByText('家具类')).toBeInTheDocument()
     expect(screen.getByText('沙发')).toBeInTheDocument()
+    expect(screen.getByText('停用')).toBeInTheDocument()
+    expect(api.categories).toHaveBeenCalledWith(1, undefined, 'ALL')
+    expect(api.categories).toHaveBeenCalledWith(2, undefined, 'ALL')
 
     fireEvent.click(screen.getByRole('button', { name: '新增一级分类' }))
     fireEvent.change(screen.getByLabelText('分类名称'), { target: { value: '家电类' } })
@@ -74,7 +77,7 @@ describe('Category ListPage', () => {
     fireEvent.change(screen.getByLabelText('分类名称'), { target: { value: '真皮沙发' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => {
-      expect(api.updateCategory).toHaveBeenCalledWith(2, { name: '真皮沙发', sort: 1, status: 'ENABLED' })
+      expect(api.updateCategory).toHaveBeenCalledWith(2, { name: '真皮沙发', sort: 1, status: 'DISABLED' })
     })
 
     fireEvent.click(screen.getByRole('button', { name: '删除 沙发' }))

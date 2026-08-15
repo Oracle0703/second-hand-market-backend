@@ -64,11 +64,11 @@ export function ListPage() {
 
   const rootsQuery = useQuery({
     queryKey: ['merchant-categories', 1],
-    queryFn: async () => ((await api.categories(1)).data.data.items as CategoryItem[]).map(normalizeCategory)
+    queryFn: async () => ((await api.categories(1, undefined, 'ALL')).data.data.items as CategoryItem[]).map(normalizeCategory)
   })
   const childrenQuery = useQuery({
     queryKey: ['merchant-categories', 2],
-    queryFn: async () => ((await api.categories(2)).data.data.items as CategoryItem[]).map(normalizeCategory)
+    queryFn: async () => ((await api.categories(2, undefined, 'ALL')).data.data.items as CategoryItem[]).map(normalizeCategory)
   })
 
   const invalidateCategories = async () => {

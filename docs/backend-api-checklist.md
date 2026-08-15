@@ -121,7 +121,7 @@ onboarding scope 黑名单：
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/categories` | GET | 查询当前商家分类 | `level(O:1/2), parent_id(O), status(O)` | `items[{id,merchant_id,parent_id,level,name,status,sort}]` | MERCHANT(full) |
+| `/merchant/categories` | GET | 查询当前商家分类 | `level(O:1/2), parent_id(O), status(O:ENABLED/DISABLED/ALL)` | `items[{id,merchant_id,parent_id,level,name,status,sort}]` | MERCHANT(full) |
 | `/merchant/categories` | POST | 新建当前商家分类 | `level(R:1/2), parent_id(level=2必填), name(R), sort(O)` | `id,merchant_id,parent_id,level,name,status,sort,created_at,updated_at` | MERCHANT(full) |
 | `/merchant/categories/:id` | PUT | 编辑当前商家分类 | `id(path,R), name(O), sort(O), status(O:ENABLED/DISABLED)` | `item{id,merchant_id,parent_id,level,name,status,sort}` | MERCHANT(full) |
 | `/merchant/categories/:id` | DELETE | 删除当前商家分类 | `id(path,R)` | `success` | MERCHANT(full) |
@@ -132,6 +132,7 @@ onboarding scope 黑名单：
 3. 一级分类 `parent_id` 为空；二级分类必须挂在当前商家的一级分类下。
 4. 删除一级分类要求无二级子分类；删除二级分类要求当前商家无商品引用。
 5. 新建/编辑商品页面先请求一级分类，再根据 `parent_id` 请求二级分类。
+6. 商品创建/编辑页默认只取 `ENABLED` 分类；分类管理页使用 `status=ALL` 展示启用和停用分类，便于重新启用。
 
 ## 7. 商品管理模块（products）
 

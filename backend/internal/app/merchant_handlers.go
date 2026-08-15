@@ -148,11 +148,13 @@ func (s *Server) handleCategories(c *gin.Context) {
 	}
 
 	query := s.DB.Model(&model.Category{}).Where("categories.merchant_id = ?", actor.MerchantID)
-	status := strings.TrimSpace(c.Query("status"))
+	status := strings.ToUpper(strings.TrimSpace(c.Query("status")))
 	if status == "" {
 		status = model.CategoryEnabled
 	}
-	query = query.Where("categories.status = ?", status)
+	if status != "ALL" {
+		query = query.Where("categories.status = ?", status)
+	}
 	level := strings.TrimSpace(c.Query("level"))
 	parentID := strings.TrimSpace(c.Query("parent_id"))
 	if level != "" {

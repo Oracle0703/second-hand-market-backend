@@ -85,8 +85,7 @@ describe('buyer merchant scope', () => {
     }))
     expect(mockApiRequest).toHaveBeenNthCalledWith(5, expect.objectContaining({
       method: 'DELETE',
-      path: '/buyer/histories?merchant_no=M20260815001',
-      data: { product_id: 7 }
+      path: '/buyer/histories?merchant_no=M20260815001&product_id=7'
     }))
     expect(mockApiRequest).toHaveBeenNthCalledWith(6, expect.objectContaining({
       method: 'POST',

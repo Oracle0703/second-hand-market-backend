@@ -175,10 +175,12 @@ export function listHistories(page = 1, pageSize = 20) {
 }
 
 export function clearHistories(productID?: number) {
+  const path = productID
+    ? `${withMerchantPath('/buyer/histories')}&product_id=${encodeURIComponent(String(productID))}`
+    : withMerchantPath('/buyer/histories')
   return apiRequest<{ success: boolean }>({
     method: 'DELETE',
-    path: withMerchantPath('/buyer/histories'),
-    data: productID ? { product_id: productID } : undefined
+    path
   })
 }
 
