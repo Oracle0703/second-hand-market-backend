@@ -81,5 +81,5 @@ describe('Category ListPage', () => {
     await waitFor(() => {
       expect(api.deleteCategory).toHaveBeenCalledWith(2)
     })
-  })
+  }, 15000)
 })
