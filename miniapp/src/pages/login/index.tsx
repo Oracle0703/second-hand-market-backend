@@ -3,6 +3,7 @@ import Taro, { useRouter } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { loginByMiniProgram, mergeGuest } from '../../services/buyer'
 import { ensureDeviceID, useSessionStore } from '../../stores/session'
+import { warmupStorePhonePrivacyAuthorization } from '../../utils/contact'
 import { getMiniProgramPlatform } from '../../utils/platform'
 
 export default function LoginPage() {
@@ -26,6 +27,7 @@ export default function LoginPage() {
       })
       useSessionStore.getState().setSession(data.access_token, data.refresh_token, data.user)
       await mergeGuest(deviceID)
+      await warmupStorePhonePrivacyAuthorization()
 
       const redirect = router.params.redirect ? decodeURIComponent(router.params.redirect) : '/pages/me/index'
       if (redirect.startsWith('/pages/')) {
