@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth-store'
-import { ERROR_MESSAGES } from '../constants/error-codes'
+import { ERROR_MESSAGES, apiErrorMessage } from '../constants/error-codes'
 import type { AuthUser } from '../types/auth'
 
 const DEFAULT_HTTP_TIMEOUT_MS = 15000
@@ -132,7 +132,7 @@ http.interceptors.response.use(
   (response) => {
     const payload = response.data as APIResponse<unknown>
     if (payload.code !== 0) {
-      const msg = ERROR_MESSAGES[payload.code] ?? payload.message
+      const msg = apiErrorMessage(payload.code, getPathname(response.config.url), payload.message)
       return Promise.reject(new Error(msg))
     }
     return response
@@ -167,7 +167,7 @@ http.interceptors.response.use(
 
     if (payload && typeof payload.code === 'number') {
       const isLoginRequest = requestPath === '/auth/login'
-      const msg = isLoginRequest && payload.code === 10002 ? '账号或密码错误' : (ERROR_MESSAGES[payload.code] ?? payload.message ?? error.message)
+      const msg = isLoginRequest && payload.code === 10002 ? '账号或密码错误' : apiErrorMessage(payload.code, requestPath, payload.message ?? error.message)
       if (status === 401) {
         useAuthStore.getState().clear()
       }

@@ -14,7 +14,7 @@ import { Button, Image, Space, Typography, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { PRODUCT_CONDITION_META, type ProductCondition } from '@/constants/status'
 import { api } from '@/services/api'
-import { normalizeImageMIME } from '@/utils/imageMime'
+import { normalizeImageMIME, validateImageFileForUpload } from '@/utils/imageMime'
 import { yuanToCent } from '@/utils/price'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
@@ -156,6 +156,11 @@ export function CreatePage() {
     }
     if (uploadedImages.length >= 5) {
       message.error('最多上传5张图片')
+      return
+    }
+    const invalidReason = validateImageFileForUpload(file)
+    if (invalidReason) {
+      message.error(invalidReason)
       return
     }
     uploadMutation.mutate(file)

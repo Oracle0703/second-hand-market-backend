@@ -3,7 +3,7 @@ import { Alert, Button, Space, Typography, message } from 'antd'
 import { useRef, useState, type ChangeEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
-import { normalizeImageMIME } from '@/utils/imageMime'
+import { normalizeImageMIME, validateImageFileForUpload } from '@/utils/imageMime'
 
 export function RegisterPage() {
   const navigate = useNavigate()
@@ -18,6 +18,11 @@ export function RegisterPage() {
     e.target.value = ''
     if (!file) return
     setError('')
+    const invalidReason = validateImageFileForUpload(file)
+    if (invalidReason) {
+      setError(invalidReason)
+      return
+    }
     setUploading(true)
     try {
       const mimeType = normalizeImageMIME(file)

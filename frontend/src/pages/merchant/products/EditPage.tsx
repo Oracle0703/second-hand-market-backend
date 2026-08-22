@@ -14,7 +14,7 @@ import { Alert, Button, Image, Space, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getStatusText, PRODUCT_CONDITION_META, PRODUCT_STATUS_META, type ProductCondition, type ProductStatus } from '@/constants/status'
 import { api } from '@/services/api'
-import { normalizeImageMIME } from '@/utils/imageMime'
+import { normalizeImageMIME, validateImageFileForUpload } from '@/utils/imageMime'
 import { centToYuanNumber, yuanToCent } from '@/utils/price'
 import { resolveAssetURL } from '@/utils/url'
 
@@ -234,6 +234,11 @@ export function EditPage() {
     }
     if (imageItems.length >= 5) {
       message.error('最多上传5张图片')
+      return
+    }
+    const invalidReason = validateImageFileForUpload(file)
+    if (invalidReason) {
+      message.error(invalidReason)
       return
     }
     uploadMutation.mutate(file)
