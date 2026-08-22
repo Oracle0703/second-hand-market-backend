@@ -79,6 +79,7 @@ type Config struct {
 	BuyerDouyinAppSecret         string
 	BuyerDouyinCode2SessionURL   string
 	BuyerDouyinHTTPTimeout       time.Duration
+	BuyerDefaultMerchantNo       string
 
 	runtimeLoadErr                  error
 	requireDetailV1ProductImagesSet bool
@@ -118,6 +119,7 @@ func LoadConfig() Config {
 		BuyerDouyinAppSecret:       getEnv("BUYER_DOUYIN_APP_SECRET", ""),
 		BuyerDouyinCode2SessionURL: getEnv("BUYER_DOUYIN_CODE2SESSION_URL", douyinCode2SessionURL),
 		BuyerDouyinHTTPTimeout:     5 * time.Second,
+		BuyerDefaultMerchantNo:     strings.TrimSpace(getEnv("BUYER_DEFAULT_MERCHANT_NO", "")),
 	}
 	cfg.loadRuntimeBool("AUTO_MIGRATE", &cfg.AutoMigrate)
 	cfg.loadRuntimeBool("SEED_DEFAULTS", &cfg.SeedDefaults)

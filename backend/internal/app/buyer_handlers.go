@@ -88,6 +88,9 @@ func (s *Server) resolveBuyerOwner(c *gin.Context, requireDeviceForGuest bool) (
 func (s *Server) resolveBuyerMerchantScope(c *gin.Context) (model.Merchant, error) {
 	merchantNo := strings.TrimSpace(c.Query("merchant_no"))
 	if merchantNo == "" {
+		merchantNo = strings.TrimSpace(s.cfg.BuyerDefaultMerchantNo)
+	}
+	if merchantNo == "" {
 		return model.Merchant{}, common.ErrInvalidArgument
 	}
 	var merchant model.Merchant
