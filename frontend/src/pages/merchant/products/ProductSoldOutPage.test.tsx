@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -96,12 +96,24 @@ const soldProduct = {
   condition_level: 'GOOD',
   stock: 0,
   images: [],
+  cover_url: '/uploads/product_image/first.jpg',
   updated_at: '2026-08-10T00:00:00Z'
 }
 
 describe('商家商品售罄页面', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubGlobal(
+      'getComputedStyle',
+      () =>
+        ({
+          width: '0px',
+          height: '0px',
+          scrollbarColor: '',
+          scrollbarWidth: '',
+          getPropertyValue: () => ''
+        }) as unknown as CSSStyleDeclaration
+    )
     vi.mocked(api.categories).mockResolvedValue({ data: { data: { items: [] } } } as never)
   })
 
@@ -117,6 +129,35 @@ describe('商家商品售罄页面', () => {
     expect(screen.getAllByRole('button', { name: '调整库存' }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: '关闭' })).not.toBeInTheDocument()
     expect(screen.queryByText('已关闭')).not.toBeInTheDocument()
+  })
+
+  it('在商品列表默认展示第一张上传图片，点击查看更多后才请求详情图片', async () => {
+    vi.mocked(api.products).mockResolvedValue({
+      data: { data: { items: [soldProduct], total: 1, page: 1, page_size: 20 } }
+    } as never)
+    vi.mocked(api.productDetail).mockResolvedValue({
+      data: {
+        data: {
+          product: {
+            ...soldProduct,
+            images: [11, 12],
+            image_urls: ['/uploads/product_image/first.jpg', '/uploads/product_image/second.jpg']
+          }
+        }
+      }
+    } as never)
+
+    renderWithQuery(<ListPage />)
+
+    const cover = await screen.findByAltText('售罄商品首图')
+    expect(cover).toHaveAttribute('src', 'http://localhost:8080/uploads/product_image/first.jpg')
+    expect(api.productDetail).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '查看更多' }))
+
+    await waitFor(() => {
+      expect(api.productDetail).toHaveBeenCalledWith(7)
+    })
   })
 
   it('在商品详情把 SOLD 渲染为售罄并保留补库存入口，不显示关闭商品操作', async () => {

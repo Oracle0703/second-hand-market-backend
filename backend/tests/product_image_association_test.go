@@ -131,6 +131,41 @@ func TestProductCreateRejectsCrossMerchantProductImage(t *testing.T) {
 	}
 }
 
+func TestMerchantProductListReturnsFirstImageCoverURL(t *testing.T) {
+	srv := newTestServer(t)
+	token := approvedMerchantToken(t, srv, "list_cover")
+	firstImage := uploadProductImage(t, srv, token, encodedUploadImage(t, "image/jpeg"), "image/jpeg")
+	secondImage := uploadProductImage(t, srv, token, encodedUploadImage(t, "image/jpeg"), "image/jpeg")
+	create := createProductWithImages(t, srv, token, []uint64{firstImage.ID, secondImage.ID})
+	if create.Code != 0 {
+		t.Fatalf("create product failed: %+v", create)
+	}
+	productID := numToUint64(create.Data["product_id"])
+
+	list := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/products", nil, map[string]string{"Authorization": "Bearer " + token})
+	if list.Code != 0 {
+		t.Fatalf("product list failed: %+v", list)
+	}
+	items, ok := list.Data["items"].([]interface{})
+	if !ok || len(items) == 0 {
+		t.Fatalf("product list items invalid: %+v", list)
+	}
+	for _, raw := range items {
+		row, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if numToUint64(row["id"]) != productID {
+			continue
+		}
+		if got := str(row["cover_url"]); got != firstImage.URL {
+			t.Fatalf("product list cover_url mismatch: got=%q want=%q row=%+v", got, firstImage.URL, row)
+		}
+		return
+	}
+	t.Fatalf("created product not found in list: product_id=%d list=%+v", productID, list)
+}
+
 func TestProductDeleteByStaffRemovesOwnerUploadedImageRecord(t *testing.T) {
 	srv := newTestServer(t)
 	adminToken := adminAccessToken(t, srv)

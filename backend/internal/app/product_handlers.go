@@ -363,6 +363,7 @@ func (s *Server) handleProductList(c *gin.Context) {
 		CategoryLevel1Name *string   `json:"category_level1_name"`
 		CategoryLevel2ID   *uint64   `json:"category_level2_id"`
 		CategoryLevel2Name *string   `json:"category_level2_name"`
+		CoverURL           string    `json:"cover_url"`
 	}
 	items := make([]item, 0, size)
 	if err := query.Select(
@@ -370,6 +371,18 @@ func (s *Server) handleProductList(c *gin.Context) {
 	).Order("p.updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
+	}
+	productIDs := make([]uint64, 0, len(items))
+	for _, it := range items {
+		productIDs = append(productIDs, it.ID)
+	}
+	coverMap, err := s.loadProductCoverURLMap(productIDs)
+	if err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	for idx := range items {
+		items[idx].CoverURL = coverMap[items[idx].ID]
 	}
 	common.Success(c, common.PageResult[item]{Items: items, Total: total, Page: page, PageSize: size})
 }

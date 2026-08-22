@@ -22,6 +22,7 @@ type ProductItem = {
   category_level1_name?: string | null
   category_level2_id?: number | null
   category_level2_name?: string | null
+  cover_url?: string | null
 }
 
 type ProductListResp = {
@@ -154,12 +155,29 @@ export function ListPage() {
       title: '上传图片',
       key: 'images',
       search: false,
-      width: 110,
-      render: (_, row) => (
-        <Button type="link" onClick={() => void handleViewImages(row)}>
-          查看
-        </Button>
-      )
+      width: 120,
+      render: (_, row) => {
+        const coverURL = resolveAssetURL(row.cover_url)
+        return (
+          <Space direction="vertical" size={4} align="center">
+            {coverURL ? (
+              <Image
+                width={56}
+                height={56}
+                src={coverURL}
+                alt={`${row.title}首图`}
+                preview={false}
+                style={{ objectFit: 'cover', borderRadius: 6 }}
+              />
+            ) : (
+              <span style={{ color: '#999' }}>暂无图片</span>
+            )}
+            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => void handleViewImages(row)}>
+              查看更多
+            </Button>
+          </Space>
+        )
+      }
     },
     {
       title: '一级分类',
