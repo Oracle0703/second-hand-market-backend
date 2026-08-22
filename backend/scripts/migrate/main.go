@@ -102,6 +102,13 @@ var migrationCatalog = map[string]migrationSpec{
 			SHA256:   "2d57c95fc561be29b00cf262376c2ffc906d503024f7fca3a1b3774f495478db",
 		}},
 	},
+	"0009_category_scope_name_index": {
+		ID: "0009_category_scope_name_index",
+		Sources: []migrationSource{{
+			FileName: "0009_category_scope_name_index.up.sql",
+			SHA256:   "520ae1771e2338b35e792cfb066b298f75a1e33239c3524272da4f64a8f3274c",
+		}},
+	},
 }
 
 type migrationDependencies struct {

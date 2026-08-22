@@ -352,6 +352,8 @@ func TestMigrationCatalogMatchesExistingSources(t *testing.T) {
 		"0005_legacy_file_records_table": 1,
 		"0006_product_stock_adjustments": 1,
 		"0007_product_sold_out_state":    2,
+		"0008_merchant_categories":       1,
+		"0009_category_scope_name_index": 1,
 	}
 	for migrationID, expectedCount := range wantStatements {
 		spec := migrationCatalog[migrationID]
