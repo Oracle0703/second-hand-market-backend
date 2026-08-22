@@ -27,8 +27,8 @@ describe('意向入口隐藏与电话集中管理', () => {
   })
 
   test('页面不再各自维护硬编码电话号码', () => {
-    expect(homePageSource).not.toContain("const PHONE_NUMBER = '13699479406'")
-    expect(categoryPageSource).not.toContain("const PHONE_NUMBER = '13699479406'")
+    expect(homePageSource).not.toContain("const PHONE_NUMBER = '15008387726'")
+    expect(categoryPageSource).not.toContain("const PHONE_NUMBER = '15008387726'")
     expect(homePageSource).toContain('promptAndCallStore')
     expect(categoryPageSource).toContain('promptAndCallStore')
     expect(detailPageSource).toContain('promptAndCallStore')
