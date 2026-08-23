@@ -20,7 +20,7 @@ export const STORE_LOCATION: StoreLocation = {
 
 export const STORE_GUIDE_VIDEO: StoreGuideVideo = {
   title: '到店导航视频',
-  url: '',
+  url: 'https://market.meaningful.ink/assets/videos/store-guide.mp4',
   poster: ''
 }
 
