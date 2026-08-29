@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"second-hand-market-backend/backend/internal/model"
 )
 
 func TestMerchantCategoryCRUDIsScopedToMerchant(t *testing.T) {
@@ -43,16 +45,22 @@ func TestMerchantCategoryCRUDIsScopedToMerchant(t *testing.T) {
 		t.Fatalf("create child returned invalid id: %+v", createChild.Data)
 	}
 
+	createSecondChild := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/categories", map[string]interface{}{
+		"level": 2, "parent_id": rootID, "name": "自定义二级二", "sort": 2,
+	}, map[string]string{"Authorization": "Bearer " + merchantOneToken})
+	if createSecondChild.Code != 0 {
+		t.Fatalf("create second child code = %d data=%v", createSecondChild.Code, createSecondChild.Data)
+	}
+	secondChildID := numToUint64(createSecondChild.Data["id"])
+	if secondChildID == 0 {
+		t.Fatalf("create second child returned invalid id: %+v", createSecondChild)
+	}
+
 	otherUpdate := requestJSON(t, srv.Router, http.MethodPut, fmt.Sprintf("/api/v1/merchant/categories/%d", childID), map[string]interface{}{
 		"name": "越权修改",
 	}, map[string]string{"Authorization": "Bearer " + merchantTwoToken})
 	if otherUpdate.Code == 0 {
 		t.Fatal("cross-merchant category update succeeded")
-	}
-
-	deleteRootWithChild := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/merchant/categories/%d", rootID), nil, map[string]string{"Authorization": "Bearer " + merchantOneToken})
-	if deleteRootWithChild.Code == 0 {
-		t.Fatal("deleted root category that still has children")
 	}
 
 	updateChild := requestJSON(t, srv.Router, http.MethodPut, fmt.Sprintf("/api/v1/merchant/categories/%d", childID), map[string]interface{}{
@@ -86,6 +94,79 @@ func TestMerchantCategoryCRUDIsScopedToMerchant(t *testing.T) {
 	}
 	if !foundDisabled {
 		t.Fatalf("disabled category should stay visible in management all-status list: %+v", allStatuses)
+	}
+
+	deleteRootWithChild := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/merchant/categories/%d", rootID), nil, map[string]string{"Authorization": "Bearer " + merchantOneToken})
+	if deleteRootWithChild.Code != 0 {
+		t.Fatalf("delete root with children failed: %+v", deleteRootWithChild)
+	}
+	var deletedRoot, deletedChild, deletedSecondChild model.Category
+	if err := srv.DB.Unscoped().First(&deletedRoot, rootID).Error; err != nil {
+		t.Fatalf("load deleted root: %v", err)
+	}
+	if err := srv.DB.Unscoped().First(&deletedChild, childID).Error; err != nil {
+		t.Fatalf("load deleted child: %v", err)
+	}
+	if err := srv.DB.Unscoped().First(&deletedSecondChild, secondChildID).Error; err != nil {
+		t.Fatalf("load deleted second child: %v", err)
+	}
+	if !deletedRoot.DeletedAt.Valid || !deletedChild.DeletedAt.Valid || !deletedSecondChild.DeletedAt.Valid {
+		t.Fatalf("deleting root should soft-delete root and all children: root=%+v child=%+v second_child=%+v", deletedRoot, deletedChild, deletedSecondChild)
+	}
+}
+
+func TestMerchantCategoryDeleteParentIsAtomicWhenChildHasProduct(t *testing.T) {
+	srv := newTestServer(t)
+	merchantID, username, password := registerMerchant(t, srv, "cat_delete_atomic")
+	adminToken := adminAccessToken(t, srv)
+	approveMerchant(t, srv, adminToken, merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	token := str(login.Data["access_token"])
+
+	root := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/categories", map[string]interface{}{
+		"level": 1, "name": "带商品一级", "sort": 1,
+	}, map[string]string{"Authorization": "Bearer " + token})
+	if root.Code != 0 {
+		t.Fatalf("create root failed: %+v", root)
+	}
+	rootID := numToUint64(root.Data["id"])
+	child := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/categories", map[string]interface{}{
+		"level": 2, "parent_id": rootID, "name": "带商品二级", "sort": 1,
+	}, map[string]string{"Authorization": "Bearer " + token})
+	if child.Code != 0 {
+		t.Fatalf("create child failed: %+v", child)
+	}
+	childID := numToUint64(child.Data["id"])
+	if err := srv.DB.Create(&model.Product{
+		ProductNo:      "category-delete-product",
+		MerchantID:     merchantID,
+		Title:          "引用分类的商品",
+		Description:    "商品描述",
+		CategoryID:     childID,
+		PriceCent:      100,
+		ConditionLevel: "GOOD",
+		Stock:          1,
+		Status:         model.ProductDraft,
+	}).Error; err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+
+	deleted := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/merchant/categories/%d", rootID), nil, map[string]string{"Authorization": "Bearer " + token})
+	if deleted.Code == 0 {
+		t.Fatal("deleted root category that contains a referenced child")
+	}
+	var storedRoot, storedChild model.Category
+	if err := srv.DB.Unscoped().First(&storedRoot, rootID).Error; err != nil {
+		t.Fatalf("load root after rejected delete: %v", err)
+	}
+	if err := srv.DB.Unscoped().First(&storedChild, childID).Error; err != nil {
+		t.Fatalf("load child after rejected delete: %v", err)
+	}
+	if storedRoot.DeletedAt.Valid || storedChild.DeletedAt.Valid {
+		t.Fatalf("rejected cascade delete must be atomic: root=%+v child=%+v", storedRoot, storedChild)
 	}
 }
 

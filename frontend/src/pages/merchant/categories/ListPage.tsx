@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer } from '@ant-design/pro-components'
-import { Button, Card, Form, Input, InputNumber, Select, Space, Spin, Tag, message } from 'antd'
+import { Button, Card, Form, Input, InputNumber, Popconfirm, Select, Space, Spin, Tag, message } from 'antd'
 import { useState } from 'react'
 import { api } from '@/services/api'
 
@@ -210,9 +210,17 @@ export function ListPage() {
                   <Button size="small" aria-label={`编辑 ${root.name}`} onClick={() => openEdit(root)}>
                     编辑
                   </Button>
-                  <Button size="small" danger aria-label={`删除 ${root.name}`} loading={deleteMutation.isPending} onClick={() => void deleteMutation.mutateAsync(root.id)}>
-                    删除
-                  </Button>
+                  <Popconfirm
+                    title="删除一级分类？"
+                    description="该操作会同时删除所有下属二级分类。含商品的二级分类无法删除。"
+                    okText="删除"
+                    cancelText="取消"
+                    onConfirm={() => void deleteMutation.mutateAsync(root.id)}
+                  >
+                    <Button size="small" danger aria-label={`删除 ${root.name}`} loading={deleteMutation.isPending}>
+                      删除
+                    </Button>
+                  </Popconfirm>
                 </Space>
               }
             >

@@ -204,31 +204,49 @@ func (s *Server) updateOwnedCategory(db *gorm.DB, merchantID, categoryID uint64,
 }
 
 func (s *Server) deleteOwnedCategory(db *gorm.DB, merchantID, categoryID uint64) error {
-	category, err := s.loadOwnedCategory(db, categoryID, merchantID)
-	if err != nil {
+	return db.Transaction(func(tx *gorm.DB) error {
+		category, err := s.loadOwnedCategory(tx, categoryID, merchantID)
+		if err != nil {
+			return err
+		}
+
+		if category.Level == 1 {
+			var children []model.Category
+			if err := tx.Where("merchant_id = ? AND parent_id = ? AND level = ?", merchantID, category.ID, 2).
+				Order("id ASC").Find(&children).Error; err != nil {
+				return err
+			}
+			for _, child := range children {
+				if err := s.ensureCategoryHasNoProducts(tx, merchantID, child.ID); err != nil {
+					return err
+				}
+			}
+			if len(children) > 0 {
+				if err := tx.Delete(&children).Error; err != nil {
+					return err
+				}
+			}
+		} else if category.Level == 2 {
+			if err := s.ensureCategoryHasNoProducts(tx, merchantID, category.ID); err != nil {
+				return err
+			}
+		} else {
+			return common.ErrInvalidArgument
+		}
+
+		return tx.Delete(&category).Error
+	})
+}
+
+func (s *Server) ensureCategoryHasNoProducts(db *gorm.DB, merchantID, categoryID uint64) error {
+	var productCount int64
+	if err := db.Model(&model.Product{}).Where("merchant_id = ? AND category_id = ?", merchantID, categoryID).Count(&productCount).Error; err != nil {
 		return err
 	}
-	switch category.Level {
-	case 1:
-		var childCount int64
-		if err := db.Model(&model.Category{}).Where("merchant_id = ? AND parent_id = ?", merchantID, category.ID).Count(&childCount).Error; err != nil {
-			return err
-		}
-		if childCount > 0 {
-			return common.ErrInvalidArgument
-		}
-	case 2:
-		var productCount int64
-		if err := db.Model(&model.Product{}).Where("merchant_id = ? AND category_id = ?", merchantID, category.ID).Count(&productCount).Error; err != nil {
-			return err
-		}
-		if productCount > 0 {
-			return common.ErrInvalidArgument
-		}
-	default:
+	if productCount > 0 {
 		return common.ErrInvalidArgument
 	}
-	return db.Delete(&category).Error
+	return nil
 }
 
 func (s *Server) loadOwnedCategory(db *gorm.DB, categoryID uint64, merchantID uint64) (model.Category, error) {

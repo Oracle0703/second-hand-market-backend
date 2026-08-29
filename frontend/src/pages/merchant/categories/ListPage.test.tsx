@@ -85,4 +85,19 @@ describe('Category ListPage', () => {
       expect(api.deleteCategory).toHaveBeenCalledWith(2)
     })
   }, 15000)
+
+  it('confirms cascading deletion before deleting a root category', async () => {
+    renderWithQuery(<ListPage />)
+
+    expect(await screen.findByText('家具类')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 家具类' }))
+    expect(await screen.findByText('该操作会同时删除所有下属二级分类。含商品的二级分类无法删除。')).toBeInTheDocument()
+    expect(api.deleteCategory).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /^删\s*除$/ }))
+    await waitFor(() => {
+      expect(api.deleteCategory).toHaveBeenCalledWith(1)
+    })
+  })
 })
