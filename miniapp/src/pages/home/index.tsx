@@ -196,7 +196,7 @@ export default function HomePage() {
               void promptAndCallStore()
             }}
           >
-            拨打电话
+            <Text className="home-location-btn-text">拨打电话</Text>
           </Button>
           {storeGuideVideoConfigured ? (
             <Button
@@ -207,7 +207,7 @@ export default function HomePage() {
                 handleOpenStoreGuide()
               }}
             >
-              视频导航
+              <Text className="home-location-btn-text">视频导航</Text>
             </Button>
           ) : null}
           <Button
@@ -218,7 +218,7 @@ export default function HomePage() {
               void handleOpenLocation()
             }}
           >
-            {locationConfigured ? '导航去店' : '待配置'}
+            <Text className="home-location-btn-text">{locationConfigured ? '导航去店' : '待配置'}</Text>
           </Button>
         </View>
       </View>

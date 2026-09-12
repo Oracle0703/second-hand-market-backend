@@ -1,6 +1,5 @@
 {
-  "miniprogramRoot": "dist/weapp/",
-  "srcMiniprogramRoot": "dist/weapp/",
+  "miniprogramRoot": "./",
   "projectname": "second-hand-buyer-miniapp",
   "setting": {
     "es6": true,

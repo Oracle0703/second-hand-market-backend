@@ -238,12 +238,24 @@ page {
 
 .home-location-btn {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   height: 72rpx;
-  line-height: 72rpx;
+  line-height: 1;
+  padding: 0 !important;
+  text-align: center;
   border: none;
   border-radius: 999rpx;
   font-size: 24rpx;
   font-weight: 600;
+}
+
+.home-location-btn-text {
+  display: block;
+  line-height: 1;
+  text-align: center;
 }
 
 .home-location-btn::after {
