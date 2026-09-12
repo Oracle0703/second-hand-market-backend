@@ -1,5 +1,8 @@
 # 后端接口设计与 Checklist（backend-api-checklist）
 
+更新时间：2026-09-12
+状态：当前路由基线；路由注册以 `backend/internal/app/server.go` 为准
+
 ## 默认假设
 1. API 前缀统一为 `/api/v1`。
 2. 认证方式为 `Authorization: Bearer <access_token>`。
@@ -35,20 +38,21 @@
 - `PUBLIC`：无需登录。
 - `ADMIN`：平台管理员。
 - `MERCHANT`：商家主账号（本期）。
+- `BUYER`：买家账号；买家公开读取接口也允许游客设备上下文。
 
 ### 1.3.1 merchant token_scope
 - `full`：可访问全部商家经营能力。
 - `onboarding`：仅可访问入驻流程能力（profile/reapply/资质上传）。
 
 ### 1.4 并发与幂等策略
-1. 订单创建、订单完成、订单关闭、商品上架/下架/关闭属于关键写接口。
+1. 订单创建、订单完成、订单关闭、商品上架/下架和库存调整属于关键写接口。
 2. 后端规则：
    - 同一 `Idempotency-Key + operator_id + path` 只执行一次。
    - 重复请求返回首次执行结果；参数不同则返回 `10011`。
 3. 并发控制：
    - Issue #16 仅将旧唯一索引替换为普通查询索引 `idx_product_active(product_id, is_active)`；Schema 允许同一商品存在多笔活动订单。
-   - 商品行锁、库存预占/释放/扣减以及并发终态由 F-07（Issue #17）的事务逻辑实现，本清单不宣称当前处理器已经具备这些能力。
-   - `0004_merchant_multi_stock` 只允许在隔离 MySQL 中验收；不得在 F-07 上线前单独部署到有业务写入的环境。活跃环境必须在同一次另行授权的维护发布中停写并同时发布 Schema 与 F-07 事务逻辑。
+   - 商品行锁、库存预占/释放/扣减以及并发终态已由订单 handler 事务实现，并由集成测试覆盖；后续抽 service 必须保持同一契约。
+   - `0004_merchant_multi_stock` 生产执行仍需停写、preflight/up/postflight 和单独上线授权。
 
 ## 2. 认证模块（auth）
 
@@ -57,7 +61,7 @@
 | `/auth/register` | POST | 商家注册 | `merchant_name(R), contact_name(R), phone(R), username(R), password(R), license_file_id(R)` | `merchant_id, merchant_no, review_status` | PUBLIC |
 | `/auth/login` | POST | 登录 | `login_type(R: ADMIN/MERCHANT), username(R), password(R)` | `access_token, refresh_token, expires_in, token_scope(full/onboarding), review_status, user{id,role,merchant_id?}` | PUBLIC |
 | `/auth/refresh` | POST | 刷新令牌 | `refresh_token(R)` | `access_token, refresh_token, expires_in` | PUBLIC |
-| `/auth/logout` | POST | 退出登录 | 无 | `success` | ADMIN/MERCHANT |
+| `/auth/logout` | POST | 退出登录 | 无 | `success` | ADMIN/MERCHANT/BUYER |
 
 restricted login 规则：
 1. 商家 `PENDING/REJECTED` 登录成功并返回 `token_scope=onboarding`。
@@ -144,20 +148,19 @@ onboarding scope 黑名单：
 | `/merchant/products` | GET | 商品列表 | `status(O), keyword(O), start_at(O), end_at(O), page(O), page_size(O)` | `items[{id,title,status,price_cent,stock,updated_at}], total,page,page_size` | MERCHANT(full) |
 | `/merchant/products/:id/on-shelf` | POST | 上架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 | `/merchant/products/:id/off-shelf` | POST | 下架 | `id(path,R)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
-| `/merchant/products/:id/close` | POST | 关闭商品 | `id(path,R), reason(O)` | `product_id, from_status, to_status, changed_at` | MERCHANT(full) |
 | `/merchant/products/:id/stock-adjustments` | POST | 调整库存 | `id(path,R), adjustment_type(R:INCREASE/DECREASE/MARK_SOLD), quantity(R,>0), reason(R,2-255)` | `product_id, movement_id, adjustment_type, quantity, stock_before, stock_after, status_before, status_after, adjusted_at` | MERCHANT(full) |
 
 编辑约束：
 1. `DRAFT/OFF_SHELF`：允许业务字段编辑（标题、描述、分类、价格、成色、图片），兼容保留 `stock` 编辑；需要审计原因的库存变化应使用库存调整接口。
 2. `ON_SHELF`：仅允许 `description,image_file_ids`。
-3. `LOCKED/SOLD/CLOSED`：禁止编辑。
+3. `LOCKED/SOLD`：禁止编辑。
 4. `stock` 是当前可用库存，必须为正整数；手动增加、减少、线下售出扣减使用 `/stock-adjustments` 记录流水。
 
 库存调整规则：
 1. `INCREASE`：库存增加，商品状态不变。
 2. `DECREASE`：库存减少，不能扣成负数；`ON_SHELF` 扣到 `0` 时自动转 `OFF_SHELF`。
 3. `MARK_SOLD`：按线下售出扣减库存；扣到 `0` 时商品转 `SOLD`，不创建订单，不计入订单销售额。
-4. `LOCKED/SOLD/CLOSED` 商品不允许库存调整。
+4. `LOCKED` 商品不允许库存调整；`SOLD` 只允许 `INCREASE`，补货后转 `OFF_SHELF`。
 
 失败场景：
 1. 跨商家访问返回 `10003`。
@@ -167,7 +170,7 @@ onboarding scope 黑名单：
 5. 库存扣减数量大于当前库存返回 `10005`。
 
 幂等说明：
-1. `on-shelf/off-shelf/close` 重复请求且目标状态已达成时返回成功（`code=0`，`idempotent=true`）。
+1. `on-shelf/off-shelf` 重复请求且目标状态已达成时返回成功（`code=0`，`idempotent=true`）。
 2. `stock-adjustments` 支持 `Idempotency-Key`；相同幂等键和相同请求体重复提交只执行一次。
 
 ## 8. 轻量订单模块（orders-lite）
@@ -220,7 +223,7 @@ onboarding scope 黑名单：
 
 | 路径 | 方法 | 用途 | 请求参数 | 响应字段 | 权限 |
 | --- | --- | --- | --- | --- | --- |
-| `/merchant/dashboard` | GET | 商家仪表盘统计 | 无 | `product_stats{draft,on_shelf,locked,off_shelf,sold,closed}, order_stats{created,completed,closed}` | MERCHANT(full) |
+| `/merchant/dashboard` | GET | 商家仪表盘统计 | 无 | `product_stats{draft,on_shelf,locked,off_shelf,sold}, order_stats{created,completed,closed}` | MERCHANT(full) |
 
 ## 12. 关键接口 JSON 示例
 

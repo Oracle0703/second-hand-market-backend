@@ -1,5 +1,8 @@
 # 买家侧数据模型设计（miniapp-buyer-data-model）
 
+更新时间：2026-09-12
+状态：当前实现基线；字段与约束以 `backend/internal/model/models.go`、`0002_buyer_domain` 和 `0003_buyer_auth_provider` 为准
+
 ## 默认假设
 1. 数据库沿用当前项目关系型数据库（MySQL 8.x / sqlite dev）。
 2. 买家侧支持游客行为归属（`device_id`）与登录归属（`buyer_id`）双轨并存。

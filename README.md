@@ -1,18 +1,22 @@
-# 二手交易商家后台（Monorepo）
+# 二手交易平台（Monorepo）
 
-本仓库按 `docs/` 设计文档落地，包含：
+本仓库包含商家/管理员 Web 端、买家小程序和统一后端：
 - `frontend/`：React + TypeScript + Vite 管理端
 - `backend/`：Go + Gin + GORM API 服务
-- `docs/`：产品/接口/数据模型/里程碑文档
+- `miniapp/`：Taro + React 买家小程序（微信/抖音）
+- `docs/`：当前规格、发布清单和历史设计记录；入口见 [`docs/README.md`](docs/README.md)
 
-## 本期范围
+## 当前范围
 - 商家注册、审核、登录
-- 商品管理（草稿/上架/下架/锁定/成交/关闭）
-- 轻量订单与商品状态联动
-- 文件上传（presign/confirm）
+- 商户自有两级分类与商品管理（草稿/上架/锁定/下架/售罄）
+- 库存调整、轻量订单与库存预占/释放/扣减
+- 买家浏览、收藏、浏览历史、微信/抖音登录与游客数据合并
+- 买家意向 API、商家意向处理，以及小程序直接电话联系和门店导航
+- 图片上传、服务端校验/压缩和 `detail-v1` JPEG 交付
 - 审计日志查询
 
-不含买家端、支付、退款、售后、营销。
+当前不含支付、退款、售后、聊天、购物车和营销体系。商品状态不再包含
+`CLOSED`；订单和购买意向仍保留各自的 `CLOSED` 状态。
 
 ## 快速启动
 
@@ -276,11 +280,4 @@ API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mj
 
 ## 文档索引
 
-- [项目总览](docs/project-overview.md)
-- [Windows 远程开发数据库](docs/remote-development-database.md)
-- [产品规格](docs/specs.md)
-- [前端页面规划](docs/frontend-pages.md)
-- [后端接口清单](docs/backend-api-checklist.md)
-- [收口验收清单](docs/acceptance-checklist.md)
-- [发布前就绪清单](docs/release-readiness.md)
-- [抖音小程序构建与排障](docs/miniapp-douyin-build-troubleshooting.md)
+项目文档统一从 [`docs/README.md`](docs/README.md) 进入，按当前规范、运维排障、设计决策和交付记录分类维护。

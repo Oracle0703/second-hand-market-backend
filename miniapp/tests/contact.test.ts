@@ -58,14 +58,35 @@ describe('联系商家电话', () => {
     expect(makePhoneCall).toHaveBeenCalledWith({ phoneNumber: '15008387726' })
   })
 
-  test('同一次小程序会话授权成功后不重复触发隐私授权', async () => {
-    getPrivacySetting.mockImplementation(({ success }) => success({ needAuthorization: true }))
+  test('每次拨号读取平台状态，已授权后不重复触发隐私授权', async () => {
+    let needAuthorization = true
+    getPrivacySetting.mockImplementation(({ success }) => success({ needAuthorization }))
+    requirePrivacyAuthorize.mockImplementation(({ success }) => {
+      needAuthorization = false
+      success({ errMsg: 'ok' })
+    })
     const { promptAndCallStore } = await import('../src/utils/contact')
 
     await promptAndCallStore()
     await promptAndCallStore()
 
-    expect(getPrivacySetting).toHaveBeenCalledTimes(1)
+    expect(getPrivacySetting).toHaveBeenCalledTimes(2)
+    expect(requirePrivacyAuthorize).toHaveBeenCalledTimes(1)
+    expect(makePhoneCall).toHaveBeenCalledTimes(2)
+  })
+
+  test('平台授权状态变化后再次拨号会重新触发授权', async () => {
+    let privacyCheckCount = 0
+    getPrivacySetting.mockImplementation(({ success }) => {
+      privacyCheckCount += 1
+      success({ needAuthorization: privacyCheckCount === 2 })
+    })
+    const { promptAndCallStore } = await import('../src/utils/contact')
+
+    await promptAndCallStore()
+    await promptAndCallStore()
+
+    expect(getPrivacySetting).toHaveBeenCalledTimes(2)
     expect(requirePrivacyAuthorize).toHaveBeenCalledTimes(1)
     expect(makePhoneCall).toHaveBeenCalledTimes(2)
   })
@@ -106,15 +127,4 @@ describe('联系商家电话', () => {
     expect(setClipboardData).toHaveBeenCalledWith({ data: '15008387726' })
   })
 
-  test('登录后可预触发隐私授权且失败不抛出', async () => {
-    getPrivacySetting.mockImplementation(({ success }) => success({ needAuthorization: true }))
-    requirePrivacyAuthorize.mockImplementation(({ fail }) => fail({ errNo: 113280, errMsg: 'privacy permission is not authorized' }))
-    const { warmupStorePhonePrivacyAuthorization } = await import('../src/utils/contact')
-
-    await expect(warmupStorePhonePrivacyAuthorization()).resolves.toBeUndefined()
-
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
-      title: '未授权拨打电话，后续联系商家时可重新授权'
-    }))
-  })
 })

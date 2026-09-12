@@ -1,7 +1,10 @@
-# 数据模型设计（data-model）
+# 数据模型设计
+
+更新时间：2026-09-12
+状态：当前实现基线；字段以 `backend/internal/model/models.go` 和已注册迁移为准
 
 ## 默认假设
-1. 数据库：MySQL 8.x，字符集 `utf8mb4`。
+1. 数据库：MySQL 8.x，字符集 `utf8mb4`；本地测试支持 SQLite。
 2. 通用字段：业务表默认包含 `id, created_at, updated_at, deleted_at`（软删除）。
 3. 金额字段统一使用分（`*_cent`），避免浮点误差。
 4. 枚举字段使用 `VARCHAR` + 业务层枚举校验（便于演进）。
@@ -17,6 +20,7 @@
 8. `orders` 1:N `order_events`（订单事件流）。
 9. `merchants` 1:N `merchant_audit_logs`（审核日志）。
 10. 所有关键动作写入 `operation_logs`。
+11. `buyer_users` 及其设备、收藏、历史、意向表承载买家域，按 `merchant_id` 隔离业务数据。
 
 ## 2. 核心数据表
 
@@ -142,7 +146,7 @@
 | stock | int | 总库存，必须大于等于 0；手动调整通过 `product_stock_adjustments` 记录流水 |
 | reserved_stock | int | 已被活动订单预占的库存，默认 0 |
 | cover_file_id | bigint null | 封面图文件 ID |
-| status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` |
+| status | varchar(16) | `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD` |
 | active_order_id | bigint null | 当前占用中的订单 ID（仅 `LOCKED` 时有值） |
 | locked_at | datetime null | 锁定时间 |
 | shelf_at | datetime null | 上架时间 |
@@ -166,8 +170,8 @@
 1. `stock >= 0`；创建商品时业务层要求 `stock` 为大于 `0` 的整数。
 2. `0 <= reserved_stock <= stock`（Schema 检查约束）。
 3. 手动补库存、减少库存、线下售出扣减通过库存调整接口更新 `stock` 并写 `product_stock_adjustments` 流水；调整时不得使 `stock < reserved_stock`。
-4. `active_order_id` 与 `LOCKED` 字段暂时保留用于兼容旧流程，但不再通过 Schema 强化；订单预占/释放/扣减及同商品多活动订单的完整事务切换属于后续 F-07。
-5. 在 F-07 落地前，订单主流程仍保持轻量模型：创建订单锁定商品，完成订单转 `SOLD`；`reserved_stock` 先落 Schema，业务默认保持 0。
+4. `SOLD` 必须满足 `stock=0,reserved_stock=0,active_order_id=NULL`；补库存后转为 `OFF_SHELF`。
+5. `LOCKED` 只能由活动订单驱动，完成订单按剩余库存转回 `ON_SHELF` 或进入 `SOLD`，关闭订单转 `OFF_SHELF`。
 
 ### 2.7 product_images（商品图片）
 
@@ -207,7 +211,7 @@
 1. `INCREASE` 增加库存，商品状态保持不变。
 2. `DECREASE` 减少库存，不能扣成负数；`ON_SHELF` 扣到 `0` 时转 `OFF_SHELF`。
 3. `MARK_SOLD` 表示线下售出扣减；扣到 `0` 时商品转 `SOLD`，不创建订单。
-4. `LOCKED/SOLD/CLOSED` 商品不允许手动调整库存。
+4. `LOCKED` 商品不允许手动调整库存；`SOLD` 只允许 `INCREASE`。
 
 ### 2.9 orders（轻量订单）
 
@@ -237,10 +241,9 @@
 4. `idx_product_active(product_id, is_active)`（普通查询索引，不限制同一商品的订单数量）
 
 实现说明：
-1. Schema 允许同一商品存在多笔活动及历史订单。
-2. `quantity` 的默认值为 1 只保证旧记录与旧写入的字段兼容，不提供库存预占或并发安全。
-3. 预占、释放、扣减及并发终态必须由 F-07（Issue #17）的事务逻辑保证，不能依赖唯一索引。
-4. `0004_merchant_multi_stock` 当前只允许在隔离 MySQL 中验收；不得在仍有业务写入的环境单独部署。活跃环境必须等 F-07 事务逻辑完成，并在同一次另行授权的维护发布中停写、执行 preflight/up/postflight 后再恢复写入。
+1. Schema 允许同一商品存在多笔历史订单；应用层当前只允许一笔活动订单。
+2. 当前创建订单数量固定为 1，事务会同时维护 `reserved_stock`、`active_order_id` 和商品状态。
+3. `0004_merchant_multi_stock` 已由显式迁移提供约束和查询索引；生产执行仍需停写、preflight/up/postflight 和单独上线授权。
 
 ### 2.10 order_events（订单事件）
 
@@ -310,7 +313,7 @@
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint PK | 主键 |
-| user_type | varchar(16) | `ADMIN/MERCHANT` |
+| user_type | varchar(16) | `ADMIN/MERCHANT/BUYER` |
 | user_id | bigint | 用户 ID |
 | refresh_token_hash | varchar(255) | refresh token 哈希 |
 | device_info | varchar(255) null | 设备信息 |
@@ -322,6 +325,22 @@
 索引建议：
 1. `idx_user_expired(user_type, user_id, expired_at)`
 2. `idx_token_hash(refresh_token_hash)`
+
+### 2.14 买家域表
+
+买家域表已由 `0002_buyer_domain`、`0003_buyer_auth_provider` 创建，模型对应 `BuyerUser`、`BuyerDeviceBinding`、`BuyerFavorite`、`BuyerHistory`、`BuyerIntent`。关键约束如下：
+
+- `buyer_users`：provider + openid 唯一；当前 provider 包括微信和抖音。
+- `buyer_device_bindings`：设备与买家绑定关系，设备和买家各自唯一，记录最近合并时间。
+- `buyer_favorites` / `buyer_histories`：通过 `owner_type + owner_key + product_id` 去重，支持 `BUYER` 或 `DEVICE`，并记录 `merchant_id`。
+- `buyer_intents`：同买家同商品最多一条 `is_open=true` 记录；状态为 `NEW/CONTACTED/CLOSED`，不参与库存锁定。
+
+说明：`products.closed_at` 是历史字段，为兼容旧数据保留；当前商品状态机不会写入或依赖它，商品关闭语义已由 `OFF_SHELF` 承担。
+
+### 2.15 幂等与图片回填表
+
+- `idempotency_records`：按操作人、路径和幂等键唯一保存请求哈希与响应。
+- `image_backfill_runs` / `image_backfill_items`：记录 `detail-v1` 图片回填、SHA256、失败码、延迟清理状态。
 
 ## 3. 关键枚举定义
 
@@ -337,7 +356,6 @@
 - `LOCKED`
 - `OFF_SHELF`
 - `SOLD`
-- `CLOSED`
 
 ### 3.3 订单状态
 - `CREATED`
@@ -354,13 +372,13 @@
 - `ADMIN`
 
 ## 4. 一致性与事务规则
-1. 创建订单必须与商品 `ON_SHELF -> LOCKED` 在同一事务中完成。
-2. 完成订单必须与商品 `LOCKED -> SOLD` 在同一事务中完成。
-3. 关闭订单必须与商品 `LOCKED -> OFF_SHELF` 在同一事务中完成。
+1. 创建订单必须与商品 `ON_SHELF -> LOCKED`、预占库存和活动订单指针在同一事务中完成。
+2. 完成订单必须与订单终态、库存扣减、预占释放和商品 `ON_SHELF/SOLD` 结果在同一事务中完成。
+3. 关闭订单必须与订单终态、预占释放和商品 `LOCKED -> OFF_SHELF` 在同一事务中完成。
 4. 手动调整库存必须与 `product_stock_adjustments` 流水写入在同一事务中完成。
-5. 任何状态变更必须同时写 `operation_logs`。
-6. 非法状态变更统一返回业务错误码 `10005`。
-7. 删除策略采用软删除；审核/审计相关表禁止物理删除。
+5. 买家登录合并必须按设备归属、唯一键和幂等标记在事务中执行。
+6. 任何状态变更必须同时写 `operation_logs` 或对应领域事件。
+7. 非法状态变更统一返回业务错误码 `10005`；删除策略采用软删除。
 
 ## 5. 预留扩展（子账号与 RBAC）
 1. `merchant_accounts.role` 已支持 `STAFF`。

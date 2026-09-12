@@ -1,105 +1,85 @@
-# 目录结构分析（dir-structure）
+# 目录结构
 
-## 默认假设
-1. 仓库采用单仓（monorepo）承载前后端与文档，便于联调与版本一致性管理。
-2. 当前仓库是空白初始化状态，本结构为推荐落地形态。
-3. 本期不做拆仓，工程组织以“快速交付商家后台闭环”为优先目标。
+更新时间：2026-09-12
+状态：按当前仓库实际目录整理
 
-## 仓库定位说明
-1. 这是单仓前后端一体项目，包含 `frontend/`、`backend/`、`docs/`。
-2. 仓库名虽为 `second-hand-market-backend`，但当前实际承载前端、后端与文档。
-3. 未来若拆仓，当前目录结构仅代表本期组织方式，不影响业务边界定义。
-
-## 1. 推荐目录树
+## 1. 仓库树
 
 ```text
 second-hand-market-backend/
-├── frontend/                        # React + TS + Vite
-│   ├── public/
-│   ├── src/
-│   │   ├── app/                     # 应用入口、路由、provider
-│   │   ├── pages/                   # 页面级组件（按路由）
-│   │   ├── features/                # 业务域模块（auth/audit/products/orders/categories）
-│   │   ├── components/              # 通用组件
-│   │   ├── services/                # API 请求封装
-│   │   ├── stores/                  # 全局状态（轻量）
-│   │   ├── hooks/                   # 通用 hooks
-│   │   ├── types/                   # 前端共享类型
-│   │   ├── utils/                   # 工具函数
-│   │   ├── styles/                  # 全局样式与响应式变量
-│   │   └── constants/               # 常量/错误码映射
-│   ├── .env.development
-│   ├── .env.production
-│   ├── index.html
-│   ├── package.json
-│   └── vite.config.ts
-├── backend/                         # Go API 服务
-│   ├── cmd/
-│   │   └── server/                  # 启动入口
+├── backend/
+│   ├── cmd/server/                    # API 启动入口
 │   ├── internal/
-│   │   ├── handler/                 # HTTP handler（按模块）
-│   │   ├── service/                 # 业务逻辑层
-│   │   ├── repo/                    # 数据访问层
-│   │   ├── model/                   # GORM 模型定义
-│   │   ├── dto/                     # 请求响应 DTO
-│   │   ├── middleware/              # 鉴权、日志、限流
-│   │   ├── auth/                    # token/session 逻辑
-│   │   ├── stateflow/               # 状态机校验（审核/商品/订单）
-│   │   ├── filesvc/                 # 文件上传抽象
-│   │   └── common/                  # 错误码、工具、常量
-│   ├── migrations/                  # 数据库迁移脚本
-│   ├── scripts/                     # 本地开发脚本（含管理员初始化、分类初始化、历史商户分类回填）
-│   ├── configs/                     # 配置模板
-│   ├── tests/                       # 集成测试
+│   │   ├── app/                       # 配置、路由和 HTTP handler
+│   │   ├── auth/                      # JWT、会话和买家平台登录
+│   │   ├── common/                    # 响应、错误码、上下文
+│   │   ├── dto/                       # 请求/响应结构
+│   │   ├── media/                     # 图片检测、压缩和上传存储
+│   │   ├── middleware/                # request ID、鉴权、scope、限流
+│   │   ├── model/                     # GORM 模型
+│   │   └── stateflow/                 # 商家/商品/订单状态规则
+│   ├── migrations/                    # 0001-0009 显式 SQL 迁移
+│   ├── scripts/                       # migrate、bootstrap、seed、backfill、verify
+│   ├── tests/                         # 集成和安全测试
+│   ├── configs/                       # development/remote/prod 示例
+│   ├── Dockerfile
 │   ├── go.mod
 │   └── go.sum
-├── docs/                            # 项目文档
+├── frontend/
+│   ├── src/
+│   │   ├── app/                       # 路由、Layout、鉴权守卫
+│   │   ├── pages/admin/                # 管理员审核和日志
+│   │   ├── pages/auth/                 # 登录、注册、审核状态
+│   │   ├── pages/merchant/             # 仪表盘、分类、商品、订单、意向、账户
+│   │   ├── services/                  # API 请求封装
+│   │   ├── stores/                    # 登录和运行时状态
+│   │   ├── constants/                 # 状态、错误码、权限常量
+│   │   ├── types/                     # TypeScript 类型
+│   │   └── styles/                    # 全局样式
+│   ├── package.json
+│   └── vite.config.ts
+├── miniapp/
+│   ├── src/
+│   │   ├── pages/                     # home/category/search/product/favorite/history/intent/me/store-guide
+│   │   ├── components/                # 商品卡片、隐私授权等
+│   │   ├── services/                  # buyer API、请求和登录
+│   │   ├── stores/                    # 买家会话、商户入口和游客资产
+│   │   ├── hooks/                     # 页面数据和平台能力 hooks
+│   │   ├── utils/                     # 联系电话、状态、环境配置
+│   │   ├── assets/                    # tabbar 和页面资源
+│   │   └── app.tsx/app.config.ts      # Taro 应用入口和平台配置
+│   ├── tests/                         # Vitest 回归测试
+│   ├── config/                        # dev/prod 平台配置
+│   ├── package.json
+│   └── project.config.json
+├── docs/                              # 当前文档索引、规格、清单和历史设计
+├── scripts/                           # 冒烟和验收脚本
+├── .github/                           # CI 工作流
 ├── Makefile
-└── README.md
+└── AGENTS.md
 ```
 
-## 2. 前端分层建议
-1. `pages/` 仅负责页面编排，不直接写复杂业务逻辑。
-2. `features/` 按业务域组织（`auth`、`merchantAudit`、`products`、`orders`、`categories`）。
-3. `services/` 对接后端 API，统一处理 token、错误码、重试策略。
-4. `types/` 与后端 DTO 对齐，避免页面层定义散乱类型。
+## 2. 代码归属
 
-## 3. 后端分层建议
-1. `handler`：参数绑定、鉴权上下文读取、响应封装。
-2. `service`：事务控制、状态机校验、跨模块编排。
-3. `repo`：仅处理数据库查询与持久化，不做业务判断。
-4. `stateflow`：集中定义审核/商品/订单合法流转，避免散落 if-else。
-5. `middleware`：request_id、日志、panic recover、权限校验。
+### 后端
 
-## 4. 配置与环境管理
-1. 配置分层：`local/dev/staging/prod`，通过环境变量驱动。
-2. 必备环境变量：
-   - `MYSQL_DSN`
-   - `REDIS_ADDR`
-   - `JWT_ACCESS_SECRET`
-   - `JWT_REFRESH_SECRET`
-   - `FILE_PROVIDER`（minio/oss/s3）
-   - `FILE_BUCKET`
-3. 禁止将生产密钥写入仓库。
+- 路由注册统一在 `backend/internal/app/server.go`。
+- 商品、库存和订单编排在 `backend/internal/app/*_handlers.go`；状态合法性复用 `stateflow`。
+- 买家公开读取、登录、收藏、历史和意向仍由 `app` handler 提供，模型位于 `model/models.go`。
+- 数据库 schema 只通过 `backend/scripts/migrate` 执行 `backend/migrations`，API 启动不会自动迁移或 seed。
 
-## 5. 初始化脚本约定
-1. `backend/scripts/migrate`：唯一负责 schema 初始化或迁移的显式命令。
-2. `backend/scripts/bootstrap_admin`：每次使用调用者显式提供的身份和密码创建一个管理员，不执行迁移。
-3. `backend/scripts/seed_categories`：维护内置一级/二级默认分类，不执行迁移。
-4. `backend/scripts/backfill_merchant_categories`：为历史商户复制默认分类，并将旧商品分类映射到商户分类。
-5. 上述命令必须显式设置 `DB_DRIVER` 和 `DB_DSN`，不得回退到仓库内的本地数据库文件。
-6. bootstrap 密码必须通过 `ADMIN_PASSWORD` 显式提供，不得写入仓库、命令摘要或日志。
-7. bootstrap、分类 seed 与商户分类 backfill 需要幂等，可重复执行；长驻 API 不得调用上述操作。
+### 管理端
 
-## 6. 测试目录与约定
-1. 单元测试与源代码同目录：`*_test.go`。
-2. 集成测试集中在 `backend/tests/`，覆盖主流程。
-3. 前端 E2E 可放 `frontend/e2e/`（如 Playwright）。
+路由和页面入口在 `frontend/src/app/App.tsx`；导航在 `Layout.tsx`。商品状态、库存弹窗和分类管理位于 `pages/merchant`，管理员审核位于 `pages/admin`。
 
-## 7. 可维护性约束
-1. 错误码、状态枚举、权限常量集中管理，不允许魔法字符串散落。
-2. 新增接口必须同步更新 OpenAPI 与 `docs/backend-api-checklist.md`。
-3. 状态流转变更必须同步更新：
-   - `docs/specs.md`
-   - `docs/data-model.md`
-   - `backend/internal/stateflow/`
+### 买家小程序
+
+页面按 Taro 路由组织，网络请求统一经过 `miniapp/src/services`。商户入口通过 `merchant_no` 传递；电话和导航分别封装在 `utils/contact.ts` 与门店指南页面，抖音隐私授权由全局 `PrivacyAuthorizationDialog` 配合平台回调处理。
+
+## 3. 新增代码约定
+
+1. 新路由先在 `server.go` 注册，再补 API checklist、权限和测试。
+2. 新状态必须同时更新 model、stateflow、当前规格、页面文案和验收清单。
+3. 数据库变化必须提供 up/down（或明确不可逆原因）迁移和迁移测试。
+4. 不在 `docs/` 创建独立 review 文件；设计结论直接回写规格或专题交付记录。
+5. 生产密钥、数据库凭据、上传文件和本地构建目录不得进入 Git。

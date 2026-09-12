@@ -1,0 +1,26 @@
+
+> second-hand-buyer-miniapp@0.1.0 test
+> vitest run
+
+
+ RUN  v3.2.4 /Users/huangyu/Desktop/allProject/second-hand-market-backend/miniapp
+
+ ✓ tests/home-grid-layout.test.ts (1 test) 6ms
+ ✓ tests/intent-hidden-and-contact-centralized.test.ts (4 tests) 6ms
+ ✓ tests/build-toolchain-lock.test.ts (1 test) 6ms
+ ✓ tests/login-redirect.test.ts (2 tests) 5ms
+ ✓ tests/session-startup-safety.test.ts (1 test) 225ms
+ ✓ tests/request-refresh.test.ts (19 tests) 766ms
+ ✓ tests/guest-access.test.ts (1 test) 6ms
+ ✓ tests/runtime-dependency-compat.test.ts (1 test) 4ms
+ ✓ tests/intent-status.test.ts (1 test) 5ms
+ ✓ tests/app-config-private-info.test.ts (1 test) 4ms
+ ✓ tests/favorite-interaction.test.ts (1 test) 4ms
+(node:69809) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+ ✓ tests/config-api-base-url.test.ts (3 tests) 7ms
+
+ Test Files  12 passed (12)
+      Tests  36 passed (36)
+   Start at  13:50:58
+   Duration  7.63s (transform 779ms, setup 0ms, collect 7.41s, tests 1.04s, environment 4ms, prepare 6.41s)

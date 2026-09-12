@@ -1,5 +1,8 @@
 # 买家侧接口 Checklist（miniapp-buyer-api-checklist）
 
+更新时间：2026-09-12
+状态：当前接口基线；买家和商家意向路由以 `backend/internal/app/server.go` 为准
+
 ## 默认假设
 1. API 前缀统一为 `/api/v1`。
 2. 统一响应结构：`{ code, message, request_id, data }`。
@@ -65,7 +68,7 @@
 
 ---
 
-## 4. 微信登录与会话
+## 4. 平台登录与会话
 
 ### 4.1 微信登录
 
@@ -79,7 +82,21 @@
 | 是否必须登录 | 否 |
 | 是否需要限流 | 是，`20 req/min/device` + `120 req/min/ip` |
 
-### 4.2 刷新令牌
+### 4.2 抖音/通用小程序登录
+
+| 项 | 内容 |
+| --- | --- |
+| method | `POST` |
+| path | `/api/v1/buyer/auth/miniapp-login` |
+| 请求参数 | `platform(R:wechat/douyin), code(R), device_id(R), nickname(O), avatar_url(O)` |
+| 响应字段 | `access_token, refresh_token, expires_in, user{id,buyer_no,nickname,avatar_url,phone?}` |
+| 游客可访问 | 是 |
+| 是否必须登录 | 否 |
+| 是否需要限流 | 是，按平台和设备/IP限制 |
+
+生产平台登录必须使用 `real` 模式；`mock` 仅用于本地自动化，`disabled` 用于迁移期间的安全过渡。
+
+### 4.3 刷新令牌
 
 | 项 | 内容 |
 | --- | --- |
@@ -91,7 +108,7 @@
 | 是否必须登录 | 否（凭 refresh） |
 | 是否需要限流 | 是，`60 req/min/device` |
 
-### 4.3 退出登录
+### 4.4 退出登录
 
 | 项 | 内容 |
 | --- | --- |
@@ -103,7 +120,7 @@
 | 是否必须登录 | 是 |
 | 是否需要限流 | 否 |
 
-### 4.4 游客数据合并
+### 4.5 游客数据合并
 
 | 项 | 内容 |
 | --- | --- |

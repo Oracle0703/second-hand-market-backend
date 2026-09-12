@@ -1535,7 +1535,7 @@ func miniappAuthRefreshAllowedPath(path string) bool {
 func miniappAuthRefreshAcceptanceRepoDir(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS != "linux" {
-		t.Fatalf(
+		t.Skipf(
 			"miniapp auth refresh acceptance contract requires Linux; run it in WSL2 or on a Linux host "+
 				"because it verifies POSIX modes, symlinks, and atomic directory ownership (GOOS=%s)",
 			runtime.GOOS,

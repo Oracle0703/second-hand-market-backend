@@ -1,5 +1,8 @@
 # 抖音小程序构建与排障
 
+更新时间：2026-09-12
+状态：当前构建、loading 和隐私授权排障基线
+
 本文先给出生成抖音小程序产物的标准步骤，再记录 2026-07-23 已验证的构建卡死根因和排查证据。以下命令默认从仓库根目录开始执行。
 
 ## 构建 `dist/tt` 产物
@@ -114,6 +117,76 @@ home grid artifact ok
 - 已导入该目录：点击“编译”或重新加载项目。
 - 之前导入的是其他目录：重新导入 `miniapp/dist/tt`。
 - 页面仍是旧效果：先确认 `dist/tt/app.ttss` 通过上一节检查，再清理开发者工具缓存并重新编译。
+
+## 2026-09-12 真机调试记录
+
+以下问题已在抖音小程序测试版本中完成真机验证。
+
+### `NODE_ENV` 必须注入为字符串字面量
+
+Taro 构建配置的 `env` 值会作为 JavaScript 代码片段注入产物，不能直接填写裸字符串：
+
+```ts
+// 错误：产物中可能生成未声明的 production 标识符
+env: { NODE_ENV: 'production' }
+
+// 正确：产物中生成字符串字面量 "production"
+env: { NODE_ENV: JSON.stringify('production') }
+```
+
+错误配置在抖音运行时的典型表现是：
+
+```text
+[TMA] ReferenceError: production is not defined
+```
+
+该异常发生在 Taro 运行时初始化阶段，业务页面可能只显示 loading，无法进入主页面。`config/dev.ts` 和 `config/prod.ts` 必须都使用 `JSON.stringify`，并由 `tests/config-api-base-url.test.ts` 检查最终配置层。
+
+### 平台声明不等于运行时隐私授权
+
+在抖音开发者平台完成 `tt.makePhoneCall` 隐私能力声明只是前置条件。用户首次调用时，应用还必须闭合以下运行时流程：
+
+```text
+用户点击拨号
+  -> tt.getPrivacySetting
+  -> needAuthorization=true 时调用 tt.requirePrivacyAuthorize
+  -> 全局 tt.onNeedPrivacyAuthorization 收到 resolve
+  -> 展示自定义隐私弹窗并上报 exposureAuthorization
+  -> 用户真实点击带 id 的同意按钮
+  -> resolve({ event: 'agree', buttonId: '<实际按钮 id>' })
+  -> requirePrivacyAuthorize 成功
+  -> tt.makePhoneCall
+```
+
+需要特别注意：
+
+1. `tt.requirePrivacyAuthorize` 不会替应用自动展示隐私弹窗，只会触发 `tt.onNeedPrivacyAuthorization`。
+2. 同意必须来自用户真实点击，`buttonId` 必须与被点击按钮的实际 `id` 完全一致，不能在登录完成后静默预授权。
+3. 弹窗展示后应先通过同一个 `resolve` 上报 `{ event: 'exposureAuthorization' }`。
+4. 不要用进程内布尔值缓存授权结果。每次使用隐私能力前调用 `tt.getPrivacySetting`，让平台负责持久化状态，并正确响应用户撤销授权、清除数据或隐私协议更新。
+5. 用户已经同意且平台状态未变化时，后续调用不会重复显示授权弹窗。
+
+拨号常见错误码：
+
+| 错误码 | 含义 | 排查重点 |
+| --- | --- | --- |
+| `113279` | 隐私能力声明未完成 | 检查开发者平台中是否声明了 `tt.makePhoneCall`，以及测试版本是否使用正确应用配置 |
+| `113280` | 用户隐私授权未完成 | 检查全局监听、自定义弹窗、真实点击和 `buttonId` 回传链路 |
+
+### 已申请的定位能力不代表代码已经调用
+
+开发者平台允许申请 `tt.getLocation`、`tt.startLocationUpdate`、`tt.onLocationChange`、`tt.chooseLocation` 等能力，但只应声明业务实际使用的能力。
+
+当前项目的“导航去店”调用 `Taro.openLocation`，向地图传入代码中预先配置的门店经纬度；它不会读取用户当前位置，也没有调用上述持续定位或选点接口。排查平台声明时应以源码和 `dist/tt` 中的真实调用为准，不能因为平台已授权就主动增加无业务用途的定位调用。
+
+### 测试版本验收清单
+
+1. 执行 `npm run build:tt`，确认输出 `Compiled successfully`。
+2. 上传或导入的目录必须是 `miniapp/dist/tt`，不能使用旧的根级 `dist` 或 `miniapp/src`。
+3. 清理开发者工具缓存并确认测试二维码对应最新上传版本。
+4. 首次拨号应依次出现业务确认框和隐私授权框；点击同意后应拉起系统拨号。
+5. 再次拨号应直接拉起拨号，不应重复授权。
+6. 若用户撤销授权、清除小程序数据或隐私协议发生变化，授权框再次出现属于平台的预期行为。
 
 ## 固定的构建版本
 

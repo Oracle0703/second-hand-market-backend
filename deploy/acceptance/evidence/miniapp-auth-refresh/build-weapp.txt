@@ -1,0 +1,153 @@
+
+> second-hand-buyer-miniapp@0.1.0 build:weapp
+> taro build --type weapp
+
+👽 Taro v3.6.34
+
+(node:69967) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Tips:
+1. 建议开启持久化缓存功能，能有效提升二次编译速度，详情请参考: https://docs.taro.zone/docs/config-detail#cache。
+
+
+
+● Webpack █████████████████████████  (0%)
+
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ setup (2%)
+ run
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ setup (9%) compilation
+ DefaultStatsPresetPlugin
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (10%) 0/24 entries 24/24 dependen
+cies 0/24 modules 1 active
+ babel-loader › src/app.tsx
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (10%) 0/24 entries 24/24 dependen
+cies 0/24 modules 1 active
+ babel-loader › src/app.tsx
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (10%) 0/24 entries 24/24 dependen
+cies 1/24 modules 23 active
+ ...l-loader › node_modules/@tarojs/webpack5-runner/dist/template/custom-wrapp
+er.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (32%) 11/24 entries 60/149 depend
+encies 11/39 modules 25 active
+ babel-loader › node_modules/@tarojs/plugin-platform-weapp/dist/runtime.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 127/162 depen
+dencies 12/51 modules 38 active
+ babel-loader › src/services/buyer.ts
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 167/200 depen
+dencies 14/57 modules 38 active
+ ...ket-backend/miniapp/node_modules/@babel/runtime/helpers/esm/asyncToGenerat
+or.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 168/209 depen
+dencies 14/58 modules 44 active
+ ...oader › postcss-loader › resolve-url-loader › sass-loader › src/styles/app
+.scss
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%)
+ import loader ./node_modules/postcss-loader/dist/cjs.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%)
+ import loader ./node_modules/sass-loader/dist/cjs.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 192/215 depen
+dencies 20/63 modules 39 active
+ ...arket-backend/miniapp/node_modules/@babel/runtime/helpers/esm/defineProper
+ty.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 235/243 depen
+dencies 27/94 modules 63 active
+ ...arket-backend/miniapp/node_modules/@babel/runtime/helpers/esm/setPrototype
+Of.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 240/243 depen
+dencies 28/95 modules 67 active
+ babel-loader › node_modules/@tarojs/shared/dist/shared.esm.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 242/256 depen
+dencies 28/97 modules 68 active
+ .../allProject/second-hand-market-backend/miniapp/node_modules/tslib/tslib.es
+6.mjs
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 259/269 depen
+dencies 47/98 modules 51 active
+ babel-loader › node_modules/@tarojs/api/dist/index.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (35%) 11/24 entries 269/278 depen
+dencies 50/103 modules 52 active
+ node_modules/react-reconciler/cjs/react-reconciler.production.min.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (42%) 14/24 entries 284/290 depen
+dencies 73/107 modules 33 active
+ babel-loader › node_modules/@tarojs/api/dist/tools.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (42%) 14/24 entries 293/296 depen
+dencies 78/109 modules 31 active
+ babel-loader › node_modules/@tarojs/api/dist/interceptor/index.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ building (62%) 23/24 entries 304/304 depen
+dencies 108/114 modules 5 active
+ node_modules/css-loader/dist/runtime/noSourceMaps.js
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (70%) finish module graph
+ InnerGraphPlugin
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (75%) chunk optimization
+ RemoveEmptyChunksPlugin
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (78%)
+ chunk modules optimization
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (87%)
+ code generation
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (88%)
+ runtime requirements
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (92%)
+ asset processing
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (92%) asset processing
+ CssMinimizerPlugin
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+● Webpack █████████████████████████ sealing (92%) asset processing
+ RealContentHashPlugin
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+✔ Webpack
+  Compiled successfully in 18.23s

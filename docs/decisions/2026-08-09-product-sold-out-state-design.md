@@ -3,6 +3,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-08-09 |
+| 更新 | 2026-09-12 |
 | 分支 | `hotfix/hy/0000_product_sale_status` |
 | 基线 | `origin/master@4c9617740bfe5e86de656952c92a34131ed607b4` 及本分支未提交的订单库存联动修复 |
 | 状态 | 已按本文实现并完成本地功能验证；Linux-only 独立验收合同待 Linux 环境复核 |
@@ -10,7 +11,7 @@
 
 ## 1. 背景
 
-当前商品存在 `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` 六种状态，订单存在 `CREATED/COMPLETED/CLOSED` 三种状态。
+历史基线中的商品曾存在 `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD/CLOSED` 六种状态；当前代码只保留 `DRAFT/ON_SHELF/LOCKED/OFF_SHELF/SOLD`，订单仍为 `CREATED/COMPLETED/CLOSED`。
 
 本分支已经修复订单与库存联动：创建订单预占 1 件库存；完成订单扣减库存和预占；有剩余库存时商品恢复 `ON_SHELF`，最后一件完成时商品库存归零并进入 `SOLD`；关闭订单释放预占、库存不变，商品进入 `OFF_SHELF`。
 
@@ -38,10 +39,7 @@
 
 ### 2.1 评审定稿结论
 
-本文已合并以下两份评审的有效结论，并修正其中与代码现状不符的表述：
-
-- `docs/review/2026-08-09-product-sold-out-state-design-review.md`
-- `docs/review/2026-08-09-product-sold-out-state-design-review-code-check.md`
+本文已吸收历史评审阶段的有效结论，并修正其中与当前代码不符的表述。独立 review 文件已于 2026-09-12 删除，以下表格是保留在设计文档中的最终决策记录。
 
 | 议题 | 定稿结论 |
 |---|---|

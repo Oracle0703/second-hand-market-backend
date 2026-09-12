@@ -24,7 +24,13 @@ func LocalObjectPath(root, objectKey string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	key := filepath.ToSlash(strings.TrimSpace(objectKey))
+	key := strings.TrimSpace(objectKey)
+	// Object keys are always slash-separated. Reject backslashes outright so the
+	// traversal checks below behave identically on every platform: filepath.ToSlash
+	// is a no-op on POSIX, which would otherwise let `a\..\b` through as one segment.
+	if strings.ContainsRune(key, '\\') {
+		return "", common.ErrInvalidUpload
+	}
 	if key == "" || strings.HasPrefix(key, "/") {
 		return "", common.ErrInvalidUpload
 	}

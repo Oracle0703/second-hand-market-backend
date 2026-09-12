@@ -1,5 +1,7 @@
 # Merchant Category Management Design
 
+Implementation status: implemented and merged; production backfill remains an explicit operational step. Updated: 2026-09-12
+
 ## Goal
 
 Add merchant-owned category management for first-level and second-level product categories. Each merchant can manage only its own categories in the shared backend/admin application. Each merchant miniapp entry shows only that merchant's categories and products.

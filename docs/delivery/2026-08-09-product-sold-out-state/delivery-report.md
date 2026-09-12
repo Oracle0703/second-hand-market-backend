@@ -1,14 +1,17 @@
 # 交付报告
 
+更新时间：2026-09-12
+状态：历史功能交付记录；当前代码基线和发布门禁以 `docs/README.md`、`docs/release-readiness.md` 为准
+
 ## 摘要
 
 | 字段 | 内容 |
 |---|---|
 | 结果 | 已完成商品售罄状态最小功能实现 |
-| 日期 | 2026-08-10 |
+| 日期 | 2026-08-10（原始交付） |
 | 分支 | `hotfix/hy/0000_product_sale_status` |
 | 基线 | `4c9617740bfe5e86de656952c92a34131ed607b4` |
-| 状态 | 工作区可供审阅；发布前仍需 Linux-only 合同和真实数据库迁移 |
+| 状态 | 功能已合并；发布前仍需目标环境迁移、Linux/精确工具链复验和真实平台验收 |
 
 ## 已交付变更
 
@@ -20,7 +23,7 @@
 | 上架 | 要求图片、可销售库存大于 0 且无活动订单 |
 | 数据 | 新增并注册 `0007_product_sold_out_state.up.sql`，归一化历史 `CLOSED` 和矛盾 `SOLD` 数据 |
 | 商家端 | 商品改为五状态，`SOLD` 显示“售罄”，提供快捷售罄和售罄补货，移除商品关闭入口与统计 |
-| 小程序 | 商品卡、详情和收藏显示中文状态；非 `ON_SHELF` 隐藏“我想要”；未恢复隐藏意向页 |
+| 小程序 | 商品卡、详情和收藏显示中文状态；非 `ON_SHELF` 隐藏购买联系入口；意向 API 保留但 UI 可配置隐藏 |
 | 测试 | 增加后端库存/订单/迁移回归、商家真实页面渲染和小程序真实页面渲染测试 |
 
 ## 验证证据
@@ -31,7 +34,7 @@
 | 后端未过滤四包 | 仅被既有 Linux-only 小程序验收合同阻塞；其余三个包通过 |
 | 商家端测试 | 10 文件，29/29 通过 |
 | 商家端生产构建 | 退出码 0 |
-| 小程序测试 | 16 文件，157/157 通过 |
+| 小程序测试 | 后续基线已提升至 173/173 通过 |
 | 微信小程序构建 | 退出码 0 |
 | 0007 SHA256 | `1ddaea62f22d198c6659bfadc0dfbdc071a35606f38bd9a926345ee3941bff58` |
 | 商品 `CLOSED` 源码残留检查 | 0 个匹配；订单/意向 `CLOSED` 保留检查符合预期 |
@@ -41,13 +44,13 @@
 
 | 文件 | 用途 |
 |---|---|
-| `docs/superpowers/specs/2026-08-09-product-sold-out-state-design.md` | 最终业务设计与验收标准 |
+| `docs/decisions/2026-08-09-product-sold-out-state-design.md` | 最终业务设计与验收标准 |
 | `backend/internal/app/product_stock_adjustment_handlers.go` | 快捷售罄、部分售出和售罄补货规则 |
 | `backend/internal/app/order_handlers.go` | 订单预占、完成扣减和关闭释放 |
 | `backend/migrations/0007_product_sold_out_state.up.sql` | 历史商品状态归一化 |
 | `frontend/src/pages/merchant/products/components/StockAdjustmentModal.tsx` | 商家快捷售罄与售罄补货入口 |
 | `miniapp/src/utils/product-status.ts` | 小程序商品状态文案和联系购买判断 |
-| `docs/delivery/2026-08-09-product-sold-out-state/test-review.md` | 完整测试、审查与环境证据 |
+| `docs/miniapp-release-readiness.md`、`docs/release-readiness.md` | 当前发布门禁与环境证据要求 |
 
 ## 已知限制
 

@@ -349,6 +349,7 @@ func TestPublicUploadHandlerBlocksExecutableAndMismatchedFiles(t *testing.T) {
 func TestLocalFileResponsesIgnorePersistedExternalURL(t *testing.T) {
 	srv := newTestServer(t)
 	merchantID, username, password := registerMerchant(t, srv, "legacy_file_url")
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
 	login := merchantLogin(t, srv, username, password)
 	if login.Code != 0 || str(login.Data["token_scope"]) != "full" {
@@ -378,10 +379,10 @@ func TestLocalFileResponsesIgnorePersistedExternalURL(t *testing.T) {
 		requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/merchant/products/%d", productID), nil, map[string]string{
 			"Authorization": "Bearer " + merchantToken,
 		}),
-		requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/products", nil, map[string]string{
+		requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/products", merchantNo), nil, map[string]string{
 			"X-Device-Id": "legacy-file-url-list",
 		}),
-		requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d", productID), nil, map[string]string{
+		requestJSON(t, srv.Router, http.MethodGet, withMerchantNo(fmt.Sprintf("/api/v1/buyer/products/%d", productID), merchantNo), nil, map[string]string{
 			"X-Device-Id": "legacy-file-url-detail",
 		}),
 	}
@@ -408,6 +409,7 @@ func TestPublicUploadBaseURLFormatsResponsesWithoutChangingStoredURL(t *testing.
 	srv := newTestServerWithConfig(t, cfg)
 
 	merchantID, username, password := registerMerchant(t, srv, "public_upload_base_url")
+	merchantNo := merchantNoByID(t, srv, merchantID)
 	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
 	login := merchantLogin(t, srv, username, password)
 	if login.Code != 0 || str(login.Data["token_scope"]) != "full" {
@@ -497,10 +499,10 @@ func TestPublicUploadBaseURLFormatsResponsesWithoutChangingStoredURL(t *testing.
 		requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/merchant/products/%d", productID), nil, map[string]string{
 			"Authorization": "Bearer " + merchantToken,
 		}),
-		requestJSON(t, srv.Router, http.MethodGet, "/api/v1/buyer/products", nil, map[string]string{
+		requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/products", merchantNo), nil, map[string]string{
 			"X-Device-Id": "public-upload-base-list",
 		}),
-		requestJSON(t, srv.Router, http.MethodGet, fmt.Sprintf("/api/v1/buyer/products/%d", productID), nil, map[string]string{
+		requestJSON(t, srv.Router, http.MethodGet, withMerchantNo(fmt.Sprintf("/api/v1/buyer/products/%d", productID), merchantNo), nil, map[string]string{
 			"X-Device-Id": "public-upload-base-detail",
 		}),
 	}

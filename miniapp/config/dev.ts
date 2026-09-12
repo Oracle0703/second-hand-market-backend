@@ -1,6 +1,6 @@
 export default {
   env: {
-    NODE_ENV: 'development'
+    NODE_ENV: JSON.stringify('development')
   },
   defineConstants: {},
   mini: {},

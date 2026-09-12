@@ -13,6 +13,16 @@ type PrivacySettingResult = CallbackResult & {
   privacyContractName?: string
 }
 
+type PrivacyAuthorizationResolution = {
+  event: 'exposureAuthorization' | 'agree' | 'disagree'
+  buttonId?: string
+}
+
+type PrivacyAuthorizationListener = (
+  resolve: (result: PrivacyAuthorizationResolution) => void,
+  eventInfo?: { referrer?: string }
+) => void
+
 type PrivacyAPI = {
   getPrivacySetting?: (options: {
     success?: (result: PrivacySettingResult) => void
@@ -20,6 +30,13 @@ type PrivacyAPI = {
     complete?: (result: CallbackResult) => void
   }) => void
   requirePrivacyAuthorize?: (options: {
+    success?: (result: CallbackResult) => void
+    fail?: (error: CallbackResult) => void
+    complete?: (result: CallbackResult) => void
+  }) => void
+  onNeedPrivacyAuthorization?: (listener: PrivacyAuthorizationListener) => void
+  offNeedPrivacyAuthorization?: (listener: PrivacyAuthorizationListener) => void
+  openPrivacyContract?: (options: {
     success?: (result: CallbackResult) => void
     fail?: (error: CallbackResult) => void
     complete?: (result: CallbackResult) => void
@@ -38,8 +55,6 @@ type ContactRuntimeGlobal = {
 type EnsurePrivacyOptions = {
   showFailure?: boolean
 }
-
-let phonePrivacyAuthorizedInSession = false
 
 function runtimeGlobal(): ContactRuntimeGlobal {
   if (typeof globalThis === 'undefined') {
@@ -137,32 +152,43 @@ function requirePrivacyAuthorize(): Promise<void> {
   })
 }
 
-export async function ensureStorePhonePrivacyAuthorized(options: EnsurePrivacyOptions = {}): Promise<boolean> {
-  if (phonePrivacyAuthorizedInSession) {
-    return true
+export function registerPrivacyAuthorizationListener(listener: PrivacyAuthorizationListener): () => void {
+  const api = privacyAPI()
+  if (typeof api.onNeedPrivacyAuthorization !== 'function') {
+    return () => undefined
   }
+  api.onNeedPrivacyAuthorization(listener)
+  return () => {
+    api.offNeedPrivacyAuthorization?.(listener)
+  }
+}
 
+export function openPrivacyContract(): Promise<void> {
+  const api = privacyAPI()
+  if (typeof api.openPrivacyContract !== 'function') {
+    return Promise.reject(new Error('openPrivacyContract is not supported'))
+  }
+  return new Promise((resolve, reject) => {
+    api.openPrivacyContract?.({
+      success: () => resolve(),
+      fail: reject
+    })
+  })
+}
+
+export async function ensureStorePhonePrivacyAuthorized(options: EnsurePrivacyOptions = {}): Promise<boolean> {
   try {
     const setting = await getPrivacySetting()
     if (!setting.needAuthorization) {
-      phonePrivacyAuthorizedInSession = true
       return true
     }
     await requirePrivacyAuthorize()
-    phonePrivacyAuthorizedInSession = true
     return true
   } catch (error) {
     if (options.showFailure) {
       await showPhoneFallback(privacyErrorMessage(error))
     }
     return false
-  }
-}
-
-export async function warmupStorePhonePrivacyAuthorization(): Promise<void> {
-  const authorized = await ensureStorePhonePrivacyAuthorized()
-  if (!authorized) {
-    await Taro.showToast({ title: '未授权拨打电话，后续联系商家时可重新授权', icon: 'none' })
   }
 }
 

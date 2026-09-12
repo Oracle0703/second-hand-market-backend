@@ -279,6 +279,7 @@ describe('小程序 API 基址选择', () => {
 })
 
 describe('Taro 构建配置接线', () => {
+  // This probe starts two isolated Node processes and can exceed Vitest's 5s default under load.
   test('微信和抖音 production 构建注入相同的已校验 API 地址', async () => {
     const weappLayers = await probeBuildConfig('weapp')
     const ttLayers = await probeBuildConfig('tt')
@@ -289,9 +290,9 @@ describe('Taro 构建配置接线', () => {
       JSON.stringify('https://api.example.com/api/v1')
     )
     expect(ttLayers[1].defineConstants).toEqual(weappLayers[1].defineConstants)
-    expect(weappLayers[2].env?.NODE_ENV).toBe('production')
-    expect(ttLayers[2].env?.NODE_ENV).toBe('production')
-  })
+    expect(weappLayers[2].env?.NODE_ENV).toBe(JSON.stringify('production'))
+    expect(ttLayers[2].env?.NODE_ENV).toBe(JSON.stringify('production'))
+  }, 30_000)
 
   test.each(miniAppTargets)('%s 危险 production 覆盖在配置模块加载阶段失败', async (taroEnv) => {
     vi.resetModules()

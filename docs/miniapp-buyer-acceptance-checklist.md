@@ -1,6 +1,6 @@
-# 买家小程序第二阶段验收清单（真机联调 + 页面级 E2E）
+# 买家小程序验收清单（真机联调 + 页面级 E2E）
 
-更新时间：2026-03-11
+更新时间：2026-09-12
 
 ## 1. 自动化验收（可直接执行）
 
@@ -8,7 +8,7 @@
 1. 后端测试：`cd backend && GOMODCACHE=$(pwd)/.cache/go/mod GOCACHE=$(pwd)/.cache/go/build go test ./...`
 2. 商家后台前端：`cd frontend && npm run test && npm run build`
 3. 小程序单测：`cd miniapp && npm run test`
-4. 小程序构建：`cd miniapp && npm run build:weapp`
+4. 小程序构建：`cd miniapp && npm run build:weapp && npm run build:tt`
 
 ## 1.2 买家页面链路 smoke（新增）
 
@@ -52,11 +52,11 @@ API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mj
 3. 在另一台手机点击分享卡片。
 4. 预期：进入 `pages/product/detail/index?id=...`，商品信息正确，页面无空白。
 
-## 2.2 真机登录交互
-1. 游客进入详情页点击“提交意向”。
-2. 预期：跳转登录页而不是直接提交。
-3. 点击“授权登录”，观察授权弹窗与回跳路径。
-4. 预期：登录后回到原目标页（意向页或我的页）。
+## 2.2 真机登录与平台隐私交互
+1. 在售商品详情页点击电话联系；未授权时完成平台隐私授权。
+2. 授权成功后再次点击电话，预期直接拉起拨号，不重复弹授权。
+3. 用户拒绝或撤回授权后再次点击，预期显示可恢复提示并重新进入平台授权流程。
+4. 游客进入意向页时跳转登录页；登录后回到原目标页。
 
 ## 2.3 guest merge 页面表现
 1. 游客先做收藏与浏览记录。
@@ -83,10 +83,11 @@ API_BASE_URL=http://localhost:8080/api/v1 node scripts/smoke-miniapp-page-e2e.mj
 | 游客拦截与登录回跳 | 真机 iOS/Android | PASS/FAIL | 截图/录屏 |
 | guest merge 页面表现 | 真机 iOS/Android | PASS/FAIL | 截图/录屏 |
 | 状态回读（已联系/已关闭） | 真机 iOS/Android | PASS/FAIL | 截图/录屏 |
+| 电话连续点击与授权撤回 | 微信/抖音真机 | PASS/FAIL | 截图/录屏 |
 
 ---
 
 ## 4. 当前边界说明
-1. 当前后端已支持 `BUYER_WECHAT_LOGIN_MODE=mock/real/disabled` 三种模式。
+1. 当前后端已支持微信和抖音 `LOGIN_MODE=mock/real/disabled` 三种模式。
 2. 在 `mock` 模式下可做流程自动化回归，但不能证明真实 `code2session` 正确性。
 3. 发布前必须在 `real` 模式完成真机登录验收（`wx.login -> code2session -> buyer session`）。

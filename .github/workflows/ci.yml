@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (vet + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # Catches stray sources that break compilation, e.g. cloud-sync "foo 2.go"
+      # copies, which `go test` alone would not report clearly.
+      - name: go vet
+        working-directory: backend
+        run: go vet ./...
+
+      # The miniapp auth refresh acceptance contract runs as its own job below,
+      # so a failure there stays legible instead of hiding the rest of the suite.
+      - name: go test
+        working-directory: backend
+        run: go test ./... -skip '^TestMiniappAuthRefreshAcceptance'
+
+  backend-acceptance:
+    name: backend (miniapp auth refresh contract, Linux-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # These tests self-skip off Linux (POSIX modes, symlinks, atomic renames),
+      # so ubuntu-latest is the only place they actually execute. They shell out
+      # to git, bash and sha256sum, and stub npm themselves.
+      - name: go test (acceptance contract)
+        working-directory: backend
+        run: go test ./tests/ -run '^TestMiniappAuthRefreshAcceptance' -v
+
+  frontend:
+    name: frontend (test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm ci
+        working-directory: frontend
+        run: npm ci
+
+      - name: vitest
+        working-directory: frontend
+        run: npm run test
+
+      # `npm run build` is `tsc -b && vite build`, so this is the type check too.
+      - name: build
+        working-directory: frontend
+        run: npm run build
+
+  miniapp:
+    name: miniapp (test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: miniapp/.nvmrc
+          cache: npm
+          cache-dependency-path: miniapp/package-lock.json
+
+      - name: npm ci
+        working-directory: miniapp
+        run: npm ci
+
+      - name: vitest
+        working-directory: miniapp
+        run: npm test

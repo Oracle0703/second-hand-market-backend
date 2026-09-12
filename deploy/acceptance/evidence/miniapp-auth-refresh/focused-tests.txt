@@ -1,0 +1,13 @@
+
+> second-hand-buyer-miniapp@0.1.0 test
+> vitest run --run tests/request-refresh.test.ts
+
+
+ RUN  v3.2.4 /Users/huangyu/Desktop/allProject/second-hand-market-backend/miniapp
+
+ ✓ tests/request-refresh.test.ts (19 tests) 480ms
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+   Start at  13:50:55
+   Duration  2.07s (transform 169ms, setup 0ms, collect 137ms, tests 480ms, environment 1ms, prepare 397ms)

@@ -1,12 +1,14 @@
 # Douyin Miniapp Reproducible Build Design
 
+Implementation status: implemented and merged; current build and privacy checks are maintained in `docs/miniapp-release-readiness.md`. Updated: 2026-09-12
+
 ## Goal
 
 Make the Douyin miniapp build reproducible across developers and coding agents, and document the verified recovery procedure so future build failures start from evidence instead of version guessing.
 
 ## Scope
 
-- Add a standalone troubleshooting guide at `docs/miniapp-douyin-build-troubleshooting.md`.
+- Add a standalone troubleshooting guide at `docs/operations/douyin-build-troubleshooting.md`.
 - Put the exact artifact build procedure first in that guide.
 - Pin the Node and npm versions used by the verified build.
 - Prevent `@babel/plugin-transform-runtime` from drifting to the incompatible release that caused Taro compilation to hang.

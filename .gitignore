@@ -152,8 +152,15 @@ backend/uploads/
 /backend/.env.remote-dev
 /scripts/remote-dev/.runtime/
 /deploy/remote-dev-db/secrets/*
+/deploy/acceptance/secrets/
+/.tmp/
+/.worktrees/
 *.bak
 *.stable.*
+
+# Cloud-sync / Finder conflict copies ("foo 2.go", "foo 3.sql"). Go and Vitest pick
+# these up as real sources, so a stray copy silently breaks the build or the suite.
+* [0-9].*
 
 # Repository-local Go build/test caches (never commit)
 /backend/.gocache*/

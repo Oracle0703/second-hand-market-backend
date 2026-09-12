@@ -670,3 +670,86 @@ page {
 .category-want-btn::after {
   border: none;
 }
+
+.privacy-auth-backdrop {
+  position: fixed;
+  z-index: 9999;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48rpx;
+  box-sizing: border-box;
+  background: rgba(15, 27, 23, 0.56);
+}
+
+.privacy-auth-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 620rpx;
+  padding: 36rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  background: #fff;
+  box-shadow: 0 24rpx 64rpx rgba(15, 27, 23, 0.24);
+}
+
+.privacy-auth-title {
+  font-size: 34rpx;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #17342d;
+}
+
+.privacy-auth-content {
+  margin-top: 20rpx;
+  font-size: 26rpx;
+  line-height: 1.7;
+  color: #50605a;
+}
+
+.privacy-auth-contract {
+  align-self: flex-start;
+  margin: 16rpx 0 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #1d5a4a;
+  font-size: 25rpx;
+  line-height: 48rpx;
+}
+
+.privacy-auth-contract::after,
+.privacy-auth-button::after {
+  border: none;
+}
+
+.privacy-auth-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 30rpx;
+}
+
+.privacy-auth-button {
+  flex: 1;
+  height: 76rpx;
+  margin: 0;
+  border: none;
+  border-radius: 12rpx;
+  font-size: 26rpx;
+  line-height: 76rpx;
+}
+
+.privacy-auth-reject {
+  background: #edf1ef;
+  color: #50605a;
+}
+
+.privacy-auth-agree {
+  background: #1d5a4a;
+  color: #fff;
+}

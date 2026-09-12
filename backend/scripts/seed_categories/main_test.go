@@ -374,8 +374,11 @@ func newCategorySeedTestDB(t *testing.T) *gorm.DB {
 func createCategorySeedTestSchema(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	statements := []string{
+		// Mirrors migrations 0001 + 0008 (merchant_id) + 0009 (uk_parent_name replaced
+		// by the non-unique merchant scope index). Keep in sync with backend/migrations.
 		`CREATE TABLE categories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			merchant_id INTEGER NULL,
 			parent_id INTEGER NULL,
 			level INTEGER NOT NULL,
 			name TEXT NOT NULL,
@@ -385,7 +388,7 @@ func createCategorySeedTestSchema(t *testing.T, db *gorm.DB) {
 			updated_at DATETIME NOT NULL,
 			deleted_at DATETIME NULL
 		)`,
-		`CREATE UNIQUE INDEX uk_parent_name ON categories(parent_id, name)`,
+		`CREATE INDEX idx_category_scope_name ON categories(merchant_id, parent_id, level, name)`,
 	}
 	for _, statement := range statements {
 		if err := db.Exec(statement).Error; err != nil {
