@@ -1,6 +1,17 @@
 import { http, type APIResponse } from './http'
 import type { LoginResponse, LoginType } from '../types/auth'
 
+export type MerchantProfileResponse = {
+  merchant_info?: {
+    id: number
+    name: string
+    contact: string
+    phone: string
+  }
+  review_status: string
+  reject_reason?: string | null
+}
+
 export type AdjustProductStockPayload = {
   adjustment_type: 'INCREASE' | 'DECREASE' | 'MARK_SOLD'
   quantity?: number
@@ -39,7 +50,7 @@ export const api = {
     return http.post('/auth/register', payload)
   },
   merchantProfile() {
-    return http.get('/merchant/profile')
+    return http.get<APIResponse<MerchantProfileResponse>>('/merchant/profile')
   },
   merchantReapply(payload: Record<string, unknown>) {
     return http.post('/merchant/reapply', payload)

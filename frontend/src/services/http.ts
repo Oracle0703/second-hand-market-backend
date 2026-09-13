@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { AxiosError } from 'axios'
 import { useAuthStore } from '../stores/auth-store'
 import { ERROR_MESSAGES, apiErrorMessage } from '../constants/error-codes'
 import type { AuthUser } from '../types/auth'
@@ -18,6 +18,11 @@ export type APIResponse<T> = {
   message: string
   request_id: string
   data: T
+}
+
+function isAPIResponse(value: unknown): value is APIResponse<unknown> {
+  return typeof value === 'object' && value !== null &&
+    typeof (value as { code?: unknown }).code === 'number'
 }
 
 export const http = axios.create({
@@ -86,7 +91,7 @@ function buildUserFromClaims(claims: AccessTokenClaims | null, fallback: AuthUse
 let refreshPromise: Promise<string | null> | null = null
 
 async function refreshAccessToken(): Promise<string | null> {
-  const { refreshToken, user, tokenScope } = useAuthStore.getState()
+  const { accessToken: ownerAccessToken, refreshToken, user, tokenScope } = useAuthStore.getState()
   if (!refreshToken) return null
   try {
     const res = await refreshClient.post<APIResponse<{ access_token: string; refresh_token: string; expires_in: number }>>('/auth/refresh', {
@@ -102,6 +107,10 @@ async function refreshAccessToken(): Promise<string | null> {
     const nextScope = claims?.scope === 'full' || claims?.scope === 'onboarding' ? claims.scope : (tokenScope || 'full')
     if (!nextUser) {
       useAuthStore.getState().clear()
+      return null
+    }
+    const current = useAuthStore.getState()
+    if (current.accessToken !== ownerAccessToken || current.refreshToken !== refreshToken) {
       return null
     }
     useAuthStore.getState().setAuth({
@@ -130,7 +139,16 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => {
-    const payload = response.data as APIResponse<unknown>
+    const payload = response.data
+    if (!isAPIResponse(payload)) {
+      return Promise.reject(new Error('服务响应格式异常，请稍后重试'))
+    }
+    if (payload.code === 10002) {
+      return Promise.reject(new AxiosError('登录已过期，请重新登录', 'ERR_BAD_RESPONSE', response.config, response.request, {
+        ...response,
+        status: 401
+      }))
+    }
     if (payload.code !== 0) {
       const msg = apiErrorMessage(payload.code, getPathname(response.config.url), payload.message)
       return Promise.reject(new Error(msg))

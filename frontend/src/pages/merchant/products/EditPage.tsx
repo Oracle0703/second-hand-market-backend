@@ -108,9 +108,6 @@ export function EditPage() {
   useEffect(() => {
     if (!detail.data) return
     const selectedCategoryID = Number(detail.data.category_id)
-    const matchedLevel2 = (level2All.data ?? []).find((item) => categoryId(item) === selectedCategoryID)
-    const pid = matchedLevel2 ? Number(matchedLevel2.ParentID ?? matchedLevel2.parent_id ?? 0) : ''
-    setParentID(pid)
     formRef.current?.setFieldsValue({
       title: detail.data.title,
       description: detail.data.description ?? '',
@@ -118,7 +115,6 @@ export function EditPage() {
       original_price_yuan: centToYuanNumber(detail.data.original_price_cent ?? detail.data.price_cent),
       stock: Number(detail.data.stock ?? 1),
       condition_level: detail.data.condition_level,
-      parent_id: pid || undefined,
       category_id: selectedCategoryID
     })
     const remoteImages = (detail.data.images ?? []).map((fileID, index) => ({
@@ -131,6 +127,15 @@ export function EditPage() {
       releaseLocalPreviews(prev)
       return remoteImages
     })
+  }, [detail.data])
+
+  useEffect(() => {
+    if (!detail.data) return
+    const selectedCategoryID = Number(detail.data.category_id)
+    const matchedLevel2 = (level2All.data ?? []).find((item) => categoryId(item) === selectedCategoryID)
+    const pid = matchedLevel2 ? Number(matchedLevel2.ParentID ?? matchedLevel2.parent_id ?? 0) : ''
+    setParentID(pid)
+    formRef.current?.setFieldValue('parent_id', pid || undefined)
   }, [detail.data, level2All.data])
 
   const status = detail.data?.status
@@ -216,6 +221,13 @@ export function EditPage() {
   })
 
   const onFinish = async (values: ProductEditValues) => {
+    if (uploadMutation.isPending) {
+      message.info('图片上传中，请稍候再保存')
+      return false
+    }
+    if (updateMutation.isPending) {
+      return false
+    }
     await updateMutation.mutateAsync(values)
     return true
   }
@@ -228,8 +240,8 @@ export function EditPage() {
       message.error('当前状态不可编辑图片')
       return
     }
-    if (uploadMutation.isPending) {
-      message.info('图片上传中，请稍候')
+    if (uploadMutation.isPending || updateMutation.isPending) {
+      message.info('当前有操作正在进行，请稍候')
       return
     }
     if (imageItems.length >= 5) {
@@ -255,7 +267,7 @@ export function EditPage() {
   }, [])
 
   const removeImage = (fileID: number) => {
-    if (!canEditDescImages) return
+    if (!canEditDescImages || uploadMutation.isPending || updateMutation.isPending) return
     setImageItems((prev) => {
       const current = prev.find((item) => item.fileID === fileID)
       if (current?.isLocal) {
@@ -273,7 +285,13 @@ export function EditPage() {
 
   if (detail.isLoading) return <p>加载中...</p>
   if (detail.error) return <p className="error">{(detail.error as Error).message}</p>
-  const backToDetail = () => navigate(`/merchant/products/${productId}`)
+  const backToDetail = () => {
+    if (uploadMutation.isPending || updateMutation.isPending) {
+      message.info('当前有操作正在进行，请稍候')
+      return
+    }
+    navigate(`/merchant/products/${productId}`)
+  }
 
   return (
     <PageContainer
@@ -321,7 +339,7 @@ export function EditPage() {
                 )}
                 <div style={{ marginTop: 6, fontSize: 12, color: '#666', wordBreak: 'break-all' }}>file_id: {item.fileID}</div>
                 {canEditDescImages ? (
-                  <Button type="link" danger size="small" style={{ padding: 0 }} onClick={() => removeImage(item.fileID)}>
+                  <Button type="link" danger size="small" style={{ padding: 0 }} disabled={uploadMutation.isPending || updateMutation.isPending} onClick={() => removeImage(item.fileID)}>
                     删除
                   </Button>
                 ) : null}
@@ -343,7 +361,7 @@ export function EditPage() {
             type="dashed"
             onClick={() => fileInputRef.current?.click()}
             loading={uploadMutation.isPending}
-            disabled={!canEditDescImages}
+            disabled={!canEditDescImages || updateMutation.isPending}
           >
             选择并上传图片
           </Button>
@@ -363,7 +381,7 @@ export function EditPage() {
           },
           submitButtonProps: {
             loading: updateMutation.isPending,
-            disabled: !canEditDescImages || imageItems.length === 0
+            disabled: !canEditDescImages || imageItems.length === 0 || uploadMutation.isPending
           },
           render: (_, dom) => [
             <Button key="cancel-bottom" onClick={backToDetail}>

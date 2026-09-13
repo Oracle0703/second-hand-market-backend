@@ -6,7 +6,7 @@ export function RegisterStatusPage() {
   const queryClient = useQueryClient()
   const { data, isLoading, error } = useQuery({
     queryKey: ['merchant-profile'],
-    queryFn: async () => (await api.merchantProfile()).data.data as any
+    queryFn: async () => (await api.merchantProfile()).data.data
   })
   const reapplyMutation = useMutation({
     mutationFn: async () => api.merchantReapply({}),
@@ -17,6 +17,7 @@ export function RegisterStatusPage() {
 
   if (isLoading) return <p>加载中...</p>
   if (error) return <p className="error">{(error as Error).message}</p>
+  if (!data) return <p className="error">暂无商家审核信息</p>
 
   return (
     <section className="card">
