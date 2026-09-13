@@ -234,28 +234,22 @@ page {
 .home-location-actions {
   display: flex;
   gap: 16rpx;
+  width: 100%;
 }
 
 .home-location-btn {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  min-width: 0;
+  margin: 0;
   box-sizing: border-box;
   height: 72rpx;
-  line-height: 1;
+  line-height: 72rpx;
   padding: 0 !important;
   text-align: center;
   border: none;
   border-radius: 999rpx;
   font-size: 24rpx;
   font-weight: 600;
-}
-
-.home-location-btn-text {
-  display: block;
-  line-height: 1;
-  text-align: center;
 }
 
 .home-location-btn::after {
