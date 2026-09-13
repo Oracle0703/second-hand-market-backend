@@ -6,69 +6,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 
 	"second-hand-market-backend/backend/internal/auth"
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
 	"second-hand-market-backend/backend/internal/model"
 )
-
-func (s *Server) handleRegister(c *gin.Context) {
-	var req dto.RegisterRequest
-	if err := bindJSON(c, &req); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	var cnt int64
-	if err := s.DB.Model(&model.MerchantAccount{}).Where("username = ?", req.Username).Count(&cnt).Error; err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
-	}
-	if cnt > 0 {
-		common.Fail(c, common.ErrInvalidArgument)
-		return
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
-	}
-
-	merchant := model.Merchant{
-		MerchantNo:   common.BuildBizNo("M"),
-		MerchantName: req.MerchantName,
-		ContactName:  req.ContactName,
-		ContactPhone: req.Phone,
-		ReviewStatus: model.ReviewPending,
-	}
-	merchant.LicenseFileID = &req.LicenseFileID
-	acct := model.MerchantAccount{
-		Username:     req.Username,
-		PasswordHash: string(hash),
-		Role:         model.AccountRoleOwner,
-		Status:       model.AccountStatusActive,
-	}
-
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&merchant).Error; err != nil {
-			return err
-		}
-		acct.MerchantID = merchant.ID
-		if err := tx.Create(&acct).Error; err != nil {
-			return err
-		}
-		if err := EnsureMerchantDefaultCategories(tx, merchant.ID); err != nil {
-			return err
-		}
-		logItem := model.MerchantAuditLog{MerchantID: merchant.ID, Action: "SUBMIT", FromStatus: "", ToStatus: model.ReviewPending, OperatorType: model.UserTypeMerchant, OperatorID: acct.ID}
-		return tx.Create(&logItem).Error
-	}); err != nil {
-		common.Fail(c, common.ErrInternal)
-		return
-	}
-	common.Success(c, gin.H{"merchant_id": merchant.ID, "merchant_no": merchant.MerchantNo, "review_status": merchant.ReviewStatus})
-}
 
 func (s *Server) handleLogin(c *gin.Context) {
 	var req dto.LoginRequest
@@ -139,7 +82,7 @@ func (s *Server) merchantLogin(c *gin.Context, req dto.LoginRequest) {
 	}
 	now := time.Now()
 	_ = s.DB.Model(&model.MerchantAccount{}).Where("id = ?", acct.ID).Update("last_login_at", &now).Error
-	data["user"] = gin.H{"id": acct.ID, "role": acct.Role, "merchant_id": merchant.ID}
+	data["user"] = gin.H{"id": acct.ID, "role": acct.Role, "merchant_id": merchant.ID, "must_change_password": acct.MustChangePassword}
 	data["token_scope"] = scope
 	data["review_status"] = merchant.ReviewStatus
 	common.Success(c, data)

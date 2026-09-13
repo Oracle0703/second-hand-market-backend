@@ -1,6 +1,6 @@
 import { LoginFormPage, ProFormText } from '@ant-design/pro-components'
-import { Button, Space, message } from 'antd'
-import { Link, useNavigate } from 'react-router-dom'
+import { message } from 'antd'
+import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -28,7 +28,9 @@ export function LoginPage() {
         user: data.user
       })
 
-      if (data.token_scope === 'onboarding') {
+      if (data.user.must_change_password) {
+        navigate('/merchant/account')
+      } else if (data.token_scope === 'onboarding') {
         navigate('/register/status')
       } else {
         navigate('/merchant/dashboard')
@@ -45,22 +47,12 @@ export function LoginPage() {
       title="广汉市瑞扬家具经营部"
       subTitle="商家后台管理系统"
       onFinish={onFinish}
-      initialValues={{ username: 'yaner', password: '12345678' }}
       submitter={{
         searchConfig: {
           submitText: '登录'
         }
       }}
-      actions={
-        <Space size={8}>
-          <span>还没有商家账号？</span>
-          <Link to="/register">
-            <Button type="link" style={{ paddingInline: 0 }}>
-              去注册
-            </Button>
-          </Link>
-        </Space>
-      }
+      actions={<span>账号由管理员分配，如需开通或重置密码请联系管理员。</span>}
       containerStyle={{ backgroundColor: '#f5f7fa' }}
     >
       <ProFormText

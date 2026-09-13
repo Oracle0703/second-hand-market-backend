@@ -112,50 +112,13 @@ func numToUint64(v interface{}) uint64 {
 	return uint64(f)
 }
 
-func TestMainFlow_RegisterApproveLoginProductOrder(t *testing.T) {
+func TestMainFlow_ProvisionLoginProductOrder(t *testing.T) {
 	srv := newTestServer(t)
 
-	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 1000, "mime_type": "image/jpeg",
-	}, nil)
-	if presign.Code != 0 {
-		t.Fatalf("presign failed: %+v", presign)
-	}
-	licenseFileID := numToUint64(presign.Data["file_id"])
-
-	register := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
-		"merchant_name": "测试商家", "contact_name": "张三", "phone": "13800138000", "username": "merchant1", "password": "Passw0rd!2026", "license_file_id": licenseFileID,
-	}, nil)
-	if register.Code != 0 {
-		t.Fatalf("register failed: %+v", register)
-	}
-	merchantID := numToUint64(register.Data["merchant_id"])
-
-	loginPending := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{"login_type": "MERCHANT", "username": "merchant1", "password": "Passw0rd!2026"}, nil)
-	if loginPending.Code != 0 || str(loginPending.Data["token_scope"]) != "onboarding" {
-		t.Fatalf("pending login scope mismatch: %+v", loginPending)
-	}
-	pendingToken := str(loginPending.Data["access_token"])
-
-	profile := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/profile", nil, map[string]string{"Authorization": "Bearer " + pendingToken})
-	if profile.Code != 0 || str(profile.Data["review_status"]) != "PENDING" {
-		t.Fatalf("profile pending mismatch: %+v", profile)
-	}
-
-	adminLogin := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{"login_type": "ADMIN", "username": "admin", "password": "Admin@123456"}, nil)
-	if adminLogin.Code != 0 {
-		t.Fatalf("admin login failed: %+v", adminLogin)
-	}
-	adminToken := str(adminLogin.Data["access_token"])
-
-	approve := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/admin/merchants/%d/approve", merchantID), map[string]interface{}{"comment": "ok"}, map[string]string{"Authorization": "Bearer " + adminToken})
-	if approve.Code != 0 {
-		t.Fatalf("approve failed: %+v", approve)
-	}
-
-	loginFull := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{"login_type": "MERCHANT", "username": "merchant1", "password": "Passw0rd!2026"}, nil)
+	_, username, password := registerMerchant(t, srv, "mainflow")
+	loginFull := merchantLogin(t, srv, username, password)
 	if loginFull.Code != 0 || str(loginFull.Data["token_scope"]) != "full" {
-		t.Fatalf("full login failed: %+v", loginFull)
+		t.Fatalf("login: %+v", loginFull)
 	}
 	merchantToken := str(loginFull.Data["access_token"])
 

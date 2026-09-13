@@ -39,10 +39,10 @@ func TestStrictImageVipsHTTPIntegration(t *testing.T) {
 		outputExt   string
 	}{
 		{name: "jpeg", fixtureMIME: "image/jpeg", claimedMIME: "image/jpeg", outputMIME: "image/jpeg", outputExt: ".jpg"},
-		{name: "webp", fixtureMIME: "image/webp", claimedMIME: "image/webp", outputMIME: "image/webp", outputExt: ".webp"},
-		{name: "heif", fixtureMIME: "image/heif", claimedMIME: "image/heif", outputMIME: "image/heic", outputExt: ".heic"},
-		{name: "heic_declared_heif", fixtureMIME: "image/heic", claimedMIME: "image/heif", outputMIME: "image/heic", outputExt: ".heic"},
-		{name: "heif_declared_heic", fixtureMIME: "image/heif", claimedMIME: "image/heic", outputMIME: "image/heic", outputExt: ".heic"},
+		{name: "webp", fixtureMIME: "image/webp", claimedMIME: "image/webp", outputMIME: "image/jpeg", outputExt: ".jpg"},
+		{name: "heif", fixtureMIME: "image/heif", claimedMIME: "image/heif", outputMIME: "image/jpeg", outputExt: ".jpg"},
+		{name: "heic_declared_heif", fixtureMIME: "image/heic", claimedMIME: "image/heif", outputMIME: "image/jpeg", outputExt: ".jpg"},
+		{name: "heif_declared_heic", fixtureMIME: "image/heif", claimedMIME: "image/heic", outputMIME: "image/jpeg", outputExt: ".jpg"},
 	}
 	for _, tc := range formats {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,11 +53,11 @@ func TestStrictImageVipsHTTPIntegration(t *testing.T) {
 			}
 			original := append(fixture, marker...)
 			presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-				"biz_type":  "MERCHANT_LICENSE",
+				"biz_type":  "PRODUCT_IMAGE",
 				"file_name": "poc.html",
 				"file_size": len(original),
 				"mime_type": tc.claimedMIME,
-			}, nil)
+			}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 			if presign.Code != 0 {
 				t.Fatalf("presign failed: %+v", presign)
 			}
@@ -79,7 +79,7 @@ func TestStrictImageVipsHTTPIntegration(t *testing.T) {
 				"file",
 				"poc.html",
 				original,
-				nil,
+				map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)},
 			)
 			if upload.Code != 0 || upload.HTTPStatus != http.StatusOK {
 				t.Fatalf("vips-backed HTTP upload failed: %+v", upload)
@@ -110,7 +110,7 @@ func TestStrictImageVipsHTTPIntegration(t *testing.T) {
 			confirm := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/confirm", map[string]interface{}{
 				"file_id":    fileID,
 				"object_key": finalObjectKey,
-			}, nil)
+			}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 			if confirm.Code != 0 {
 				t.Fatalf("processed upload should confirm idempotently: %+v", confirm)
 			}

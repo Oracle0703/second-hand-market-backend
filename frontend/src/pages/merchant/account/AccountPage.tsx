@@ -1,3 +1,6 @@
+import { useNavigate } from 'react-router-dom'
+import { useAuthStore } from '@/stores/auth-store'
+import { passwordHelp, passwordPattern } from '@/utils/password'
 import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer, ProCard, ProDescriptions, ProForm, ProFormText, type ProFormInstance } from '@ant-design/pro-components'
@@ -29,6 +32,8 @@ type PasswordFormValues = {
 }
 
 export function AccountPage() {
+  const navigate = useNavigate()
+  const clear = useAuthStore((state) => state.clear)
   const queryClient = useQueryClient()
   const formRef = useRef<ProFormInstance<PasswordFormValues>>()
 
@@ -40,7 +45,9 @@ export function AccountPage() {
   const passwordMutation = useMutation({
     mutationFn: async (values: PasswordFormValues) => api.merchantChangePassword(values),
     onSuccess: async () => {
-      message.success('密码修改成功')
+      message.success('密码修改成功，请重新登录')
+      clear()
+      navigate('/login', { replace: true })
       formRef.current?.resetFields()
       await queryClient.invalidateQueries({ queryKey: ['merchant-account'] })
     },
@@ -63,6 +70,7 @@ export function AccountPage() {
 
   return (
     <PageContainer title="账号设置">
+      <Alert type="info" message="首次登录或管理员重置密码后，须修改初始密码才能使用业务功能。" style={{ marginBottom: 16 }} />
       <ProCard title="账号信息" style={{ marginBottom: 16 }}>
         <ProDescriptions<MerchantAccountInfo>
           column={2}
@@ -104,7 +112,7 @@ export function AccountPage() {
           }}
         >
           <ProFormText.Password name="old_password" label="旧密码" rules={[{ required: true, message: '请输入旧密码' }, { min: 8, message: '至少 8 位' }]} />
-          <ProFormText.Password name="new_password" label="新密码" rules={[{ required: true, message: '请输入新密码' }, { min: 8, message: '至少 8 位' }]} />
+          <ProFormText.Password name="new_password" label="新密码" rules={[{ required: true, message: '请输入新密码' }, { pattern: passwordPattern, message: passwordHelp }]} />
         </ProForm>
       </ProCard>
     </PageContainer>

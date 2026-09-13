@@ -20,23 +20,19 @@ func registerMerchant(t *testing.T, srv *app.Server, prefix string) (uint64, str
 	t.Helper()
 	username := uniqueUsername(prefix)
 	password := "Passw0rd!2026"
-	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type": "MERCHANT_LICENSE", "file_name": "license.jpg", "file_size": 1000, "mime_type": "image/jpeg",
-	}, nil)
-	if presign.Code != 0 {
-		t.Fatalf("license presign failed: %+v", presign)
-	}
-	register := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
-		"merchant_name":   "测试商家_" + prefix,
-		"contact_name":    "张三",
-		"phone":           fmt.Sprintf("139%08d", time.Now().UnixNano()%100000000),
-		"username":        username,
-		"password":        password,
-		"license_file_id": numToUint64(presign.Data["file_id"]),
-	}, nil)
+	adminToken := adminAccessToken(t, srv)
+	register := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/admin/merchants", map[string]interface{}{
+		"merchant_name": "测试商家_" + prefix, "contact_name": "张三", "phone": "13900000000", "username": username, "password": "InitialPass!2026",
+	}, map[string]string{"Authorization": "Bearer " + adminToken})
 	if register.Code != 0 {
-		t.Fatalf("register failed: %+v", register)
+		t.Fatalf("provision merchant: %+v", register)
 	}
+	login := merchantLogin(t, srv, username, "InitialPass!2026")
+	changed := requestJSON(t, srv.Router, http.MethodPut, "/api/v1/merchant/account/password", map[string]interface{}{"old_password": "InitialPass!2026", "new_password": password}, map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"])})
+	if changed.Code != 0 {
+		t.Fatalf("initial password change: %+v", changed)
+	}
+
 	return numToUint64(register.Data["merchant_id"]), username, password
 }
 
@@ -58,19 +54,17 @@ func merchantLogin(t *testing.T, srv *app.Server, username, password string) api
 	}, nil)
 }
 
-func approveMerchant(t *testing.T, srv *app.Server, adminToken string, merchantID uint64) {
+// Legacy-state fixtures: public approval/rejection endpoints no longer exist.
+func approveMerchant(t *testing.T, srv *app.Server, _ string, merchantID uint64) {
 	t.Helper()
-	resp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/admin/merchants/%d/approve", merchantID), map[string]interface{}{"comment": "ok"}, map[string]string{"Authorization": "Bearer " + adminToken})
-	if resp.Code != 0 {
-		t.Fatalf("approve failed: %+v", resp)
+	if err := srv.DB.Model(&model.Merchant{}).Where("id = ?", merchantID).Update("review_status", model.ReviewApproved).Error; err != nil {
+		t.Fatal(err)
 	}
 }
-
-func rejectMerchant(t *testing.T, srv *app.Server, adminToken string, merchantID uint64) {
+func rejectMerchant(t *testing.T, srv *app.Server, _ string, merchantID uint64) {
 	t.Helper()
-	resp := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/admin/merchants/%d/reject", merchantID), map[string]interface{}{"reason": "资料需补充"}, map[string]string{"Authorization": "Bearer " + adminToken})
-	if resp.Code != 0 {
-		t.Fatalf("reject failed: %+v", resp)
+	if err := srv.DB.Model(&model.Merchant{}).Where("id = ?", merchantID).Update("review_status", model.ReviewRejected).Error; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -129,6 +123,9 @@ func createDraftProduct(t *testing.T, srv *app.Server, merchantToken string) uin
 func TestRestrictedLoginScope(t *testing.T) {
 	srv := newTestServer(t)
 	merchantID, username, password := registerMerchant(t, srv, "restricted")
+	if err := srv.DB.Model(&model.Merchant{}).Where("id = ?", merchantID).Update("review_status", model.ReviewPending).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	pendingLogin := merchantLogin(t, srv, username, password)
 	if pendingLogin.Code != 0 || str(pendingLogin.Data["token_scope"]) != "onboarding" {
@@ -164,9 +161,12 @@ func TestRestrictedLoginScope(t *testing.T) {
 	}
 	rejectedToken := str(rejectedLogin.Data["access_token"])
 
-	reapply := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/reapply", map[string]interface{}{"contact_name": "李四"}, map[string]string{"Authorization": "Bearer " + rejectedToken})
-	if reapply.Code != 0 {
-		t.Fatalf("reapply should be allowed: %+v", reapply)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/merchant/reapply", nil)
+	req.Header.Set("Authorization", "Bearer "+rejectedToken)
+	response := httptest.NewRecorder()
+	srv.Router.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("retired reapply route: %d", response.Code)
 	}
 
 	approveMerchant(t, srv, adminToken, merchantID)

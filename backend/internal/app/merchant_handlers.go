@@ -11,7 +11,6 @@ import (
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
 	"second-hand-market-backend/backend/internal/model"
-	"second-hand-market-backend/backend/internal/stateflow"
 )
 
 func (s *Server) handleMerchantProfile(c *gin.Context) {
@@ -32,59 +31,6 @@ func (s *Server) handleMerchantProfile(c *gin.Context) {
 	})
 }
 
-func (s *Server) handleMerchantReapply(c *gin.Context) {
-	actor, err := actorFromContext(c)
-	if err != nil {
-		common.Fail(c, err)
-		return
-	}
-	var req dto.ReapplyRequest
-	if err := bindJSON(c, &req); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		var merchant model.Merchant
-		if err := tx.Where("id = ?", actor.MerchantID).First(&merchant).Error; err != nil {
-			return s.dbError(err)
-		}
-		if !stateflow.CanTransitionMerchant(merchant.ReviewStatus, model.ReviewPending) {
-			return common.ErrInvalidTransition
-		}
-		if req.MerchantName != nil {
-			merchant.MerchantName = *req.MerchantName
-		}
-		if req.ContactName != nil {
-			merchant.ContactName = *req.ContactName
-		}
-		if req.Phone != nil {
-			merchant.ContactPhone = *req.Phone
-		}
-		if req.LicenseFileID != nil {
-			merchant.LicenseFileID = req.LicenseFileID
-		}
-		fromStatus := merchant.ReviewStatus
-		merchant.ReviewStatus = model.ReviewPending
-		merchant.RejectReason = nil
-		merchant.ReviewedBy = nil
-		merchant.ReviewedAt = nil
-		if err := tx.Save(&merchant).Error; err != nil {
-			return err
-		}
-		audit := model.MerchantAuditLog{MerchantID: merchant.ID, Action: "REAPPLY", FromStatus: fromStatus, ToStatus: model.ReviewPending, OperatorType: model.UserTypeMerchant, OperatorID: actor.UserID}
-		if err := tx.Create(&audit).Error; err != nil {
-			return err
-		}
-		from, to := fromStatus, model.ReviewPending
-		s.writeOperationLog(c, tx, "merchant", merchant.ID, "merchant_reapply", &from, &to, common.CodeOK, &merchant.ID, nil)
-		return nil
-	}); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	common.Success(c, gin.H{"review_status": model.ReviewPending})
-}
-
 func (s *Server) handleMerchantAccount(c *gin.Context) {
 	actor, err := actorFromContext(c)
 	if err != nil {
@@ -98,7 +44,7 @@ func (s *Server) handleMerchantAccount(c *gin.Context) {
 	}
 	var pwdUpdatedAt *time.Time
 	common.Success(c, gin.H{
-		"account":  gin.H{"id": acct.ID, "username": acct.Username, "role": acct.Role, "status": acct.Status, "last_login_at": acct.LastLoginAt},
+		"account":  gin.H{"id": acct.ID, "username": acct.Username, "role": acct.Role, "status": acct.Status, "last_login_at": acct.LastLoginAt, "must_change_password": acct.MustChangePassword},
 		"security": gin.H{"password_updated_at": pwdUpdatedAt, "mfa_enabled": false},
 	})
 }
@@ -123,7 +69,7 @@ func (s *Server) handleMerchantChangePassword(c *gin.Context) {
 		common.Fail(c, common.ErrInvalidArgument)
 		return
 	}
-	if len(req.NewPassword) < 8 {
+	if !common.ValidPassword(req.NewPassword) || req.NewPassword == req.OldPassword {
 		common.Fail(c, common.ErrInvalidArgument)
 		return
 	}
@@ -133,7 +79,17 @@ func (s *Server) handleMerchantChangePassword(c *gin.Context) {
 		return
 	}
 	now := time.Now()
-	if err := s.DB.Model(&model.MerchantAccount{}).Where("id = ?", acct.ID).Update("password_hash", string(hash)).Error; err != nil {
+	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.MerchantAccount{}).Where("id = ? AND password_hash = ?", acct.ID, acct.PasswordHash).Updates(map[string]interface{}{"password_hash": string(hash), "must_change_password": false})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return common.ErrConflict
+		}
+
+		return tx.Model(&model.AuthSession{}).Where("user_type = ? AND user_id = ?", model.UserTypeMerchant, acct.ID).Update("revoked_at", now).Error
+	}); err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}

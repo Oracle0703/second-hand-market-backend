@@ -42,7 +42,7 @@ func BuildRefreshToken(secret string, claims RefreshClaims, ttl time.Duration) (
 }
 
 func ParseAccessToken(secret, token string) (*AccessClaims, error) {
-	parsed, err := jwt.ParseWithClaims(token, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) { return []byte(secret), nil })
+	parsed, err := jwt.ParseWithClaims(token, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) { return []byte(secret), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func ParseAccessToken(secret, token string) (*AccessClaims, error) {
 }
 
 func ParseRefreshToken(secret, token string) (*RefreshClaims, error) {
-	parsed, err := jwt.ParseWithClaims(token, &RefreshClaims{}, func(t *jwt.Token) (interface{}, error) { return []byte(secret), nil })
+	parsed, err := jwt.ParseWithClaims(token, &RefreshClaims{}, func(t *jwt.Token) (interface{}, error) { return []byte(secret), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil {
 		return nil, err
 	}

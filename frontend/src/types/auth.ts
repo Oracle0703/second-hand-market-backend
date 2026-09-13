@@ -3,6 +3,7 @@ export type LoginType = 'ADMIN' | 'MERCHANT'
 export type AuthUser = {
   id: number
   role: string
+  must_change_password?: boolean
   merchant_id?: number
 }
 

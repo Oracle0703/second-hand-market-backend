@@ -89,7 +89,7 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.RequestID(), middleware.OptionalAuth(cfg.JWTAccessSecret))
+	r.Use(gin.Recovery(), middleware.RequestID(), requestBodyLimit(2<<20), middleware.OptionalAuth(cfg.JWTAccessSecret))
 	s := &Server{
 		cfg:            cfg,
 		DB:             db,
@@ -97,12 +97,27 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 		limiter:        newMemoryRateLimiter(),
 		imageProcessor: imageProcessor,
 	}
+	r.Use(s.sessionGuard())
 	if strings.EqualFold(cfg.FileStorageProvider, "local") {
 		r.GET("/uploads/*object_key", s.handlePublicUpload)
 		r.HEAD("/uploads/*object_key", s.handlePublicUpload)
 	}
 	s.registerRoutes()
 	return s, nil
+}
+
+// requestBodyLimit also bounds chunked requests without Content-Length.
+func requestBodyLimit(limit int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.URL.Path != "/api/v1/files/upload" {
+			if c.Request.ContentLength > limit {
+				c.AbortWithStatus(http.StatusRequestEntityTooLarge)
+				return
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		}
+		c.Next()
+	}
 }
 
 func closeDatabase(db *gorm.DB) {
@@ -165,7 +180,7 @@ func (s *Server) registerRoutes() {
 	})
 	v1 := r.Group("/api/v1")
 	{
-		v1.POST("/auth/register", s.handleRegister)
+		// Merchant accounts are provisioned by administrators only.
 		v1.POST("/auth/login", s.handleLogin)
 		v1.POST("/auth/refresh", s.handleRefresh)
 		v1.POST("/files/presign", s.handlePresign)
@@ -178,7 +193,6 @@ func (s *Server) registerRoutes() {
 		merchant.Use(middleware.RequireAuth(model.UserTypeMerchant))
 		{
 			merchant.GET("/profile", middleware.RequireMerchantScope("full", "onboarding"), s.handleMerchantProfile)
-			merchant.POST("/reapply", middleware.RequireMerchantScope("onboarding"), s.handleMerchantReapply)
 
 			merchant.GET("/account", middleware.RequireFullMerchantScope(), s.handleMerchantAccount)
 			merchant.PUT("/account/password", middleware.RequireFullMerchantScope(), s.handleMerchantChangePassword)
@@ -245,8 +259,9 @@ func (s *Server) registerRoutes() {
 		{
 			admin.GET("/merchants", s.handleAdminMerchantList)
 			admin.GET("/merchants/:id", s.handleAdminMerchantDetail)
-			admin.POST("/merchants/:id/approve", s.handleAdminMerchantApprove)
-			admin.POST("/merchants/:id/reject", s.handleAdminMerchantReject)
+			admin.POST("/merchants", s.handleAdminCreateMerchant)
+			admin.PUT("/merchants/:id/password", s.handleAdminResetMerchantPassword)
+			admin.PUT("/merchants/:id/status", s.handleAdminSetMerchantStatus)
 			admin.GET("/logs", s.handleAdminLogs)
 		}
 	}

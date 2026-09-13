@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
@@ -30,26 +31,19 @@ var allowedMIMEs = map[string]bool{
 }
 
 func allowUploadBiz(actor *common.Actor, bizType string) error {
-	if actor == nil {
-		if bizType == model.FileBizMerchantLicense {
-			return nil
-		}
+	if actor == nil || bizType != model.FileBizProductImage {
 		return common.ErrForbidden
 	}
-	switch actor.UserType {
-	case model.UserTypeMerchant:
-		if actor.Scope == "onboarding" && bizType != model.FileBizMerchantLicense {
+	if actor.UserType == model.UserTypeAdmin {
+		return nil
+	}
+	if actor.UserType == model.UserTypeMerchant {
+		if actor.Scope != "full" {
 			return common.ErrReviewNotApproved
 		}
-		if bizType == model.FileBizMerchantLicense || bizType == model.FileBizProductImage {
-			return nil
-		}
-		return common.ErrForbidden
-	case model.UserTypeAdmin:
 		return nil
-	default:
-		return common.ErrForbidden
 	}
+	return common.ErrForbidden
 }
 
 func (s *Server) handlePresign(c *gin.Context) {
@@ -82,10 +76,10 @@ func (s *Server) handlePresign(c *gin.Context) {
 		common.Fail(c, common.ErrInvalidUpload)
 		return
 	}
-	objectKey := fmt.Sprintf("%s/%s%s", strings.ToLower(bizType), common.BuildBizNo("F"), ext)
+	objectKey := fmt.Sprintf("%s/%s%s", strings.ToLower(bizType), uuid.NewString(), ext)
 	recordMIME := mimeType
 	if bizType == model.FileBizProductImage {
-		objectKey = fmt.Sprintf("product_image/detail-v1/%s.jpg", common.BuildBizNo("F"))
+		objectKey = fmt.Sprintf("product_image/detail-v1/%s.jpg", uuid.NewString())
 		recordMIME = "image/jpeg"
 	}
 	file := model.FileRecord{
@@ -288,9 +282,7 @@ func (s *Server) loadFileRecordAndAuthorize(c *gin.Context, fileID uint64) (*mod
 	}
 	actor, ok := common.GetActor(c)
 	if !ok {
-		if file.UploaderType != model.UserTypePublic {
-			return nil, common.ErrForbidden
-		}
+		return nil, common.ErrForbidden
 	} else {
 		if err := allowUploadBiz(&actor, file.BizType); err != nil {
 			return nil, err
@@ -322,6 +314,18 @@ func replaceObjectKeyExtension(objectKey, ext string) (string, error) {
 
 func (s *Server) handlePublicUpload(c *gin.Context) {
 	objectKey := strings.TrimPrefix(c.Param("object_key"), "/")
+	var record model.FileRecord
+	if err := s.DB.Where("object_key = ?", objectKey).First(&record).Error; err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if record.BizType != model.FileBizProductImage {
+		actor, ok := common.GetActor(c)
+		if !ok || actor.UserType != model.UserTypeAdmin {
+			c.Status(http.StatusNotFound)
+			return
+		}
+	}
 	mimeType := media.MIMEForExt(filepath.Ext(objectKey))
 	if mimeType == "" {
 		c.Status(http.StatusNotFound)

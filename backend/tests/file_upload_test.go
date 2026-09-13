@@ -124,7 +124,7 @@ func TestFileUploadReencodesAndServesCanonicalImages(t *testing.T) {
 		format   string
 	}{
 		{name: "jpeg", mimeType: "image/jpeg", ext: ".jpg", format: "jpeg"},
-		{name: "png", mimeType: "image/png", ext: ".png", format: "png"},
+		{name: "png", mimeType: "image/png", ext: ".jpg", format: "jpeg"},
 	}
 
 	for _, tc := range tests {
@@ -134,11 +134,11 @@ func TestFileUploadReencodesAndServesCanonicalImages(t *testing.T) {
 			original := append(encodedUploadImage(t, tc.mimeType), marker...)
 
 			presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-				"biz_type":  "MERCHANT_LICENSE",
+				"biz_type":  "PRODUCT_IMAGE",
 				"file_name": "poc.html",
 				"file_size": len(original),
 				"mime_type": tc.mimeType,
-			}, nil)
+			}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 			if presign.Code != 0 {
 				t.Fatalf("presign failed: %+v", presign)
 			}
@@ -160,7 +160,7 @@ func TestFileUploadReencodesAndServesCanonicalImages(t *testing.T) {
 				"file",
 				"poc.html",
 				original,
-				nil,
+				map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)},
 			)
 			if upload.Code != 0 {
 				t.Fatalf("upload failed: %+v", upload)
@@ -179,7 +179,7 @@ func TestFileUploadReencodesAndServesCanonicalImages(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("download uploaded file failed: status=%d body=%s", w.Code, w.Body.String())
 			}
-			if got := w.Header().Get("Content-Type"); got != tc.mimeType {
+			if got := w.Header().Get("Content-Type"); got != "image/jpeg" {
 				t.Fatalf("unexpected content type: got=%q want=%q", got, tc.mimeType)
 			}
 			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
@@ -200,7 +200,7 @@ func TestFileUploadReencodesAndServesCanonicalImages(t *testing.T) {
 				t.Fatalf("load file record: %v", err)
 			}
 			if record.ScanStatus != model.FileScanPass ||
-				record.MimeType != tc.mimeType ||
+				record.MimeType != "image/jpeg" ||
 				record.ObjectKey != objectKey ||
 				record.SizeBytes != int64(len(w.Body.Bytes())) {
 				t.Fatalf("stored metadata does not describe processed output: %+v", record)
@@ -217,16 +217,16 @@ func TestFilePresignUsesCanonicalExtension(t *testing.T) {
 		wantExt  string
 	}{
 		{fileName: "poc.html", mimeType: "image/jpeg", wantExt: ".jpg"},
-		{fileName: "poc.svg", mimeType: "image/png", wantExt: ".png"},
-		{fileName: "wrong.jpg", mimeType: "image/webp", wantExt: ".webp"},
+		{fileName: "poc.svg", mimeType: "image/png", wantExt: ".jpg"},
+		{fileName: "wrong.jpg", mimeType: "image/webp", wantExt: ".jpg"},
 	}
 	for _, tc := range tests {
 		resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-			"biz_type":  "MERCHANT_LICENSE",
+			"biz_type":  "PRODUCT_IMAGE",
 			"file_name": tc.fileName,
 			"file_size": 1024,
 			"mime_type": tc.mimeType,
-		}, nil)
+		}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 		if resp.Code != 0 {
 			t.Fatalf("presign failed for %+v: %+v", tc, resp)
 		}
@@ -250,11 +250,11 @@ func TestFileUploadRejectsDisguisedAndMalformedImages(t *testing.T) {
 			uploadDir := t.TempDir()
 			srv := newTestServerWithUploadDir(t, uploadDir)
 			presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-				"biz_type":  "MERCHANT_LICENSE",
+				"biz_type":  "PRODUCT_IMAGE",
 				"file_name": "poc.html",
 				"file_size": len(tc.content),
 				"mime_type": "image/jpeg",
-			}, nil)
+			}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 			if presign.Code != 0 {
 				t.Fatalf("presign failed: %+v", presign)
 			}
@@ -273,7 +273,7 @@ func TestFileUploadRejectsDisguisedAndMalformedImages(t *testing.T) {
 				"file",
 				"poc.html",
 				tc.content,
-				nil,
+				map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)},
 			)
 			if upload.Code != 10008 {
 				t.Fatalf("unsafe upload should be rejected: %+v", upload)
@@ -286,16 +286,16 @@ func TestFileUploadRejectsDisguisedAndMalformedImages(t *testing.T) {
 	}
 }
 
-func TestFileUploadRejectsReservedMIMEMismatch(t *testing.T) {
+func TestProductUploadNormalizesSupportedInputToJPEG(t *testing.T) {
 	uploadDir := t.TempDir()
 	srv := newTestServerWithUploadDir(t, uploadDir)
 	content := encodedUploadImage(t, "image/png")
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type":  "MERCHANT_LICENSE",
+		"biz_type":  "PRODUCT_IMAGE",
 		"file_name": "photo.jpg",
 		"file_size": len(content),
 		"mime_type": "image/jpeg",
-	}, nil)
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 	if presign.Code != 0 {
 		t.Fatalf("presign failed: %+v", presign)
 	}
@@ -314,15 +314,19 @@ func TestFileUploadRejectsReservedMIMEMismatch(t *testing.T) {
 		"file",
 		"photo.jpg",
 		content,
-		nil,
+		map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)},
 	)
-	if upload.Code != 10008 {
-		t.Fatalf("MIME mismatch should be rejected: %+v", upload)
+	if upload.Code != 0 {
+		t.Fatalf("supported PNG should normalize to JPEG: %+v", upload)
 	}
-	if upload.HTTPStatus != http.StatusBadRequest {
-		t.Fatalf("MIME mismatch returned HTTP %d, want %d", upload.HTTPStatus, http.StatusBadRequest)
+	var record model.FileRecord
+	if err := srv.DB.First(&record, fileID).Error; err != nil {
+		t.Fatal(err)
 	}
-	assertRejectedUploadState(t, srv, uploadDir, fileID, objectKey)
+	if record.MimeType != "image/jpeg" || record.ScanStatus != model.FileScanPass {
+		t.Fatalf("invalid normalized record: %+v", record)
+	}
+
 }
 
 func TestPublicUploadHandlerBlocksExecutableAndMismatchedFiles(t *testing.T) {
@@ -544,11 +548,11 @@ func TestServerRejectsInvalidPublicUploadBaseURL(t *testing.T) {
 func TestConfirmCannotPromotePendingFile(t *testing.T) {
 	srv := newTestServer(t)
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type":  "MERCHANT_LICENSE",
+		"biz_type":  "PRODUCT_IMAGE",
 		"file_name": "license.jpg",
 		"file_size": 1024,
 		"mime_type": "image/jpeg",
-	}, nil)
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 	if presign.Code != 0 {
 		t.Fatalf("presign failed: %+v", presign)
 	}
@@ -556,7 +560,7 @@ func TestConfirmCannotPromotePendingFile(t *testing.T) {
 	confirm := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/confirm", map[string]interface{}{
 		"file_id":    numToUint64(presign.Data["file_id"]),
 		"object_key": str(presign.Data["object_key"]),
-	}, nil)
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 	if confirm.Code != 10008 {
 		t.Fatalf("pending file must not be confirmed without processing: %+v", confirm)
 	}
@@ -590,11 +594,11 @@ func TestFilePresignAllowsImageUpTo40MB(t *testing.T) {
 	srv := newTestServer(t)
 
 	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type":  "MERCHANT_LICENSE",
+		"biz_type":  "PRODUCT_IMAGE",
 		"file_name": "license.heic",
 		"file_size": 40 * 1024 * 1024,
 		"mime_type": "image/heic",
-	}, nil)
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 	if resp.Code != 0 {
 		t.Fatalf("presign should allow 40MB image: %+v", resp)
 	}
@@ -611,11 +615,11 @@ func TestFilePresignRejectsInvalidSize(t *testing.T) {
 	}
 	for _, tc := range tests {
 		resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-			"biz_type":  "MERCHANT_LICENSE",
+			"biz_type":  "PRODUCT_IMAGE",
 			"file_name": "license.jpg",
 			"file_size": tc.size,
 			"mime_type": "image/jpeg",
-		}, nil)
+		}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 		if resp.Code != tc.wantCode {
 			t.Fatalf("presign should reject size %d with code %d: %+v", tc.size, tc.wantCode, resp)
 		}
@@ -633,11 +637,11 @@ func TestFileUploadRejectsOversizedMultipartBeforeParsing(t *testing.T) {
 	srv.Router.MaxMultipartMemory = 64
 
 	presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type":  "MERCHANT_LICENSE",
+		"biz_type":  "PRODUCT_IMAGE",
 		"file_name": "license.jpg",
 		"file_size": 1024,
 		"mime_type": "image/jpeg",
-	}, nil)
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 	if presign.Code != 0 {
 		t.Fatalf("presign failed: %+v", presign)
 	}
@@ -656,7 +660,7 @@ func TestFileUploadRejectsOversizedMultipartBeforeParsing(t *testing.T) {
 		"file",
 		"oversized.jpg",
 		oversized,
-		nil,
+		map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)},
 	)
 	if upload.Code != 10008 || upload.HTTPStatus != http.StatusBadRequest {
 		t.Fatalf("oversized multipart should be rejected before parsing: %+v", upload)
@@ -675,11 +679,11 @@ func TestFilePresignRejectsLivePhotoVideo(t *testing.T) {
 	srv := newTestServer(t)
 
 	resp := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-		"biz_type":  "MERCHANT_LICENSE",
+		"biz_type":  "PRODUCT_IMAGE",
 		"file_name": "live.mov",
 		"file_size": 1024,
 		"mime_type": "video/quicktime",
-	}, nil)
+	}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 	if resp.Code != 10008 {
 		t.Fatalf("live photo video should be rejected: %+v", resp)
 	}
@@ -967,11 +971,11 @@ func TestFileUploadRejectsInvalidProcessorContract(t *testing.T) {
 			srv := newTestServerWithUploadDir(t, uploadDir)
 			srv.SetImageProcessor(fakeProcessor{result: tc.result})
 			presign := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
-				"biz_type":  "MERCHANT_LICENSE",
+				"biz_type":  "PRODUCT_IMAGE",
 				"file_name": "license.jpg",
 				"file_size": len(content),
 				"mime_type": "image/jpeg",
-			}, nil)
+			}, map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)})
 			if presign.Code != 0 {
 				t.Fatalf("presign failed: %+v", presign)
 			}
@@ -989,7 +993,7 @@ func TestFileUploadRejectsInvalidProcessorContract(t *testing.T) {
 				"file",
 				"license.jpg",
 				content,
-				nil,
+				map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)},
 			)
 			if upload.Code != 10008 {
 				t.Fatalf("invalid processor contract should be rejected: %+v", upload)

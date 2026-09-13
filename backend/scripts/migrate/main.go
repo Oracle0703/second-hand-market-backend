@@ -29,6 +29,7 @@ type migrationSource struct {
 }
 
 var migrationCatalog = map[string]migrationSpec{
+	"0010_merchant_initial_password": {ID: "0010_merchant_initial_password", Sources: []migrationSource{{FileName: "0010_merchant_initial_password.up.sql", SHA256: "f0f2cbb3e558d18c5596c5090734bd2c48088547b79687f0304cc303fc49392f"}}},
 	"0001_init": {
 		ID: "0001_init",
 		Sources: []migrationSource{{

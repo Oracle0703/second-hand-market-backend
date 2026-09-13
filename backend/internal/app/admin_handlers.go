@@ -8,9 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"second-hand-market-backend/backend/internal/common"
-	"second-hand-market-backend/backend/internal/dto"
 	"second-hand-market-backend/backend/internal/model"
-	"second-hand-market-backend/backend/internal/stateflow"
 )
 
 func (s *Server) handleAdminMerchantList(c *gin.Context) {
@@ -110,7 +108,16 @@ func (s *Server) handleAdminMerchantDetail(c *gin.Context) {
 			CreatedAt:    item.CreatedAt,
 		})
 	}
+	var account model.MerchantAccount
+	var accountInfo interface{}
+	if err := s.DB.Where("merchant_id = ? AND role = ?", id, model.AccountRoleOwner).First(&account).Error; err == nil {
+		accountInfo = gin.H{"username": account.Username, "status": account.Status}
+	} else if err != gorm.ErrRecordNotFound {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
 	common.Success(c, gin.H{
+		"account": accountInfo,
 		"merchant_detail": merchantDetail{
 			ID:            merchant.ID,
 			MerchantNo:    merchant.MerchantNo,
@@ -127,102 +134,6 @@ func (s *Server) handleAdminMerchantDetail(c *gin.Context) {
 		},
 		"audit_logs": logItems,
 	})
-}
-
-func (s *Server) handleAdminMerchantApprove(c *gin.Context) {
-	id, err := parseUintParam(c, "id")
-	if err != nil {
-		common.Fail(c, err)
-		return
-	}
-	var req dto.MerchantReviewApproveRequest
-	if c.Request.ContentLength > 0 {
-		if err := bindJSON(c, &req); err != nil {
-			common.Fail(c, err)
-			return
-		}
-	}
-	actor, err := actorFromContext(c)
-	if err != nil {
-		common.Fail(c, err)
-		return
-	}
-	var merchant model.Merchant
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id = ?", id).First(&merchant).Error; err != nil {
-			return s.dbError(err)
-		}
-		if !stateflow.CanTransitionMerchant(merchant.ReviewStatus, model.ReviewApproved) {
-			return common.ErrInvalidTransition
-		}
-		fromStatus := merchant.ReviewStatus
-		now := time.Now()
-		merchant.ReviewStatus = model.ReviewApproved
-		merchant.RejectReason = nil
-		merchant.ReviewedAt = &now
-		merchant.ReviewedBy = &actor.UserID
-		if err := tx.Save(&merchant).Error; err != nil {
-			return err
-		}
-		a := model.MerchantAuditLog{MerchantID: merchant.ID, Action: "APPROVE", FromStatus: fromStatus, ToStatus: model.ReviewApproved, OperatorType: model.UserTypeAdmin, OperatorID: actor.UserID, Reason: req.Comment}
-		if err := tx.Create(&a).Error; err != nil {
-			return err
-		}
-		from, to := fromStatus, model.ReviewApproved
-		s.writeOperationLog(c, tx, "merchant", merchant.ID, "merchant_approve", &from, &to, common.CodeOK, &merchant.ID, nil)
-		return nil
-	}); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	common.Success(c, gin.H{"merchant_id": merchant.ID, "review_status": merchant.ReviewStatus, "reviewed_at": merchant.ReviewedAt, "reviewed_by": merchant.ReviewedBy})
-}
-
-func (s *Server) handleAdminMerchantReject(c *gin.Context) {
-	id, err := parseUintParam(c, "id")
-	if err != nil {
-		common.Fail(c, err)
-		return
-	}
-	var req dto.MerchantReviewRejectRequest
-	if err := bindJSON(c, &req); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	actor, err := actorFromContext(c)
-	if err != nil {
-		common.Fail(c, err)
-		return
-	}
-	var merchant model.Merchant
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id = ?", id).First(&merchant).Error; err != nil {
-			return s.dbError(err)
-		}
-		if !stateflow.CanTransitionMerchant(merchant.ReviewStatus, model.ReviewRejected) {
-			return common.ErrInvalidTransition
-		}
-		fromStatus := merchant.ReviewStatus
-		now := time.Now()
-		merchant.ReviewStatus = model.ReviewRejected
-		merchant.RejectReason = &req.Reason
-		merchant.ReviewedAt = &now
-		merchant.ReviewedBy = &actor.UserID
-		if err := tx.Save(&merchant).Error; err != nil {
-			return err
-		}
-		a := model.MerchantAuditLog{MerchantID: merchant.ID, Action: "REJECT", FromStatus: fromStatus, ToStatus: model.ReviewRejected, OperatorType: model.UserTypeAdmin, OperatorID: actor.UserID, Reason: &req.Reason}
-		if err := tx.Create(&a).Error; err != nil {
-			return err
-		}
-		from, to := fromStatus, model.ReviewRejected
-		s.writeOperationLog(c, tx, "merchant", merchant.ID, "merchant_reject", &from, &to, common.CodeOK, &merchant.ID, nil)
-		return nil
-	}); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	common.Success(c, gin.H{"merchant_id": merchant.ID, "review_status": merchant.ReviewStatus, "reviewed_at": merchant.ReviewedAt, "reviewed_by": merchant.ReviewedBy, "reject_reason": merchant.RejectReason})
 }
 
 func (s *Server) handleAdminLogs(c *gin.Context) {

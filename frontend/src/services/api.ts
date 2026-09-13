@@ -39,21 +39,8 @@ export const api = {
   logout() {
     return http.post<APIResponse<{ success: boolean }>>('/auth/logout')
   },
-  register(payload: {
-    merchant_name: string
-    contact_name: string
-    phone: string
-    username: string
-    password: string
-    license_file_id: number
-  }) {
-    return http.post('/auth/register', payload)
-  },
   merchantProfile() {
     return http.get<APIResponse<MerchantProfileResponse>>('/merchant/profile')
-  },
-  merchantReapply(payload: Record<string, unknown>) {
-    return http.post('/merchant/reapply', payload)
   },
   categories(level?: 1 | 2, parentId?: number, status?: string) {
     const params: Record<string, string | number> = {}
@@ -158,11 +145,14 @@ export const api = {
   adminMerchantReviewDetail(merchantId: string | number) {
     return http.get(`/admin/merchants/${merchantId}`)
   },
-  adminMerchantApprove(merchantId: string | number, comment?: string) {
-    return http.post(`/admin/merchants/${merchantId}/approve`, comment ? { comment } : {})
+  adminCreateMerchant(payload: { merchant_name: string; contact_name: string; phone: string; username: string; password: string }) {
+    return http.post('/admin/merchants', payload)
   },
-  adminMerchantReject(merchantId: string | number, reason: string) {
-    return http.post(`/admin/merchants/${merchantId}/reject`, { reason })
+  adminResetMerchantPassword(merchantId: string | number, password: string) {
+    return http.put(`/admin/merchants/${merchantId}/password`, { password })
+  },
+  adminSetMerchantStatus(merchantId: string | number, status: string) {
+    return http.put(`/admin/merchants/${merchantId}/status`, { status })
   },
   adminLogs(params: Record<string, string | number> = {}) {
     return http.get('/admin/logs', { params })

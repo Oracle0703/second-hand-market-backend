@@ -84,16 +84,17 @@ type Merchant struct {
 }
 
 type MerchantAccount struct {
-	ID           uint64 `gorm:"primaryKey"`
-	MerchantID   uint64 `gorm:"index:idx_merchant_role,priority:1"`
-	Username     string `gorm:"size:64;uniqueIndex"`
-	PasswordHash string `gorm:"size:255"`
-	Role         string `gorm:"size:16;index:idx_merchant_role,priority:2"`
-	Status       string `gorm:"size:16;index"`
-	LastLoginAt  *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	DeletedAt    gorm.DeletedAt `gorm:"index"`
+	MustChangePassword bool   `gorm:"not null;default:false"`
+	ID                 uint64 `gorm:"primaryKey"`
+	MerchantID         uint64 `gorm:"index:idx_merchant_role,priority:1"`
+	Username           string `gorm:"size:64;uniqueIndex"`
+	PasswordHash       string `gorm:"size:255"`
+	Role               string `gorm:"size:16;index:idx_merchant_role,priority:2"`
+	Status             string `gorm:"size:16;index"`
+	LastLoginAt        *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
 type AdminUser struct {

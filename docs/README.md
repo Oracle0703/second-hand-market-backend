@@ -15,6 +15,7 @@
 
 | 文档 | 用途 |
 | --- | --- |
+| [定制商户账号管理](operations/custom-merchant-accounts.md) | 管理员开户、初始密码、接口变化与上线迁移 |
 | [项目概览](project-overview.md) | 当前范围、角色、业务闭环与边界 |
 | [产品与系统规格](specs.md) | 当前功能规则、状态机和验收口径 |
 | [数据模型](data-model.md) | 当前核心实体、约束和迁移策略 |
