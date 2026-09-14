@@ -163,6 +163,17 @@ backend/uploads/
 * [0-9].*
 
 # Repository-local Go build/test caches (never commit)
+.gocache/
+.gomodcache/
+.gotmp/
+.gotemp/
 /backend/.gocache*/
 /backend/.gotmp*/
 /backend/.gotemp*/
+
+# Local compiler / analysis caches
+.swc/
+.understand-anything/
+
+# Leftover local miniapp build dump (node_modules/dist only, no source)
+/miniapp-aircon/
