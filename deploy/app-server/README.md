@@ -33,6 +33,7 @@ Create `staging` and `production` environments. Protect `production` with requir
 | `DEPLOY_ROOT` | Server deployment root, for example `/srv/second-hand-market` |
 | `DEPLOY_USER` | Unprivileged deployment account |
 | `API_HOST_PORT` | Loopback API port, `8080` by default |
+| `COMPOSE_PROJECT_NAME` | Unique Docker Compose project name for this environment |
 
 Set `DEPLOY_SSH_PRIVATE_KEY` and `DEPLOY_KNOWN_HOSTS` as environment secrets. `DEPLOY_KNOWN_HOSTS` must contain the pinned host key line from the server; do not generate it in CI.
 
