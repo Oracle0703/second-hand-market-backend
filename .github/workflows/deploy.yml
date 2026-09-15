@@ -1,0 +1,133 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full commit SHA previously validated by CI
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      image: ${{ steps.release.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - id: release
+        name: Resolve immutable release
+        shell: bash
+        run: |
+          release_id=$(git rev-parse HEAD)
+          if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ]; then
+            [[ '${{ inputs.revision }}' =~ ^[0-9a-f]{40}$ ]]
+            git fetch origin main
+            git merge-base --is-ancestor "$release_id" origin/main
+          fi
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}/api"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "image=$image_name:$release_id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend release
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          tar -C dist -czf "../frontend-${{ steps.release.outputs.release_id }}.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-${{ steps.release.outputs.release_id }}
+          path: frontend-${{ steps.release.outputs.release_id }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ steps.release.outputs.image }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || 'staging' }}
+    concurrency:
+      group: deploy-${{ github.event_name == 'workflow_dispatch' && 'production' || 'staging' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.release_id }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-${{ needs.build.outputs.release_id }}
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Configure pinned SSH host key
+        env:
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload deployment files and frontend release
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          API_HOST_PORT: ${{ vars.API_HOST_PORT || '8080' }}
+          RELEASE_ID: ${{ needs.build.outputs.release_id }}
+        run: |
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_PORT" && test -n "$DEPLOY_ROOT" && test -n "$DEPLOY_USER"
+          rsync -az --delete -e "ssh -p $DEPLOY_PORT" deploy/app-server/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_ROOT/deploy/"
+          scp -P "$DEPLOY_PORT" "frontend-$RELEASE_ID.tar.gz" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_ROOT/incoming/$RELEASE_ID.tar.gz"
+
+      - name: Activate release
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          API_HOST_PORT: ${{ vars.API_HOST_PORT || '8080' }}
+          RELEASE_ID: ${{ needs.build.outputs.release_id }}
+          BACKEND_IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_ROOT='$DEPLOY_ROOT' BACKEND_IMAGE='$BACKEND_IMAGE' API_HOST_PORT='$API_HOST_PORT' RELEASE_ID='$RELEASE_ID' FRONTEND_ARCHIVE='$DEPLOY_ROOT/incoming/$RELEASE_ID.tar.gz' '$DEPLOY_ROOT/deploy/deploy.sh'"

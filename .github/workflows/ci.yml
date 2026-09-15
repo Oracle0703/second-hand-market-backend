@@ -52,6 +52,17 @@ jobs:
         working-directory: backend
         run: go test ./tests/ -run '^TestMiniappAuthRefreshAcceptance' -v
 
+  backend-image:
+    name: backend (container build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Verifies the production image, including vips/libheif runtime packages,
+      # can be assembled before a successful main build is eligible for CD.
+      - name: docker build
+        run: docker build -f backend/Dockerfile -t second-hand-market-api:ci .
+
   frontend:
     name: frontend (test + build)
     runs-on: ubuntu-latest
