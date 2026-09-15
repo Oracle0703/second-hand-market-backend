@@ -8,6 +8,16 @@ frontend_archive=${FRONTEND_ARCHIVE:?FRONTEND_ARCHIVE is required}
 api_host_port=${API_HOST_PORT:-8080}
 web_host_port=${WEB_HOST_PORT:?WEB_HOST_PORT is required}
 compose_project_name=${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}
+legacy_compose_file=${LEGACY_COMPOSE_FILE:-}
+legacy_compose=()
+
+if [ -n "$legacy_compose_file" ]; then
+  legacy_compose_dir=$(dirname "$legacy_compose_file")
+  legacy_env_file="$legacy_compose_dir/.env"
+  test -f "$legacy_compose_file"
+  test -f "$legacy_env_file"
+  legacy_compose=(docker compose --project-directory "$legacy_compose_dir" --env-file "$legacy_env_file" -f "$legacy_compose_file")
+fi
 
 if ! [[ "$release_id" =~ ^[0-9a-f]{40}$ ]]; then
     echo 'RELEASE_ID must be a lowercase hexadecimal commit SHA' >&2
@@ -45,14 +55,24 @@ fi
 
 container_id=$(COMPOSE_PROJECT_NAME="$compose_project_name" docker compose -f "$compose_file" images -q api || true)
 previous_image=''
+legacy_stopped=false
 if [ -n "$container_id" ]; then
   previous_image=$(docker inspect --format '{{.Config.Image}}' "$container_id" 2>/dev/null || true)
 fi
+
+restore_legacy() {
+  if [ "$legacy_stopped" = true ]; then
+    COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" stop api web || true
+    "${legacy_compose[@]}" up -d api web || true
+  fi
+}
 
 rollback_api() {
   if [ -n "$previous_image" ]; then
     echo "Restoring API image $previous_image" >&2
     COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$previous_image" docker compose -f "$compose_file" up -d --no-deps api || true
+  else
+    restore_legacy
   fi
 }
 
@@ -66,8 +86,16 @@ rollback_frontend() {
   fi
 }
 
-if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" pull api web \
-  || ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --force-recreate --wait api \
+if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" pull api web; then
+  exit 1
+fi
+
+if [ -z "$previous_image" ] && [ -n "$legacy_compose_file" ]; then
+  "${legacy_compose[@]}" stop api web
+  legacy_stopped=true
+fi
+
+if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --force-recreate --wait api \
   || ! curl --fail --silent --show-error "http://127.0.0.1:$api_host_port/healthz" >/dev/null; then
   rollback_api
   exit 1
