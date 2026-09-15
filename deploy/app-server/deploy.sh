@@ -36,6 +36,13 @@ if [ ! -d "$release_dir" ]; then
   trap - EXIT
 fi
 
+# Docker cannot create a nested bind mount beneath the read-only frontend
+# mount, so the videos mount point must exist in every release beforehand.
+mkdir -p "$release_dir/assets/videos"
+if [ -n "$previous_release_target" ]; then
+  mkdir -p "$root/frontend/$previous_release_target/assets/videos"
+fi
+
 container_id=$(COMPOSE_PROJECT_NAME="$compose_project_name" docker compose -f "$compose_file" images -q api || true)
 previous_image=''
 if [ -n "$container_id" ]; then
