@@ -8,7 +8,7 @@ Install Docker Engine with the Compose plugin, Nginx and `curl`. Create an unpri
 
 ```bash
 export DEPLOY_ROOT=/srv/second-hand-market
-install -d -m 0750 "$DEPLOY_ROOT"/{deploy,shared,data/runtime,incoming,frontend/releases}
+install -d -m 0750 "$DEPLOY_ROOT"/{deploy,shared,data/runtime,data/videos,incoming,frontend/releases}
 ```
 
 Copy `backend/configs/.env.production.mysql.example` to `$DEPLOY_ROOT/shared/api.env`, replace every placeholder, and give it mode `0600`. The API account must not have migration privileges. Keep `AUTO_MIGRATE=false` and `SEED_DEFAULTS=false`.
@@ -33,7 +33,13 @@ Create `staging` and `production` environments. Protect `production` with requir
 | `DEPLOY_ROOT` | Server deployment root, for example `/srv/second-hand-market` |
 | `DEPLOY_USER` | Unprivileged deployment account |
 | `API_HOST_PORT` | Loopback API port, `8080` by default |
+| `WEB_HOST_PORT` | Loopback port for the React Nginx container |
 | `COMPOSE_PROJECT_NAME` | Unique Docker Compose project name for this environment |
+| `API_RUNTIME_HOST_PATH` | Host directory mounted for database/uploads or uploads only |
+| `API_RUNTIME_CONTAINER_PATH` | Matching API container path |
+| `API_NETWORK_NAME` | Dedicated network, or the existing database Compose network |
+| `API_NETWORK_EXTERNAL` | `false` for a managed network; `true` for an existing network |
+| `WEB_VIDEOS_HOST_PATH` | Host directory mounted at `/assets/videos` |
 
 Set `DEPLOY_SSH_PRIVATE_KEY` and `DEPLOY_KNOWN_HOSTS` as environment secrets. `DEPLOY_KNOWN_HOSTS` must contain the pinned host key line from the server; do not generate it in CI.
 

@@ -113,10 +113,11 @@ jobs:
           DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           API_HOST_PORT: ${{ vars.API_HOST_PORT || '8080' }}
+          WEB_HOST_PORT: ${{ vars.WEB_HOST_PORT }}
           COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME }}
           RELEASE_ID: ${{ needs.build.outputs.release_id }}
         run: |
-          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_PORT" && test -n "$DEPLOY_ROOT" && test -n "$DEPLOY_USER" && test -n "$COMPOSE_PROJECT_NAME"
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_PORT" && test -n "$DEPLOY_ROOT" && test -n "$DEPLOY_USER" && test -n "$COMPOSE_PROJECT_NAME" && test -n "$WEB_HOST_PORT"
           rsync -az --delete -e "ssh -p $DEPLOY_PORT" deploy/app-server/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_ROOT/deploy/"
           scp -P "$DEPLOY_PORT" "frontend-$RELEASE_ID.tar.gz" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_ROOT/incoming/$RELEASE_ID.tar.gz"
 
@@ -127,9 +128,15 @@ jobs:
           DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           API_HOST_PORT: ${{ vars.API_HOST_PORT || '8080' }}
+          WEB_HOST_PORT: ${{ vars.WEB_HOST_PORT }}
           COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME }}
+          API_RUNTIME_HOST_PATH: ${{ vars.API_RUNTIME_HOST_PATH }}
+          API_RUNTIME_CONTAINER_PATH: ${{ vars.API_RUNTIME_CONTAINER_PATH }}
+          API_NETWORK_NAME: ${{ vars.API_NETWORK_NAME }}
+          API_NETWORK_EXTERNAL: ${{ vars.API_NETWORK_EXTERNAL || 'false' }}
+          WEB_VIDEOS_HOST_PATH: ${{ vars.WEB_VIDEOS_HOST_PATH }}
           RELEASE_ID: ${{ needs.build.outputs.release_id }}
           BACKEND_IMAGE: ${{ needs.build.outputs.image }}
         run: |
           ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-            "DEPLOY_ROOT='$DEPLOY_ROOT' BACKEND_IMAGE='$BACKEND_IMAGE' API_HOST_PORT='$API_HOST_PORT' COMPOSE_PROJECT_NAME='$COMPOSE_PROJECT_NAME' RELEASE_ID='$RELEASE_ID' FRONTEND_ARCHIVE='$DEPLOY_ROOT/incoming/$RELEASE_ID.tar.gz' '$DEPLOY_ROOT/deploy/deploy.sh'"
+            "DEPLOY_ROOT='$DEPLOY_ROOT' BACKEND_IMAGE='$BACKEND_IMAGE' API_HOST_PORT='$API_HOST_PORT' WEB_HOST_PORT='$WEB_HOST_PORT' COMPOSE_PROJECT_NAME='$COMPOSE_PROJECT_NAME' API_RUNTIME_HOST_PATH='$API_RUNTIME_HOST_PATH' API_RUNTIME_CONTAINER_PATH='$API_RUNTIME_CONTAINER_PATH' API_NETWORK_NAME='$API_NETWORK_NAME' API_NETWORK_EXTERNAL='$API_NETWORK_EXTERNAL' WEB_VIDEOS_HOST_PATH='$WEB_VIDEOS_HOST_PATH' RELEASE_ID='$RELEASE_ID' FRONTEND_ARCHIVE='$DEPLOY_ROOT/incoming/$RELEASE_ID.tar.gz' '$DEPLOY_ROOT/deploy/deploy.sh'"
