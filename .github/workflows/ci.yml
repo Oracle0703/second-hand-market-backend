@@ -28,29 +28,22 @@ jobs:
         working-directory: backend
         run: go vet ./...
 
-      # The miniapp auth refresh acceptance contract runs as its own job below,
-      # so a failure there stays legible instead of hiding the rest of the suite.
       - name: go test
         working-directory: backend
+        # Miniapp publication acceptance is intentionally outside the API and
+        # React CD scope; its contract test remains available for manual runs.
         run: go test ./... -skip '^TestMiniappAuthRefreshAcceptance'
 
-  backend-acceptance:
-    name: backend (miniapp auth refresh contract, Linux-only)
+  backend-image:
+    name: backend (container build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
-
-      # These tests self-skip off Linux (POSIX modes, symlinks, atomic renames),
-      # so ubuntu-latest is the only place they actually execute. They shell out
-      # to git, bash and sha256sum, and stub npm themselves.
-      - name: go test (acceptance contract)
-        working-directory: backend
-        run: go test ./tests/ -run '^TestMiniappAuthRefreshAcceptance' -v
+      # Verifies the production image, including vips/libheif runtime packages,
+      # can be assembled before a successful main build is eligible for CD.
+      - name: docker build
+        run: docker build -f backend/Dockerfile -t second-hand-market-api:ci .
 
   frontend:
     name: frontend (test + build)
@@ -76,23 +69,3 @@ jobs:
       - name: build
         working-directory: frontend
         run: npm run build
-
-  miniapp:
-    name: miniapp (test)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: miniapp/.nvmrc
-          cache: npm
-          cache-dependency-path: miniapp/package-lock.json
-
-      - name: npm ci
-        working-directory: miniapp
-        run: npm ci
-
-      - name: vitest
-        working-directory: miniapp
-        run: npm test

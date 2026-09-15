@@ -1,0 +1,16 @@
+services:
+  api:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: unless-stopped
+    env_file:
+      - ../shared/api.env
+    ports:
+      - '127.0.0.1:${API_HOST_PORT:-8080}:8080'
+    volumes:
+      - ../data/runtime:/var/lib/second-hand-market
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--silent', 'http://127.0.0.1:8080/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s

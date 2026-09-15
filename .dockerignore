@@ -1,0 +1,17 @@
+.git
+.github
+.worktrees
+.tmp
+frontend
+miniapp
+docs
+deploy
+scripts
+README.md
+README.en.md
+AGENTS.md
+backend/.cache
+backend/uploads
+backend/*.db
+backend/*.db-*
+backend/*.sqlite*
