@@ -1,7 +1,7 @@
 export const passwordPattern =
-  /^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9])[!-~]{12,72}$/
+  /^(?=.*[A-Za-z])(?=.*[0-9])[!-~]{12,72}$/
 export const passwordHelp =
-  '12–72 位，包含大写字母、小写字母、数字和符号，不含空格'
+  '12–72 位，必须包含英文字母和数字，可包含符号，不含空格'
 
 function randomIndex(size: number): number {
   const bytes = new Uint32Array(1)

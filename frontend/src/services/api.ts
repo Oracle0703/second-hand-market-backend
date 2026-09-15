@@ -1,4 +1,4 @@
-import { http, type APIResponse } from './http'
+import { assertSecureCredentialTransport, http, type APIResponse } from './http'
 import type { LoginResponse, LoginType } from '../types/auth'
 
 export type MerchantProfileResponse = {
@@ -34,6 +34,7 @@ export type AdjustProductStockResponse = {
 
 export const api = {
   login(payload: { login_type: LoginType; username: string; password: string }) {
+    assertSecureCredentialTransport()
     return http.post<APIResponse<LoginResponse>>('/auth/login', payload)
   },
   logout() {
@@ -164,6 +165,7 @@ export const api = {
     return http.get('/merchant/account')
   },
   merchantChangePassword(payload: { old_password: string; new_password: string }) {
+    assertSecureCredentialTransport()
     return http.put('/merchant/account/password', payload)
   }
 }

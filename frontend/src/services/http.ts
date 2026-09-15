@@ -55,6 +55,23 @@ function isAuthExempt(url?: string) {
   return AUTH_EXEMPT_PATHS.has(getPathname(url))
 }
 
+function isLoopbackHost(hostname: string) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+}
+
+// Credentials must only leave the browser over TLS, except during local development.
+export function assertSecureCredentialTransport() {
+  if (typeof window === 'undefined') return
+  const currentURL = new URL(window.location.href)
+  const apiURL = new URL(http.defaults.baseURL ?? '/', currentURL)
+  if (
+    (!isLoopbackHost(currentURL.hostname) && currentURL.protocol !== 'https:') ||
+    (!isLoopbackHost(apiURL.hostname) && apiURL.protocol !== 'https:')
+  ) {
+    throw new Error('为保护账号和密码，请通过 HTTPS 安全连接访问系统')
+  }
+}
+
 type AccessTokenClaims = {
   uid?: number
   ut?: string

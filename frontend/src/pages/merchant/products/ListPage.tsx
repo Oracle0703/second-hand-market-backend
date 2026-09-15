@@ -193,32 +193,23 @@ export function ListPage() {
     },
     
     {
-      title: '一级分类',
-      dataIndex: 'category_level1_name',
+      title: '分类',
+      key: 'category',
       search: false,
-      width: 80,
-      render: (_, row) => row.category_level1_name || '-'
+      width: 140,
+      render: (_, row) => [row.category_level1_name, row.category_level2_name].filter(Boolean).join(' / ') || '-'
     },
     {
-      title: '二级分类',
-      dataIndex: 'category_level2_name',
-      search: false,
-      width: 80,
-      render: (_, row) => row.category_level2_name || '-'
-    },
-    {
-      title: '价格(元)',
+      title: '价格',
       dataIndex: 'price_cent',
       search: false,
-      width: 100,
-      render: (_, row) => centToYuanText(row.price_cent)
-    },
-    {
-      title: '原价(元)',
-      dataIndex: 'original_price_cent',
-      search: false,
-      width: 100,
-      render: (_, row) => (row.original_price_cent ? centToYuanText(row.original_price_cent) : '-')
+      width: 110,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <strong>{centToYuanText(row.price_cent)}</strong>
+          <span style={{ color: '#8c8c8c' }}>原价 {row.original_price_cent ? centToYuanText(row.original_price_cent) : '-'}</span>
+        </Space>
+      )
     },
     {
       title: '库存',
@@ -245,7 +236,7 @@ export function ListPage() {
       title: '操作',
       key: 'actions',
       search: false,
-      width: 320,
+      width: 260,
       fixed: 'right',
       render: (_, row) => (
         <Space size={0} wrap>
@@ -323,7 +314,7 @@ export function ListPage() {
         actionRef={actionRef}
         rowKey="id"
         columns={columns}
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1200 }}
         pagination={{ pageSize: 20 }}
         request={async (params) => {
           try {

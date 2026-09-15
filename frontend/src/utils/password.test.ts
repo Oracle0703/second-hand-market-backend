@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { generatePassword, passwordPattern } from './password'
 
 describe('secure initial passwords', () => {
-  it('always supplies 20 characters with all four classes', () => {
+  it('always supplies 20 characters with English letters and digits', () => {
     const passwords = Array.from({ length: 200 }, generatePassword)
     expect(new Set(passwords).size).toBe(200)
     for (const password of passwords) {
@@ -10,11 +10,11 @@ describe('secure initial passwords', () => {
       expect(password).toMatch(passwordPattern)
     }
   })
-  it('rejects weak, whitespace and bcrypt-overflow passwords', () => {
+  it('rejects passwords without English letters or digits, whitespace and bcrypt-overflow passwords', () => {
     for (const password of [
       '12345678',
-      'Abcdefghijkl',
-      'Abcdefghij12',
+      '123456789012',
+      'abcdefghijkl',
       'Abcdef12! ',
       'A1!' + 'x'.repeat(70)
     ])

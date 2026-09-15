@@ -60,4 +60,15 @@ describe('LoginPage', () => {
     })
     expect(useAuthStore.getState().tokenScope).toBe('onboarding')
   })
+
+  it('does not prefill account or password', () => {
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByLabelText('账号')).toHaveValue('')
+    expect(screen.getByLabelText('密码')).toHaveValue('')
+  })
 })
