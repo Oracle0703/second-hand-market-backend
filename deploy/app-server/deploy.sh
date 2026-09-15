@@ -6,6 +6,7 @@ backend_image=${BACKEND_IMAGE:?BACKEND_IMAGE is required}
 release_id=${RELEASE_ID:?RELEASE_ID is required}
 frontend_archive=${FRONTEND_ARCHIVE:?FRONTEND_ARCHIVE is required}
 api_host_port=${API_HOST_PORT:-8080}
+compose_project_name=${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}
 
 if ! [[ "$release_id" =~ ^[0-9a-f]{40}$ ]]; then
     echo 'RELEASE_ID must be a lowercase hexadecimal commit SHA' >&2
@@ -29,7 +30,7 @@ if [ ! -d "$release_dir" ]; then
   trap - EXIT
 fi
 
-container_id=$(docker compose -f "$compose_file" images -q api || true)
+container_id=$(COMPOSE_PROJECT_NAME="$compose_project_name" docker compose -f "$compose_file" images -q api || true)
 previous_image=''
 if [ -n "$container_id" ]; then
   previous_image=$(docker inspect --format '{{.Config.Image}}' "$container_id" 2>/dev/null || true)
@@ -38,12 +39,12 @@ fi
 rollback_api() {
   if [ -n "$previous_image" ]; then
     echo "Restoring API image $previous_image" >&2
-    BACKEND_IMAGE="$previous_image" docker compose -f "$compose_file" up -d --no-deps api || true
+    COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$previous_image" docker compose -f "$compose_file" up -d --no-deps api || true
   fi
 }
 
-if ! API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" pull api \
-  || ! API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --wait api \
+if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" pull api \
+  || ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --wait api \
   || ! curl --fail --silent --show-error "http://127.0.0.1:$api_host_port/healthz" >/dev/null; then
   rollback_api
   exit 1
