@@ -40,6 +40,7 @@ Create `staging` and `production` environments. Protect `production` with requir
 | `API_NETWORK_NAME` | Dedicated network, or the existing database Compose network |
 | `API_NETWORK_EXTERNAL` | `false` for a managed network; `true` for an existing network |
 | `WEB_VIDEOS_HOST_PATH` | Host directory mounted at `/assets/videos` |
+| `LEGACY_COMPOSE_FILE` | Optional existing Compose file used only for first-cutover stop and rollback |
 
 Set `DEPLOY_SSH_PRIVATE_KEY` and `DEPLOY_KNOWN_HOSTS` as environment secrets. `DEPLOY_KNOWN_HOSTS` must contain the pinned host key line from the server; do not generate it in CI.
 
