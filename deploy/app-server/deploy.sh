@@ -44,7 +44,7 @@ rollback_api() {
 }
 
 if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" pull api \
-  || ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --wait api \
+  || ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --force-recreate --wait api \
   || ! curl --fail --silent --show-error "http://127.0.0.1:$api_host_port/healthz" >/dev/null; then
   rollback_api
   exit 1
