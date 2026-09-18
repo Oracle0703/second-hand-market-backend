@@ -83,3 +83,7 @@ second-hand-market-backend/
 3. 数据库变化必须提供 up/down（或明确不可逆原因）迁移和迁移测试。
 4. 不在 `docs/` 创建独立 review 文件；设计结论直接回写规格或专题交付记录。
 5. 生产密钥、数据库凭据、上传文件和本地构建目录不得进入 Git。
+
+## 2026-09-18 架构改进分支补充（未部署）
+
+库存调整及订单写用例收拢到 `backend/internal/app/inventory_service.go`，不依赖 Gin；`ownership.go` 共用归属/行锁。运行生命周期及 `/readyz` 位于 `runtime.go`。Web 分类契约集中在 `frontend/src/types/category.ts`。完整边界及未完成项见[架构现状与演进边界](architecture-evolution-plan-2026-07-24.md)。

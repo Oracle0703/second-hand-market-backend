@@ -39,21 +39,6 @@ type ProductDetailPayload = {
   image_urls?: string[]
 }
 
-type CategoryItem = {
-  ID?: number
-  id?: number
-  Name?: string
-  name?: string
-}
-
-function categoryId(item: CategoryItem) {
-  return Number(item.ID ?? item.id ?? 0)
-}
-
-function categoryName(item: CategoryItem) {
-  return item.Name ?? item.name ?? ''
-}
-
 export function ListPage() {
   const navigate = useNavigate()
   const actionRef = useRef<ActionType>()
@@ -66,7 +51,7 @@ export function ListPage() {
   const [markSoldAllRemaining, setMarkSoldAllRemaining] = useState(false)
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
-    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
+    queryFn: async () => (await api.categories(1)).data.data.items
   })
   const transitionMutation = useMutation({
     mutationFn: async ({ id, action }: { id: number; action: 'on' | 'off' }) => {
@@ -185,7 +170,7 @@ export function ListPage() {
       valueType: 'select',
       hideInTable: true,
       fieldProps: {
-        options: (level1.data ?? []).map((item) => ({ value: categoryId(item), label: categoryName(item) })),
+        options: (level1.data ?? []).map((item) => ({ value: item.id, label: item.name })),
         loading: level1.isLoading,
         showSearch: true,
         optionFilterProp: 'label'

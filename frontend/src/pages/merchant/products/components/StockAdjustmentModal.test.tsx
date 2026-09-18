@@ -72,8 +72,29 @@ describe('StockAdjustmentModal', () => {
         adjustment_type: 'MARK_SOLD',
         all_remaining: true,
         reason: '全部售罄'
-      })
+      }, expect.any(String))
     )
+  })
+
+  it('blocks double clicks and reuses the key after a failed request', async () => {
+    vi.clearAllMocks()
+    let rejectRequest!: (error: Error) => void
+    vi.mocked(api.adjustProductStock).mockImplementationOnce(() => new Promise((_, reject) => { rejectRequest = reject }))
+    const onSuccess = vi.fn()
+    render(<StockAdjustmentModal open product={{ id: 1, title: '测试商品', status: 'ON_SHELF', stock: 7 }} onCancel={() => undefined} onSuccess={onSuccess} />)
+    fireEvent.change(screen.getByLabelText('调整原因'), { target: { value: '盘点补录' } })
+    const confirm = screen.getByRole('button', { name: '确认调整' })
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+    await waitFor(() => expect(api.adjustProductStock).toHaveBeenCalledTimes(1))
+    const key = vi.mocked(api.adjustProductStock).mock.calls[0][2]
+    rejectRequest(new Error('网络中断'))
+    await screen.findByText('网络中断')
+    await waitFor(() => expect(screen.getByLabelText('调整原因')).not.toBeDisabled())
+    fireEvent.click(confirm)
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1))
+    expect(api.adjustProductStock).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(api.adjustProductStock).mock.calls[1][2]).toBe(key)
   })
 
   it('resets cancelled stock adjustments when reopening with a different status or mode', async () => {
@@ -123,7 +144,7 @@ describe('StockAdjustmentModal', () => {
         adjustment_type: 'MARK_SOLD',
         all_remaining: true,
         reason: '全部售罄'
-      })
+      }, expect.any(String))
     )
 
     rerender(
@@ -154,7 +175,7 @@ describe('StockAdjustmentModal', () => {
         adjustment_type: 'INCREASE',
         quantity: 1,
         reason: '补货'
-      })
+      }, expect.any(String))
     )
   })
 })

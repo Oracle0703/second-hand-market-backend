@@ -1,25 +1,9 @@
+import type { Category as NormalizedCategory } from '@/types/category'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageContainer } from '@ant-design/pro-components'
 import { Button, Card, Form, Input, InputNumber, Popconfirm, Select, Space, Spin, Tag, message } from 'antd'
 import { useState } from 'react'
 import { api } from '@/services/api'
-
-type CategoryItem = {
-  ID?: number
-  id?: number
-  MerchantID?: number
-  merchant_id?: number
-  ParentID?: number | null
-  parent_id?: number | null
-  Level?: number
-  level?: number
-  Name?: string
-  name?: string
-  Status?: string
-  status?: string
-  Sort?: number
-  sort?: number
-}
 
 type CategoryFormValues = {
   name: string
@@ -33,26 +17,6 @@ type EditingState =
   | { type: 'edit'; category: NormalizedCategory }
   | null
 
-type NormalizedCategory = {
-  id: number
-  parent_id?: number | null
-  level: 1 | 2
-  name: string
-  status: string
-  sort: number
-}
-
-function normalizeCategory(item: CategoryItem): NormalizedCategory {
-  return {
-    id: Number(item.id ?? item.ID ?? 0),
-    parent_id: item.parent_id ?? item.ParentID,
-    level: Number(item.level ?? item.Level ?? 1) as 1 | 2,
-    name: item.name ?? item.Name ?? '',
-    status: item.status ?? item.Status ?? 'ENABLED',
-    sort: Number(item.sort ?? item.Sort ?? 0)
-  }
-}
-
 function statusTag(status: string) {
   return status === 'ENABLED' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>
 }
@@ -64,11 +28,11 @@ export function ListPage() {
 
   const rootsQuery = useQuery({
     queryKey: ['merchant-categories', 1],
-    queryFn: async () => ((await api.categories(1, undefined, 'ALL')).data.data.items as CategoryItem[]).map(normalizeCategory)
+    queryFn: async () => ((await api.categories(1, undefined, 'ALL')).data.data.items)
   })
   const childrenQuery = useQuery({
     queryKey: ['merchant-categories', 2],
-    queryFn: async () => ((await api.categories(2, undefined, 'ALL')).data.data.items as CategoryItem[]).map(normalizeCategory)
+    queryFn: async () => ((await api.categories(2, undefined, 'ALL')).data.data.items)
   })
 
   const invalidateCategories = async () => {
