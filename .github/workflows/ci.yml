@@ -45,6 +45,9 @@ jobs:
       - name: docker build
         run: docker build -f backend/Dockerfile -t second-hand-market-api:ci .
 
+      - name: Deployment handover and rollback integration
+        run: python3 deploy/app-server/tests/handover_test.py
+
   frontend:
     name: frontend (test + build)
     runs-on: ubuntu-latest
