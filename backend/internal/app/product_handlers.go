@@ -99,7 +99,7 @@ func (s *Server) handleUpdateProduct(c *gin.Context) {
 		return
 	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)
+		product, err := s.loadOwnedProductForUpdate(tx, id, actor.MerchantID)
 		if err != nil {
 			return err
 		}
@@ -445,7 +445,7 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 	deletedFileIDs := make([]uint64, 0)
 	objectKeys := make([]string, 0)
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
-		product, err := s.loadOwnedProduct(tx, id, actor.MerchantID)
+		product, err := s.loadOwnedProductForUpdate(tx, id, actor.MerchantID)
 		if err != nil {
 			return err
 		}
@@ -599,9 +599,9 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 		return
 	}
 	payload := gin.H{"id": id, "to_status": toStatus}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(idemTx *gorm.DB) (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
-		err := s.DB.Transaction(func(tx *gorm.DB) error {
+		err := idemTx.Transaction(func(tx *gorm.DB) error {
 			product, err := s.loadOwnedProductForUpdate(tx, id, actor.MerchantID)
 			if err != nil {
 				return err

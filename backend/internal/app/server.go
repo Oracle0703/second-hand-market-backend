@@ -1,10 +1,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -89,7 +90,7 @@ func newServer(cfg Config, deps serverStartupDependencies) (*Server, error) {
 	}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.RequestID(), requestBodyLimit(2<<20), middleware.OptionalAuth(cfg.JWTAccessSecret))
+	r.Use(gin.Recovery(), middleware.RequestID(), requestLog(), requestBodyLimit(2<<20), middleware.OptionalAuth(cfg.JWTAccessSecret))
 	s := &Server{
 		cfg:            cfg,
 		DB:             db,
@@ -175,6 +176,7 @@ func openDB(cfg Config) (*gorm.DB, error) {
 
 func (s *Server) registerRoutes() {
 	r := s.Router
+	r.GET("/readyz", s.readiness)
 	r.GET("/healthz", func(c *gin.Context) {
 		common.Success(c, gin.H{"status": "ok", "time": time.Now().Format(time.RFC3339)})
 	})
@@ -268,8 +270,7 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) Run() error {
-	log.Printf("server listening on %s", s.cfg.Addr)
-	return s.Router.Run(s.cfg.Addr)
+	return s.RunContext(context.Background())
 }
 
 func actorFromContext(c *gin.Context) (common.Actor, error) {
@@ -316,7 +317,8 @@ func parsePage(c *gin.Context) (int, int) {
 	return page, size
 }
 
-func (s *Server) dbError(err error) error {
+func (s *Server) dbError(err error) error { return mapDatabaseError(err) }
+func mapDatabaseError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -326,14 +328,17 @@ func (s *Server) dbError(err error) error {
 	return err
 }
 
-func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) {
+func (s *Server) persistOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) error {
 	actor, _ := common.GetActor(c)
 	target := s.DB
 	if tx != nil {
 		target = tx
 	}
-	payload, _ := json.Marshal(detail)
-	_ = target.Create(&model.OperationLog{
+	payload, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	return target.Create(&model.OperationLog{
 		RequestID:    common.RequestIDFromContext(c),
 		OperatorType: actor.UserType,
 		OperatorID:   actor.UserID,
@@ -350,6 +355,17 @@ func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType str
 		ResultCode:   code,
 		DetailJSON:   payload,
 	}).Error
+}
+
+func (s *Server) inventoryAudit(c *gin.Context) inventoryAudit {
+	return func(tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) error {
+		return s.persistOperationLog(c, tx, resourceType, resourceID, action, fromStatus, toStatus, code, merchantID, detail)
+	}
+}
+func (s *Server) writeOperationLog(c *gin.Context, tx *gorm.DB, resourceType string, resourceID uint64, action string, fromStatus, toStatus *string, code int, merchantID *uint64, detail map[string]interface{}) {
+	if err := s.persistOperationLog(c, tx, resourceType, resourceID, action, fromStatus, toStatus, code, merchantID, detail); err != nil {
+		slog.Error("audit_write_failed", "request_id", common.RequestIDFromContext(c), "action", action, "resource_id", resourceID)
+	}
 }
 
 func abortWithErr(c *gin.Context, err error) {

@@ -3,6 +3,12 @@ import { useAuthStore } from '../stores/auth-store'
 import { ERROR_MESSAGES, apiErrorMessage } from '../constants/error-codes'
 import type { AuthUser } from '../types/auth'
 
+declare module 'axios' {
+  interface InternalAxiosRequestConfig {
+    sessionVersion?: number
+  }
+}
+
 const DEFAULT_HTTP_TIMEOUT_MS = 15000
 const DEFAULT_UPLOAD_TIMEOUT_MS = 300000
 const DEFAULT_REFRESH_TIMEOUT_MS = 60000
@@ -106,10 +112,16 @@ function buildUserFromClaims(claims: AccessTokenClaims | null, fallback: AuthUse
 }
 
 let refreshPromise: Promise<string | null> | null = null
+let refreshVersion = -1
 
 async function refreshAccessToken(): Promise<string | null> {
   const { accessToken: ownerAccessToken, refreshToken, user, tokenScope } = useAuthStore.getState()
   if (!refreshToken) return null
+  const ownerVersion = useAuthStore.getState().sessionVersion
+  const ownsSession = () => {
+    const current = useAuthStore.getState()
+    return current.sessionVersion === ownerVersion && current.accessToken === ownerAccessToken && current.refreshToken === refreshToken
+  }
   try {
     const res = await refreshClient.post<APIResponse<{ access_token: string; refresh_token: string; expires_in: number }>>('/auth/refresh', {
       refresh_token: refreshToken
@@ -122,12 +134,9 @@ async function refreshAccessToken(): Promise<string | null> {
     const claims = decodeAccessTokenClaims(accessToken)
     const nextUser = buildUserFromClaims(claims, user)
     const nextScope = claims?.scope === 'full' || claims?.scope === 'onboarding' ? claims.scope : (tokenScope || 'full')
+    if (!ownsSession()) return null
     if (!nextUser) {
       useAuthStore.getState().clear()
-      return null
-    }
-    const current = useAuthStore.getState()
-    if (current.accessToken !== ownerAccessToken || current.refreshToken !== refreshToken) {
       return null
     }
     useAuthStore.getState().setAuth({
@@ -138,13 +147,17 @@ async function refreshAccessToken(): Promise<string | null> {
     })
     return accessToken
   } catch {
-    useAuthStore.getState().clear()
+    if (ownsSession()) useAuthStore.getState().clear()
     return null
   }
 }
 
 http.interceptors.request.use((config) => {
-  const token = useAuthStore.getState().accessToken
+  const { accessToken: token, sessionVersion } = useAuthStore.getState()
+  if (config.sessionVersion !== undefined && config.sessionVersion !== sessionVersion) {
+    throw new axios.CanceledError('会话已切换')
+  }
+  config.sessionVersion = sessionVersion
   if (token && !isAuthExempt(config.url)) {
     config.headers.Authorization = `Bearer ${token}`
   }
@@ -152,10 +165,13 @@ http.interceptors.request.use((config) => {
     config.timeout = UPLOAD_TIMEOUT_MS
   }
   return config
-})
+}, (error) => { throw error }, { synchronous: true })
 
 http.interceptors.response.use(
   (response) => {
+    if (response.config.sessionVersion !== useAuthStore.getState().sessionVersion) {
+      return Promise.reject(new axios.CanceledError('会话已切换'))
+    }
     const payload = response.data
     if (!isAPIResponse(payload)) {
       return Promise.reject(new Error('服务响应格式异常，请稍后重试'))
@@ -173,6 +189,9 @@ http.interceptors.response.use(
     return response
   },
   async (error) => {
+    if (error.config?.sessionVersion !== undefined && error.config.sessionVersion !== useAuthStore.getState().sessionVersion) {
+      return Promise.reject(new axios.CanceledError('会话已切换'))
+    }
     const payload = error.response?.data as Partial<APIResponse<unknown>> | undefined
     const requestPath = getPathname(error.config?.url)
     const status = error.response?.status
@@ -181,10 +200,13 @@ http.interceptors.response.use(
 
     if (status === 401 && originalConfig && !originalConfig._retry && !isAuthExempt(originalConfig.url) && requestPath !== '/auth/refresh') {
       originalConfig._retry = true
-      if (!refreshPromise) {
-        refreshPromise = refreshAccessToken().finally(() => {
-          refreshPromise = null
+      const version = useAuthStore.getState().sessionVersion
+      if (!refreshPromise || refreshVersion !== version) {
+        refreshVersion = version
+        const pending = refreshAccessToken().finally(() => {
+          if (refreshPromise === pending) refreshPromise = null
         })
+        refreshPromise = pending
       }
       const newAccessToken = await refreshPromise
       if (newAccessToken) {

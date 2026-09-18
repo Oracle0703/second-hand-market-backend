@@ -72,3 +72,58 @@ jobs:
       - name: build
         working-directory: frontend
         run: npm run build
+
+  p1-mysql:
+    name: P1 inventory concurrency (MySQL)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: p1-ci-only
+          MYSQL_DATABASE: p1_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pp1-ci-only"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Exercise concurrent stock adjustment and product editing
+        working-directory: backend
+        env:
+          P1_MYSQL_DSN: root:p1-ci-only@tcp(127.0.0.1:3306)/p1_test?charset=utf8mb4&parseTime=True&loc=UTC
+        run: go test ./internal/app -run '^TestP1MySQL' -count=1 -timeout=90s
+
+  miniapp:
+    name: miniapp (test + WeChat/Douyin builds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: miniapp/.nvmrc
+          cache: npm
+          cache-dependency-path: miniapp/package-lock.json
+      - name: Use pinned npm
+        run: npm install -g npm@10.9.7
+      - name: Install dependencies
+        working-directory: miniapp
+        run: npm ci
+      - name: Unit and query lifecycle tests
+        working-directory: miniapp
+        run: npm test -- --maxWorkers=2 --minWorkers=1
+      - name: Build both miniapp targets (no upload or publication)
+        working-directory: miniapp
+        env:
+          TARO_APP_API_BASE_URL: https://api.example.com/api/v1
+          TARO_APP_MERCHANT_NO: ci-fixture
+        run: |
+          npm run build:weapp
+          npm run build:tt

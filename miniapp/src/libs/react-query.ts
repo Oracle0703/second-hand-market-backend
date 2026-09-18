@@ -1,3 +1,6 @@
+// A small Taro-compatible query lifecycle adapter, not a TanStack Query cache.
+// Same-key hooks do not share data or deduplicate requests. Invalidation refetches
+// mounted registrations; key/enable changes and unmount discard old results.
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 type QueryKey = readonly unknown[]
@@ -198,8 +201,9 @@ export function useQuery<TData>(options: QueryOptions<TData>): QueryResult<TData
       fetchStatus: 'fetching'
     }))
 
+    const queryFn = queryFnRef.current
     try {
-      const data = await runWithRetry(() => queryFnRef.current(), retryRef.current)
+      const data = await runWithRetry(queryFn, retryRef.current)
       if (!mountedRef.current || requestID !== requestIDRef.current) {
         return data
       }
@@ -244,7 +248,10 @@ export function useQuery<TData>(options: QueryOptions<TData>): QueryResult<TData
       refetch().catch(() => undefined)
     }
 
-    return unregister
+    return () => {
+      unregister()
+      requestIDRef.current += 1
+    }
   }, [client, options.enabled, queryKeyHash, refetch])
 
   return {

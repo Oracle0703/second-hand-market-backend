@@ -19,13 +19,6 @@ import { yuanToCent } from '@/utils/price'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
 
-type CategoryItem = {
-  ID?: number
-  id?: number
-  Name?: string
-  name?: string
-}
-
 type ProductCreateValues = {
   parent_id?: number
   category_id?: number
@@ -43,14 +36,6 @@ type UploadedImage = {
   fileName: string
 }
 
-function categoryId(item: CategoryItem) {
-  return Number(item.ID ?? item.id ?? 0)
-}
-
-function categoryName(item: CategoryItem) {
-  return item.Name ?? item.name ?? ''
-}
-
 export function CreatePage() {
   const navigate = useNavigate()
   const formRef = useRef<ProFormInstance>()
@@ -62,12 +47,12 @@ export function CreatePage() {
 
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
-    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[]
+    queryFn: async () => (await api.categories(1)).data.data.items
   })
   const level2 = useQuery({
     queryKey: ['categories', 'level2', parentId],
     enabled: !!parentId,
-    queryFn: async () => (await api.categories(2, Number(parentId))).data.data.items as CategoryItem[]
+    queryFn: async () => (await api.categories(2, Number(parentId))).data.data.items
   })
 
   const selectedLevel2 = useMemo(() => level2.data ?? [], [level2.data])
@@ -303,7 +288,7 @@ export function CreatePage() {
         <ProFormSelect
           name="parent_id"
           label="一级分类"
-          options={(level1.data ?? []).map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
+          options={(level1.data ?? []).map((item) => ({ value: item.id, label: item.name }))}
           fieldProps={{
             value: parentId || undefined,
             loading: level1.isLoading,
@@ -319,7 +304,7 @@ export function CreatePage() {
         <ProFormSelect
           name="category_id"
           label="二级分类"
-          options={selectedLevel2.map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
+          options={selectedLevel2.map((item) => ({ value: item.id, label: item.name }))}
           fieldProps={{
             value: categoryID || undefined,
             loading: level2.isLoading,

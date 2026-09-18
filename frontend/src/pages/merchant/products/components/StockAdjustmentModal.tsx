@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import { Alert, Form, Input, InputNumber, Modal, Select, message } from 'antd'
 import type { ProductStatus } from '@/constants/status'
 import { api, type AdjustProductStockPayload } from '@/services/api'
@@ -33,28 +34,50 @@ export function StockAdjustmentModal(props: StockAdjustmentModalProps) {
 
 function StockAdjustmentModalContent({ open, product, markSoldAllRemaining = false, onCancel, onSuccess }: StockAdjustmentModalProps) {
   const [form] = Form.useForm<StockAdjustmentFormValues>()
+  const submitting = useRef(false)
+  const [pending, setPending] = useState(false)
+  const attempt = useRef<{ payload: string; key: string } | null>(null)
   const currentStock = Number(product?.stock ?? 0)
   const options = product ? getStockAdjustmentTypeOptions(product.status) : []
 
   const cancel = () => {
+    if (submitting.current) return
+    attempt.current = null
     form.resetFields()
     onCancel()
   }
 
   const submit = async () => {
-    if (!product) return
-    const values = await form.validateFields()
-    const payload: AdjustProductStockPayload = markSoldAllRemaining
-      ? { adjustment_type: 'MARK_SOLD', all_remaining: true, reason: values.reason.trim() }
-      : {
-          adjustment_type: values.adjustment_type,
-          quantity: Math.floor(Number(values.quantity)),
-          reason: values.reason.trim()
-        }
-    await api.adjustProductStock(product.id, payload)
-    message.success('库存调整成功')
-    form.resetFields()
-    await onSuccess()
+    if (!product || submitting.current) return
+    submitting.current = true
+    setPending(true)
+    try {
+      const values = await form.validateFields()
+      const payload: AdjustProductStockPayload = markSoldAllRemaining
+        ? { adjustment_type: 'MARK_SOLD', all_remaining: true, reason: values.reason.trim() }
+        : {
+            adjustment_type: values.adjustment_type,
+            quantity: Math.floor(Number(values.quantity)),
+            reason: values.reason.trim()
+          }
+      const fingerprint = JSON.stringify(payload)
+      if (attempt.current?.payload !== fingerprint) {
+        attempt.current = { payload: fingerprint, key: crypto.randomUUID() }
+      }
+      await api.adjustProductStock(product.id, payload, attempt.current.key)
+      message.success('库存调整成功')
+      form.resetFields()
+      await onSuccess()
+      attempt.current = null
+    } catch (error) {
+      // Ant Design renders validation errors next to their fields.
+      if (!(typeof error === 'object' && error !== null && 'errorFields' in error)) {
+        message.error(error instanceof Error ? error.message : '库存调整失败，请稍后重试')
+      }
+    } finally {
+      submitting.current = false
+      setPending(false)
+    }
   }
 
   return (
@@ -63,6 +86,11 @@ function StockAdjustmentModalContent({ open, product, markSoldAllRemaining = fal
       open={open}
       okText="确认调整"
       cancelText="取消"
+      confirmLoading={pending}
+      cancelButtonProps={{ disabled: pending }}
+      closable={!pending}
+      maskClosable={!pending}
+      keyboard={!pending}
       onCancel={cancel}
       onOk={() => void submit()}
       destroyOnHidden
@@ -70,6 +98,7 @@ function StockAdjustmentModalContent({ open, product, markSoldAllRemaining = fal
       <Alert type="info" showIcon message={`当前库存：${currentStock}`} style={{ marginBottom: 16 }} />
       <Form<StockAdjustmentFormValues>
         form={form}
+        disabled={pending}
         layout="vertical"
         preserve={false}
         initialValues={{ adjustment_type: markSoldAllRemaining ? 'MARK_SOLD' : 'INCREASE', quantity: 1, reason: '' }}

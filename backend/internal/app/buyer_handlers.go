@@ -1044,9 +1044,9 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 	}
 
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(idemTx *gorm.DB) (map[string]interface{}, error) {
 		var cnt int64
-		if err := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND product_id = ? AND is_open = ?", actor.UserID, merchant.ID, req.ProductID, true).Count(&cnt).Error; err != nil {
+		if err := idemTx.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND product_id = ? AND is_open = ?", actor.UserID, merchant.ID, req.ProductID, true).Count(&cnt).Error; err != nil {
 			return nil, common.ErrInternal
 		}
 		if cnt > 0 {
@@ -1065,7 +1065,7 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 			ContactWechat:  req.ContactWechat,
 			Message:        req.Message,
 		}
-		if err := s.DB.Create(&intent).Error; err != nil {
+		if err := idemTx.Create(&intent).Error; err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				return nil, common.ErrConflict
 			}
