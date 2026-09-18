@@ -120,73 +120,23 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
-	var session model.AuthSession
-	if err := s.DB.Where("id = ?", claims.SessionID).First(&session).Error; err != nil {
+	identity, err := s.resolveSessionIdentity(c.Request.Context(), claims.SessionID, claims.UserType, claims.UserID)
+	if err != nil {
+		common.Fail(c, err)
+		return
+	}
+	if identity.Session.RefreshTokenHash != common.SHA256(req.RefreshToken) {
 		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
-	if session.RevokedAt != nil || session.ExpiredAt.Before(time.Now()) || session.RefreshTokenHash != common.SHA256(req.RefreshToken) {
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
-
-	role := ""
-	merchantID := uint64(0)
-	scope := "full"
-	switch claims.UserType {
-	case model.UserTypeAdmin:
-		var admin model.AdminUser
-		if err := s.DB.Where("id = ?", claims.UserID).First(&admin).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if admin.Status == model.AccountStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
-		}
-		role = admin.Role
-	case model.UserTypeMerchant:
-		var acct model.MerchantAccount
-		if err := s.DB.Where("id = ?", claims.UserID).First(&acct).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if acct.Status == model.AccountStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
-		}
-		role = acct.Role
-		merchantID = acct.MerchantID
-		var merchant model.Merchant
-		if err := s.DB.Where("id = ?", acct.MerchantID).First(&merchant).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if merchant.ReviewStatus != model.ReviewApproved {
-			scope = "onboarding"
-		}
-	case model.UserTypeBuyer:
-		var buyer model.BuyerUser
-		if err := s.DB.Where("id = ?", claims.UserID).First(&buyer).Error; err != nil {
-			common.Fail(c, common.ErrUnauthorized)
-			return
-		}
-		if buyer.Status == model.BuyerStatusDisabled {
-			common.Fail(c, common.ErrAccountDisabled)
-			return
-		}
-		role = model.UserTypeBuyer
-	default:
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
+	session, actor := identity.Session, identity.Actor
 
 	newRefresh, refreshExp, err := auth.BuildRefreshToken(s.cfg.JWTRefreshSecret, auth.RefreshClaims{UserID: claims.UserID, UserType: claims.UserType, SessionID: session.ID}, s.cfg.RefreshTTL)
 	if err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	access, _, err := auth.BuildAccessToken(s.cfg.JWTAccessSecret, auth.AccessClaims{UserID: claims.UserID, UserType: claims.UserType, Role: role, MerchantID: merchantID, Scope: scope, SessionID: session.ID}, s.cfg.AccessTTL)
+	access, _, err := auth.BuildAccessToken(s.cfg.JWTAccessSecret, auth.AccessClaims{UserID: claims.UserID, UserType: claims.UserType, Role: actor.Role, MerchantID: actor.MerchantID, Scope: actor.Scope, SessionID: session.ID}, s.cfg.AccessTTL)
 	if err != nil {
 		common.Fail(c, common.ErrInternal)
 		return

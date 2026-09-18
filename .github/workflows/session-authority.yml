@@ -1,0 +1,46 @@
+name: Session authority
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/session-authority.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: session-authority-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mysql:
+    name: session authority (MySQL 8.4)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: session_authority_ci
+          MYSQL_USER: session_authority_ci
+          MYSQL_PASSWORD: synthetic-session-tests-only
+          MYSQL_ROOT_PASSWORD: synthetic-root-tests-only
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysql --user=root --password=synthetic-root-tests-only --execute='SELECT 1'"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Exercise access and refresh authority on disposable MySQL
+        working-directory: backend
+        env:
+          SESSION_AUTHORITY_MYSQL: '1'
+          SESSION_AUTHORITY_MYSQL_DSN: 'session_authority_ci:synthetic-session-tests-only@tcp(127.0.0.1:${{ job.services.mysql.ports[3306] }})/session_authority_ci?parseTime=true&loc=UTC&timeout=5s&readTimeout=5s&writeTimeout=5s'
+        run: go test -race -tags mysqlacceptance ./internal/app -run '^TestSessionAuthorityMySQL$' -count=1 -timeout=5m
