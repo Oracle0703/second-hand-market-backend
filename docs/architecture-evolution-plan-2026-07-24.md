@@ -54,9 +54,9 @@ Web 查询缓存已有 P1 身份隔离。小程序自建适配器具有以下约
 
 API 启动不执行迁移、seed 或开户。生产变更使用独立数据库命令和显式 SQL；迁移目录有校验和及执行门禁。测试中的 AutoMigrate 不等于生产启动迁移。
 
-CI 覆盖 Go 测试/vet、Web 测试/构建、API 镜像、临时 MySQL 库存并发，以及新增的小程序测试与微信/抖音构建。小程序构建使用示例 API 地址，不上传平台，不访问生产；真机、平台隐私授权、域名白名单仍是独立人工验收。
+自动 CI 覆盖 Go 测试/vet、Web 测试/构建、API 镜像、临时 MySQL 库存并发及部署回滚演练。小程序测试与微信/抖音构建保留在手动触发的 `Miniapp validation` 工作流中，使用示例 API 地址，不上传平台。真机、平台隐私授权、域名白名单仍需独立验收。
 
-现有 Deploy 在 main 的 CI 成功后自动部署到名为 staging 的环境，手动 dispatch 使用 production。环境名称不能证明服务器隔离；用户尚未确认该配置。本分支不合并 main、不触发部署、不修改部署行为。
+Deploy 在 main 的 CI 成功后自动发布前后端至 staging；production 通过手动 dispatch 和 Environment 审批发布。两者使用独立部署目录、Compose 项目和回环端口；production 复用原 MySQL 与上传目录。
 
 ## 后续按需求推进
 

@@ -1,6 +1,11 @@
 name: Session authority
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/session-authority.yml'
   pull_request:
     paths:
       - 'backend/**'
