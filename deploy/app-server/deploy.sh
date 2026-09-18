@@ -34,7 +34,7 @@ legacy_compose() (
 
 health() {
   curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-    --retry 3 --retry-connrefused "$1" >/dev/null
+    --retry 5 --retry-all-errors --retry-delay 1 --retry-max-time 30 "$1" >/dev/null
 }
 
 switch_frontend() {
