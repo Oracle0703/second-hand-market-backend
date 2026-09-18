@@ -97,3 +97,30 @@ jobs:
         env:
           P1_MYSQL_DSN: root:p1-ci-only@tcp(127.0.0.1:3306)/p1_test?charset=utf8mb4&parseTime=True&loc=UTC
         run: go test ./internal/app -run '^TestP1MySQL' -count=1 -timeout=90s
+
+  miniapp:
+    name: miniapp (test + WeChat/Douyin builds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: miniapp/.nvmrc
+          cache: npm
+          cache-dependency-path: miniapp/package-lock.json
+      - name: Use pinned npm
+        run: npm install -g npm@10.9.7
+      - name: Install dependencies
+        working-directory: miniapp
+        run: npm ci
+      - name: Unit and query lifecycle tests
+        working-directory: miniapp
+        run: npm test -- --maxWorkers=2 --minWorkers=1
+      - name: Build both miniapp targets (no upload or publication)
+        working-directory: miniapp
+        env:
+          TARO_APP_API_BASE_URL: https://api.example.com/api/v1
+          TARO_APP_MERCHANT_NO: ci-fixture
+        run: |
+          npm run build:weapp
+          npm run build:tt

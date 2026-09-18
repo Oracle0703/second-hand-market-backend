@@ -1,3 +1,4 @@
+import { normalizeCategory, type CategoryWire } from '../types/category'
 import { assertSecureCredentialTransport, http, type APIResponse } from './http'
 import type { LoginResponse, LoginType } from '../types/auth'
 
@@ -43,12 +44,13 @@ export const api = {
   merchantProfile() {
     return http.get<APIResponse<MerchantProfileResponse>>('/merchant/profile')
   },
-  categories(level?: 1 | 2, parentId?: number, status?: string) {
+  async categories(level?: 1 | 2, parentId?: number, status?: string) {
     const params: Record<string, string | number> = {}
     if (level) params.level = level
     if (parentId) params.parent_id = parentId
     if (status) params.status = status
-    return http.get('/merchant/categories', { params })
+    const response = await http.get<APIResponse<{ items: CategoryWire[] }>>('/merchant/categories', { params })
+    return { ...response, data: { ...response.data, data: { items: response.data.data.items.map(normalizeCategory) } } }
   },
   createCategory(payload: { level: 1 | 2; parent_id?: number; name: string; sort?: number }) {
     return http.post('/merchant/categories', payload)

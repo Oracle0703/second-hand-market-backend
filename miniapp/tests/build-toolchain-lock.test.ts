@@ -17,3 +17,12 @@ describe('小程序构建工具链版本', () => {
     expect(packageLock.packages['node_modules/@babel/plugin-transform-runtime'].version).toBe('7.26.10')
   })
 })
+
+// CI must not depend on a developer's LAN registry.
+test('React runtime tarballs use the public registry with integrity checks', () => {
+  for (const name of ['react', 'react-dom']) {
+    const entry = packageLock.packages[`node_modules/${name}`]
+    expect(entry.resolved).toBe(`https://registry.npmjs.org/${name}/-/${name}-18.2.0.tgz`)
+    expect(entry.integrity).toMatch(/^sha512-/)
+  }
+})

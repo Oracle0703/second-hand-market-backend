@@ -20,15 +20,6 @@ import { resolveAssetURL } from '@/utils/url'
 
 const conditionOptions: ProductCondition[] = ['LIKE_NEW', 'GOOD', 'FAIR', 'POOR']
 
-type CategoryItem = {
-  ID?: number
-  id?: number
-  Name?: string
-  name?: string
-  ParentID?: number
-  parent_id?: number
-}
-
 type ProductDetail = {
   id: number
   title: string
@@ -61,14 +52,6 @@ type EditableImage = {
   isLocal: boolean
 }
 
-function categoryId(item: CategoryItem) {
-  return Number(item.ID ?? item.id ?? 0)
-}
-
-function categoryName(item: CategoryItem) {
-  return item.Name ?? item.name ?? ''
-}
-
 export function EditPage() {
   const { productId = '' } = useParams()
   const navigate = useNavigate()
@@ -86,13 +69,13 @@ export function EditPage() {
 
   const level1 = useQuery({
     queryKey: ['categories', 'level1'],
-    queryFn: async () => (await api.categories(1)).data.data.items as CategoryItem[],
+    queryFn: async () => (await api.categories(1)).data.data.items,
     staleTime: 5 * 60 * 1000,
     retry: 1
   })
   const level2All = useQuery({
     queryKey: ['categories', 'level2-all'],
-    queryFn: async () => (await api.categories(2)).data.data.items as CategoryItem[],
+    queryFn: async () => (await api.categories(2)).data.data.items,
     staleTime: 5 * 60 * 1000,
     retry: 1
   })
@@ -132,8 +115,8 @@ export function EditPage() {
   useEffect(() => {
     if (!detail.data) return
     const selectedCategoryID = Number(detail.data.category_id)
-    const matchedLevel2 = (level2All.data ?? []).find((item) => categoryId(item) === selectedCategoryID)
-    const pid = matchedLevel2 ? Number(matchedLevel2.ParentID ?? matchedLevel2.parent_id ?? 0) : ''
+    const matchedLevel2 = (level2All.data ?? []).find((item) => item.id === selectedCategoryID)
+    const pid = matchedLevel2 ? Number(matchedLevel2.parent_id ?? 0) : ''
     setParentID(pid)
     formRef.current?.setFieldValue('parent_id', pid || undefined)
   }, [detail.data, level2All.data])
@@ -280,7 +263,7 @@ export function EditPage() {
   const level2Options = useMemo(() => {
     const pid = Number(parentId)
     if (!pid) return []
-    return (level2All.data ?? []).filter((item) => Number(item.ParentID ?? item.parent_id ?? 0) === pid)
+    return (level2All.data ?? []).filter((item) => Number(item.parent_id ?? 0) === pid)
   }, [parentId, level2All.data])
 
   if (detail.isLoading) return <p>加载中...</p>
@@ -428,7 +411,7 @@ export function EditPage() {
           name="parent_id"
           label="一级分类"
           disabled={!canEditAll}
-          options={(level1.data ?? []).map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
+          options={(level1.data ?? []).map((item) => ({ value: item.id, label: item.name }))}
           fieldProps={{
             value: parentId || undefined,
             loading: level1.isLoading,
@@ -438,7 +421,7 @@ export function EditPage() {
               const currentCategoryID = Number(formRef.current?.getFieldValue('category_id') ?? 0)
               const stillValid = (level2All.data ?? []).some(
                 (item) =>
-                  Number(item.ParentID ?? item.parent_id ?? 0) === Number(nextParentID) && categoryId(item) === currentCategoryID
+                  Number(item.parent_id ?? 0) === Number(nextParentID) && item.id === currentCategoryID
               )
               if (!stillValid) {
                 formRef.current?.setFieldValue('category_id', undefined)
@@ -451,7 +434,7 @@ export function EditPage() {
           name="category_id"
           label="二级分类"
           disabled={!canEditAll}
-          options={level2Options.map((item) => ({ value: categoryId(item), label: categoryName(item) }))}
+          options={level2Options.map((item) => ({ value: item.id, label: item.name }))}
           fieldProps={{ loading: level2All.isLoading }}
           rules={canEditAll ? [{ required: true, message: '请选择二级分类' }] : []}
         />
