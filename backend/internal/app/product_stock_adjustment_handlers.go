@@ -104,9 +104,9 @@ func (s *Server) handleProductStockAdjustment(c *gin.Context) {
 	}
 
 	payload := gin.H{"id": id, "adjustment_type": req.AdjustmentType, "quantity": req.Quantity, "all_remaining": req.AllRemaining, "reason": req.Reason}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(idemTx *gorm.DB) (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
-		err := s.DB.Transaction(func(tx *gorm.DB) error {
+		err := idemTx.Transaction(func(tx *gorm.DB) error {
 			product, err := s.loadOwnedProductForUpdate(tx, id, actor.MerchantID)
 			if err != nil {
 				return err

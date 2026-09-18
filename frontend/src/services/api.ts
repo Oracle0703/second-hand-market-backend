@@ -110,8 +110,8 @@ export const api = {
   productOffShelf(productId: string | number) {
     return http.post(`/merchant/products/${productId}/off-shelf`, {})
   },
-  adjustProductStock(productId: string | number, payload: AdjustProductStockPayload) {
-    return http.post<APIResponse<AdjustProductStockResponse>>(`/merchant/products/${productId}/stock-adjustments`, payload)
+  adjustProductStock(productId: string | number, payload: AdjustProductStockPayload, idempotencyKey: string) {
+    return http.post<APIResponse<AdjustProductStockResponse>>(`/merchant/products/${productId}/stock-adjustments`, payload, { headers: { 'Idempotency-Key': idempotencyKey } })
   },
   orders(params: Record<string, string | number> = {}) {
     return http.get('/merchant/orders', { params })

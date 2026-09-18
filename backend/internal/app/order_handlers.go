@@ -173,9 +173,9 @@ func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action strin
 		return
 	}
 	payload := gin.H{"id": id, "to_status": toStatus, "note": note}
-	data, err := s.runWithIdempotency(c, payload, func() (map[string]interface{}, error) {
+	data, err := s.runWithIdempotency(c, payload, func(idemTx *gorm.DB) (map[string]interface{}, error) {
 		resp := map[string]interface{}{}
-		err := s.DB.Transaction(func(tx *gorm.DB) error {
+		err := idemTx.Transaction(func(tx *gorm.DB) error {
 			order, err := s.loadOwnedOrderForUpdate(tx, id, actor.MerchantID)
 			if err != nil {
 				return err

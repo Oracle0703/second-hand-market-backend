@@ -2,52 +2,143 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/gin-gonic/gin"
+	mysqlDriver "github.com/go-sql-driver/mysql"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/model"
 )
 
-func (s *Server) runWithIdempotency(c *gin.Context, payload interface{}, fn func() (map[string]interface{}, error)) (map[string]interface{}, error) {
+var errIdempotencyClaimConflict = errors.New("idempotency claim conflict")
+
+type idempotentOperation func(tx *gorm.DB) (map[string]interface{}, error)
+
+type idempotencyScope struct {
+	Key         string
+	OperatorID  uint64
+	Path        string
+	RequestHash string
+}
+
+func (s *Server) runWithIdempotency(c *gin.Context, payload interface{}, fn idempotentOperation) (map[string]interface{}, error) {
 	key := c.GetHeader("Idempotency-Key")
 	if key == "" {
-		return fn()
+		return s.runIdempotentTransaction(fn)
 	}
-	actor, _ := common.GetActor(c)
-	raw, _ := json.Marshal(payload)
-	hash := common.SHA256(string(raw))
-
-	var record model.IdempotencyRecord
-	err := s.DB.Where("idem_key = ? AND operator_id = ? AND path = ?", key, actor.UserID, c.FullPath()).First(&record).Error
-	if err == nil {
-		if record.RequestHash != hash {
-			return nil, common.ErrDuplicateSubmit
-		}
-		var data map[string]interface{}
-		if uErr := json.Unmarshal(record.ResponseRaw, &data); uErr != nil {
-			return nil, common.ErrInternal
-		}
-		data["idempotent"] = true
-		return data, nil
-	}
-	if err != nil && err != gorm.ErrRecordNotFound {
+	actor, ok := common.GetActor(c)
+	if !ok {
 		return nil, common.ErrInternal
 	}
-
-	data, runErr := fn()
-	if runErr != nil {
-		return nil, runErr
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, common.ErrInternal
 	}
-	enc, _ := json.Marshal(data)
-	_ = s.DB.Create(&model.IdempotencyRecord{
-		IdemKey:     key,
+	scope := idempotencyScope{
+		Key:         key,
 		OperatorID:  actor.UserID,
 		Path:        c.FullPath(),
-		RequestHash: hash,
-		ResultCode:  common.CodeOK,
-		ResponseRaw: enc,
-	}).Error
+		RequestHash: common.SHA256(string(raw)),
+	}
+
+	var data map[string]interface{}
+	err = s.DB.Transaction(func(tx *gorm.DB) error {
+		record := model.IdempotencyRecord{
+			IdemKey:     scope.Key,
+			OperatorID:  scope.OperatorID,
+			Path:        scope.Path,
+			RequestHash: scope.RequestHash,
+			ResultCode:  common.CodeOK,
+			ResponseRaw: datatypes.JSON([]byte("null")),
+		}
+		if createErr := tx.Create(&record).Error; createErr != nil {
+			if isIdempotencyDuplicate(createErr) {
+				return errIdempotencyClaimConflict
+			}
+			return common.ErrInternal
+		}
+		result, runErr := fn(tx)
+		if runErr != nil {
+			return runErr
+		}
+		if result == nil {
+			return common.ErrInternal
+		}
+		encoded, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return common.ErrInternal
+		}
+		update := tx.Model(&model.IdempotencyRecord{}).
+			Where("id = ?", record.ID).
+			Updates(map[string]interface{}{
+				"result_code":  common.CodeOK,
+				"response_raw": datatypes.JSON(encoded),
+			})
+		if update.Error != nil || update.RowsAffected != 1 {
+			return common.ErrInternal
+		}
+		data = result
+		return nil
+	})
+	if errors.Is(err, errIdempotencyClaimConflict) {
+		return s.replayIdempotencyResult(scope)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return data, nil
+}
+
+func (s *Server) runIdempotentTransaction(fn idempotentOperation) (map[string]interface{}, error) {
+	var data map[string]interface{}
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		result, runErr := fn(tx)
+		if runErr != nil {
+			return runErr
+		}
+		if result == nil {
+			return common.ErrInternal
+		}
+		data = result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (s *Server) replayIdempotencyResult(scope idempotencyScope) (map[string]interface{}, error) {
+	var record model.IdempotencyRecord
+	if err := s.DB.Where("idem_key = ? AND operator_id = ? AND path = ?", scope.Key, scope.OperatorID, scope.Path).First(&record).Error; err != nil {
+		return nil, common.ErrInternal
+	}
+	if record.RequestHash != scope.RequestHash {
+		return nil, common.ErrDuplicateSubmit
+	}
+	if record.ResultCode != common.CodeOK {
+		return nil, common.ErrInternal
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(record.ResponseRaw, &data); err != nil || data == nil {
+		return nil, common.ErrInternal
+	}
+	data["idempotent"] = true
+	return data, nil
+}
+
+// Only a unique-key violation on the claim insert permits replay.
+func isIdempotencyDuplicate(err error) bool {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	var mysqlErr *mysqlDriver.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1062
+	}
+	var sqliteErr interface{ Code() int }
+	return errors.As(err, &sqliteErr) && (sqliteErr.Code() == 2067 || sqliteErr.Code() == 1555)
 }
