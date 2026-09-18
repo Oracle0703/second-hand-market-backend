@@ -50,4 +50,8 @@ The GitHub token needs permission to publish packages. The workflow publishes AP
 
 Pushes to `main` deploy to `staging` after CI succeeds. Run the workflow manually with a full commit SHA to deploy that exact revision to `production`.
 
-The deployment script checks API health before switching the frontend link. If API startup fails, it restarts the image that was active before the deployment. To roll back a successful release, run the workflow manually for the earlier commit SHA. Review migrations separately before any release; schema rollback is not part of this workflow.
+The deployment script checks API health before switching the frontend link and starting Web. A failed update restores the running API's image ID and frontend link, then recreates Web after the API. A first handover runs the legacy Compose file without the CD project name and restarts only the original API/Web containers on failure; it never builds legacy images or restarts MySQL. Failed containers left in `Created` state do not count as a previous release. A per-directory lock prevents concurrent activation.
+
+On Linux with Docker Compose, `python3 deploy/app-server/tests/handover_test.py` rehearses failed first handover, retry, managed-release rollback, and repeated deployment using temporary directories and isolated containers. CI runs this alongside the image build.
+
+To roll back a successful release, run the workflow manually for the earlier commit SHA. Review migrations separately before any release; schema rollback is not part of this workflow.

@@ -5,115 +5,151 @@ root=${DEPLOY_ROOT:?DEPLOY_ROOT is required}
 backend_image=${BACKEND_IMAGE:?BACKEND_IMAGE is required}
 release_id=${RELEASE_ID:?RELEASE_ID is required}
 frontend_archive=${FRONTEND_ARCHIVE:?FRONTEND_ARCHIVE is required}
-api_host_port=${API_HOST_PORT:-8080}
+export API_HOST_PORT=${API_HOST_PORT:-8080}
 web_host_port=${WEB_HOST_PORT:?WEB_HOST_PORT is required}
 compose_project_name=${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}
 legacy_compose_file=${LEGACY_COMPOSE_FILE:-}
-legacy_compose=()
 
-if [ -n "$legacy_compose_file" ]; then
-  legacy_compose_dir=$(dirname "$legacy_compose_file")
-  legacy_env_file="$legacy_compose_dir/.env"
-  test -f "$legacy_compose_file"
-  test -f "$legacy_env_file"
-  legacy_compose=(docker compose --project-directory "$legacy_compose_dir" --env-file "$legacy_env_file" -f "$legacy_compose_file")
-fi
-
-if ! [[ "$release_id" =~ ^[0-9a-f]{40}$ ]]; then
-    echo 'RELEASE_ID must be a lowercase hexadecimal commit SHA' >&2
-    exit 1
-fi
-
+[[ "$release_id" =~ ^[0-9a-f]{40}$ ]] || { echo 'RELEASE_ID must be a full commit SHA' >&2; exit 1; }
 compose_file="$root/deploy/docker-compose.yml"
 release_dir="$root/frontend/releases/$release_id"
 current_link="$root/frontend/current"
-previous_release_target=''
-
-if [ -L "$current_link" ]; then
-  previous_release_target=$(readlink "$current_link")
-fi
-
 test -f "$compose_file"
 test -f "$frontend_archive"
-mkdir -p "$root/frontend/releases" "$root/incoming"
+mkdir -p "$root/frontend/releases"
+exec 9>"$root/.deploy.lock"
+flock -n 9 || { echo 'Another deployment is active' >&2; exit 1; }
+
+compose() {
+  COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$backend_image" \
+    docker compose -f "$compose_file" "$@"
+}
+
+legacy_compose() (
+  # A caller's CD project name must never select the legacy services.
+  unset COMPOSE_PROJECT_NAME
+  cd "$(dirname "$legacy_compose_file")"
+  docker compose --project-directory "$PWD" --env-file "$PWD/.env" -f "$legacy_compose_file" "$@"
+)
+
+health() {
+  curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
+    --retry 3 --retry-connrefused "$1" >/dev/null
+}
+
+switch_frontend() {
+  local target=$1
+  local next_link="$root/frontend/.next-$$"
+  ln -s "$target" "$next_link"
+  mv -Tf "$next_link" "$current_link"
+}
+
+previous_target=''
+if [ -L "$current_link" ]; then
+  previous_target=$(readlink "$current_link")
+elif [ -e "$current_link" ]; then
+  echo 'frontend/current must be a symbolic link' >&2
+  exit 1
+fi
 
 if [ ! -d "$release_dir" ]; then
   staging_dir=$(mktemp -d "$root/frontend/releases/.${release_id}.XXXXXX")
-  trap 'rm -rf "$staging_dir"' EXIT
   tar -xzf "$frontend_archive" -C "$staging_dir" --no-same-owner --no-same-permissions
   test -f "$staging_dir/index.html"
+  chmod 755 "$staging_dir"
   mv "$staging_dir" "$release_dir"
-  trap - EXIT
 fi
-
-# Docker cannot create a nested bind mount beneath the read-only frontend
-# mount, so the videos mount point must exist in every release beforehand.
+test -f "$release_dir/index.html"
 mkdir -p "$release_dir/assets/videos"
-if [ -n "$previous_release_target" ]; then
-  mkdir -p "$root/frontend/$previous_release_target/assets/videos"
+if [ -n "$previous_target" ]; then
+  mkdir -p "$current_link/assets/videos"
 fi
 
-container_id=$(COMPOSE_PROJECT_NAME="$compose_project_name" docker compose -f "$compose_file" images -q api || true)
+# `images -q` returns an image ID, not a container. Only a running container
+# can be a rollback target; a failed first attempt may leave a Created object.
+previous_container=$(compose ps --status running -q api)
+previous_web=$(compose ps --status running -q web)
 previous_image=''
-legacy_stopped=false
-if [ -n "$container_id" ]; then
-  previous_image=$(docker inspect --format '{{.Config.Image}}' "$container_id" 2>/dev/null || true)
-fi
-
-restore_legacy() {
-  if [ "$legacy_stopped" = true ]; then
-    COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" stop api web || true
-    "${legacy_compose[@]}" up -d api web || true
-  fi
-}
-
-rollback_api() {
-  if [ -n "$previous_image" ]; then
-    echo "Restoring API image $previous_image" >&2
-    COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$previous_image" docker compose -f "$compose_file" up -d --no-deps api || true
-  else
-    restore_legacy
-  fi
-}
-
-rollback_frontend() {
-  if [ -n "$previous_release_target" ]; then
-    rollback_link="$root/frontend/.rollback-$release_id"
-    rm -f "$rollback_link"
-    ln -s "$previous_release_target" "$rollback_link"
-    mv -Tf "$rollback_link" "$current_link"
-    COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="${previous_image:-$backend_image}" docker compose -f "$compose_file" up -d --no-deps --force-recreate web || true
-  fi
-}
-
-if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" pull api web; then
-  exit 1
+if [ -n "$previous_container" ]; then
+  previous_image=$(docker inspect --format '{{.Image}}' "$previous_container")
 fi
 
 if [ -z "$previous_image" ] && [ -n "$legacy_compose_file" ]; then
-  "${legacy_compose[@]}" stop api web
+  test -f "$legacy_compose_file"
+  test -f "$(dirname "$legacy_compose_file")/.env"
+  for service in api web; do
+    legacy_id=$(legacy_compose ps --status running -q "$service")
+    test -n "$legacy_id" || { echo "Legacy $service is not running; refusing cutover" >&2; exit 1; }
+    legacy_project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$legacy_id")
+    test "$legacy_project" != "$compose_project_name" || { echo 'Legacy and CD projects must differ' >&2; exit 1; }
+  done
+fi
+
+compose config --quiet
+compose pull api web
+
+legacy_stopped=false
+activation_started=false
+frontend_switched=false
+recover() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if [ "$rc" -eq 0 ] || [ "$activation_started" = false ]; then
+    exit "$rc"
+  fi
+  echo 'Deployment failed; restoring previous services' >&2
+  local recovery_failed=0
+  if [ "$frontend_switched" = true ]; then
+    if [ -n "$previous_target" ]; then
+      switch_frontend "$previous_target" || recovery_failed=1
+    else
+      unlink "$current_link" || recovery_failed=1
+    fi
+  fi
+  if [ "$legacy_stopped" = true ]; then
+    compose stop api web || recovery_failed=1
+    # Restart the original containers and images. Never build or touch MySQL.
+    legacy_compose start api web || recovery_failed=1
+  elif [ -n "$previous_image" ]; then
+    backend_image=$previous_image
+    compose up -d --no-deps --pull never --force-recreate --wait --wait-timeout 90 api || recovery_failed=1
+    if [ -n "$previous_web" ]; then
+      # Recreate after the API so Nginx resolves the restored container address.
+      compose up -d --no-deps --pull never --force-recreate --wait --wait-timeout 90 web || recovery_failed=1
+    else
+      compose stop web || recovery_failed=1
+    fi
+  else
+    compose stop api web || recovery_failed=1
+  fi
+  if [ "$legacy_stopped" = true ] || [ -n "$previous_image" ]; then
+    health "http://127.0.0.1:$API_HOST_PORT/healthz" || recovery_failed=1
+  fi
+  if [ "$legacy_stopped" = true ] || [ -n "$previous_web" ]; then
+    health "http://127.0.0.1:$web_host_port/" || recovery_failed=1
+  fi
+  if [ "$recovery_failed" -ne 0 ]; then
+    echo 'Recovery failed; operator intervention is required' >&2
+  else
+    echo 'Previous services restored' >&2
+  fi
+  exit "$rc"
+}
+trap recover EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+activation_started=true
+if [ -z "$previous_image" ] && [ -n "$legacy_compose_file" ]; then
   legacy_stopped=true
+  legacy_compose stop api web
 fi
-
-if ! COMPOSE_PROJECT_NAME="$compose_project_name" API_HOST_PORT="$api_host_port" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --force-recreate --wait api \
-  || ! curl --fail --silent --show-error "http://127.0.0.1:$api_host_port/healthz" >/dev/null; then
-  rollback_api
-  exit 1
-fi
-
-next_link="$root/frontend/.current-$release_id"
-rm -f "$next_link"
-ln -s "releases/$release_id" "$next_link"
-mv -Tf "$next_link" "$current_link"
-
-if ! COMPOSE_PROJECT_NAME="$compose_project_name" BACKEND_IMAGE="$backend_image" docker compose -f "$compose_file" up -d --no-deps --force-recreate --wait web \
-  || ! curl --fail --silent --show-error "http://127.0.0.1:$web_host_port/" >/dev/null \
-  || ! curl --fail --silent --show-error "http://127.0.0.1:$web_host_port/healthz" >/dev/null; then
-  rollback_frontend
-  rollback_api
-  exit 1
-fi
-
-rm -f "$frontend_archive"
-
+compose up -d --no-deps --force-recreate --wait --wait-timeout 90 api
+health "http://127.0.0.1:$API_HOST_PORT/healthz"
+frontend_switched=true
+switch_frontend "releases/$release_id"
+compose up -d --no-deps --force-recreate --wait --wait-timeout 90 web
+health "http://127.0.0.1:$web_host_port/"
+health "http://127.0.0.1:$web_host_port/healthz"
+activation_started=false
 echo "Deployed release $release_id"
