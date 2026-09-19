@@ -259,6 +259,8 @@ func (s *Server) registerRoutes() {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.RequireAuth(model.UserTypeAdmin))
 		{
+			admin.GET("/account", s.handleAdminAccount)
+			admin.PUT("/account/password", s.handleAdminChangePassword)
 			admin.GET("/merchants", s.handleAdminMerchantList)
 			admin.GET("/merchants/:id", s.handleAdminMerchantDetail)
 			admin.POST("/merchants", s.handleAdminCreateMerchant)

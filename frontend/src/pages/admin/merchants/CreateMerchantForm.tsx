@@ -31,6 +31,7 @@ export function CreateMerchantForm({ onCreated }: { onCreated: () => void }) {
         onOk={() => form.submit()}
       >
         <Form
+          name="create-merchant"
           form={form}
           layout="vertical"
           onFinish={async (values) => {

@@ -1,0 +1,117 @@
+import { test, expect, type Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+async function login(page: Page, type: 'admin' | 'merchant', username: string, password: string) {
+  await page.goto(type === 'admin' ? '/admin/login' : '/login')
+  await page.getByLabel('账号', { exact: true }).fill(username)
+  await page.getByLabel('密码', { exact: true }).fill(password)
+  await page.getByRole('button', { name: type === 'admin' ? '管理员登录' : /登\s*录/ }).click()
+}
+async function stockOf(page: Page, productURL: string) {
+  const auth = JSON.parse((await page.evaluate(() => localStorage.getItem('auth-store')))! ).state
+  const response = await page.request.get(`/api/v1${new URL(productURL).pathname}`, { headers: { Authorization: `Bearer ${auth.accessToken}` } })
+  expect(response.status()).toBe(200)
+  return (await response.json()).data.product.stock as number
+}
+
+async function selectCategory(page: Page, label: string, text: string) {
+  await page.getByLabel(label, { exact: true }).click()
+  await page.locator('.ant-select-dropdown:visible').getByText(text, { exact: true }).click()
+}
+
+test('administrator changes own password and invalidates old sessions', async ({ page, request }, testInfo) => {
+  await login(page, 'admin', 'e2e_security', 'BrowserSecuritySeed123!')
+  await expect(page).toHaveURL(/\/admin\/merchants\/reviews$/)
+  const oldSession = JSON.parse((await page.evaluate(() => localStorage.getItem('auth-store')))! ).state
+  await page.locator('a[href="/admin/security"]').first().click()
+  await expect(page.getByText('e2e_security', { exact: true })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('admin-security.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.screenshot({ path: testInfo.outputPath('admin-security-mobile.png'), fullPage: true })
+  await page.setViewportSize({ width: 1365, height: 900 })
+  await page.getByLabel('旧密码', { exact: true }).fill('WrongSecurityPass123!')
+  await page.getByLabel('新密码', { exact: true }).fill('BrowserSecurityChanged456!')
+  await page.getByLabel('确认新密码', { exact: true }).fill('BrowserSecurityChanged456!')
+  await page.getByRole('button', { name: '修改密码并重新登录' }).click()
+  await expect(page.getByText('旧密码不正确，或新密码不符合要求')).toBeVisible()
+  await page.getByLabel('旧密码', { exact: true }).fill('BrowserSecuritySeed123!')
+  await page.getByRole('button', { name: '修改密码并重新登录' }).click()
+  await expect(page).toHaveURL(/\/admin\/login$/)
+  const cleared = JSON.parse((await page.evaluate(() => localStorage.getItem('auth-store')))! ).state
+  expect(cleared.accessToken).toBe('')
+  expect(cleared.refreshToken).toBe('')
+  const oldAccess = await request.get('/api/v1/admin/account', { headers: { Authorization: `Bearer ${oldSession.accessToken}` } })
+  expect(oldAccess.status()).toBe(401)
+  const oldRefresh = await request.post('/api/v1/auth/refresh', { data: { refresh_token: oldSession.refreshToken } })
+  expect(oldRefresh.status()).toBe(401)
+  await login(page, 'admin', 'e2e_security', 'BrowserSecurityChanged456!')
+  await expect(page).toHaveURL(/\/admin\/merchants\/reviews$/)
+})
+
+test('merchant provisioning, password rotation, upload, stock and orders use the real API', async ({ page }) => {
+  const username = `browser_${Date.now()}`
+  await login(page, 'admin', 'e2e_admin', 'BrowserAdminSeed123!')
+  await expect(page).toHaveURL(/\/admin\/merchants\/reviews$/)
+  await page.getByRole('button', { name: '创建商户账号', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('商户名称', { exact: true }).fill('浏览器回归商户')
+  await dialog.getByLabel('联系人', { exact: true }).fill('测试联系人')
+  await dialog.getByLabel('联系电话', { exact: true }).fill('13900001111')
+  await dialog.getByLabel('登录账号', { exact: true }).fill(username)
+  await dialog.getByLabel('初始密码', { exact: true }).fill('MerchantInitialPass123!')
+  await dialog.getByRole('button', { name: /^(OK|确\s*定)$/ }).click()
+  await expect(dialog).not.toBeVisible()
+  await page.getByRole('button', { name: /退出/ }).click()
+
+  await login(page, 'merchant', username, 'MerchantInitialPass123!')
+  await expect(page).toHaveURL(/\/merchant\/account$/)
+  await page.getByLabel('旧密码', { exact: true }).fill('MerchantInitialPass123!')
+  await page.getByLabel('新密码', { exact: true }).fill('MerchantUpdatedPass456!')
+  await page.getByRole('button', { name: '保存密码' }).click()
+  await expect(page).toHaveURL(/\/login$/)
+  await login(page, 'merchant', username, 'MerchantUpdatedPass456!')
+  await expect(page).toHaveURL(/\/merchant\/dashboard$/)
+
+  await page.goto('/admin/security')
+  await expect(page).toHaveURL(/\/merchant\/dashboard$/)
+  await page.goto('/merchant/products/new')
+  await page.locator('input[type=file]').setInputFiles({ name: 'product.png', mimeType: 'image/png', buffer: readFileSync(resolve('e2e/fixtures/product.png')) })
+  await expect(page.getByText('file_id:', { exact: false })).toBeVisible()
+  await page.getByLabel('标题', { exact: true }).fill('浏览器回归商品')
+  await page.getByLabel('描述', { exact: true }).fill('用于真实页面与接口回归的合成商品')
+  await page.getByLabel('价格(元)', { exact: true }).fill('100')
+  await page.getByLabel('原价(元)', { exact: true }).fill('200')
+  await page.getByLabel('库存数量', { exact: true }).fill('3')
+  await selectCategory(page, '一级分类', '家具类')
+  await selectCategory(page, '二级分类', '家具')
+  await page.getByRole('button', { name: /^创\s*建$/ }).click()
+  await expect(page).toHaveURL(/\/merchant\/products\/\d+$/)
+  const productURL = page.url()
+  await page.getByRole('button', { name: /^上\s*架$/ }).first().click()
+  await expect(page.getByRole('button', { name: /^下\s*架$/ }).first()).toBeVisible()
+  await page.getByRole('button', { name: /^下\s*架$/ }).first().click()
+  await expect(page.getByRole('button', { name: /^上\s*架$/ }).first()).toBeVisible()
+  await page.getByRole('button', { name: '调整库存', exact: true }).first().click()
+  const stock = page.getByRole('dialog')
+  await stock.getByLabel('调整数量', { exact: true }).fill('2')
+  await stock.getByLabel('调整原因', { exact: true }).fill('浏览器测试补库存')
+  await stock.getByRole('button', { name: '确认调整', exact: true }).click()
+  await expect(stock).not.toBeVisible()
+  expect(await stockOf(page, productURL)).toBe(5)
+  await page.getByRole('button', { name: /^上\s*架$/ }).first().click()
+  await page.getByRole('button', { name: '创建订单', exact: true }).first().click()
+  await page.getByRole('link', { name: /查看订单 #/ }).click()
+  await expect(page).toHaveURL(/\/merchant\/orders\/\d+$/)
+  await page.getByRole('button', { name: '关闭订单', exact: true }).click()
+  await expect(page.getByText('已关闭', { exact: true }).first()).toBeVisible()
+  expect(await stockOf(page, productURL)).toBe(5)
+  await page.goto(productURL)
+  await page.getByRole('button', { name: /^上\s*架$/ }).first().click()
+  await page.getByRole('button', { name: '创建订单', exact: true }).first().click()
+  await page.getByRole('link', { name: /查看订单 #/ }).click()
+  await expect(page).toHaveURL(/\/merchant\/orders\/\d+$/)
+  await page.getByRole('button', { name: '完成订单', exact: true }).click()
+  await expect(page.getByText('已完成', { exact: true }).first()).toBeVisible()
+  expect(await stockOf(page, productURL)).toBe(4)
+})

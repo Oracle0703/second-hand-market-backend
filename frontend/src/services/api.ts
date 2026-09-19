@@ -157,6 +157,13 @@ export const api = {
   adminSetMerchantStatus(merchantId: string | number, status: string) {
     return http.put(`/admin/merchants/${merchantId}/status`, { status })
   },
+  adminAccount() {
+    return http.get<APIResponse<{ account: { id: number; username: string; display_name: string; role: string; status: string; last_login_at?: string | null } }>>('/admin/account')
+  },
+  adminChangePassword(payload: { old_password: string; new_password: string }) {
+    assertSecureCredentialTransport()
+    return http.put<APIResponse<{ success: boolean }>>('/admin/account/password', payload)
+  },
   adminLogs(params: Record<string, string | number> = {}) {
     return http.get('/admin/logs', { params })
   },

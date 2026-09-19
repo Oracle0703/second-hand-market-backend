@@ -95,8 +95,41 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: Exercise concurrent stock adjustment and product editing
+      - name: Exercise stock and administrator password concurrency
         working-directory: backend
         env:
           P1_MYSQL_DSN: root:p1-ci-only@tcp(127.0.0.1:3306)/p1_test?charset=utf8mb4&parseTime=True&loc=UTC
-        run: go test ./internal/app -run '^TestP1MySQL' -count=1 -timeout=90s
+        run: go test -race ./internal/app -run '^TestP1MySQL' -count=1 -timeout=180s
+
+  browser-flow:
+    name: browser (admin security + merchant flow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies and Chromium
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Exercise real browser and isolated API
+        working-directory: frontend
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-test-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
