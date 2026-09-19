@@ -224,6 +224,106 @@ func buyerIntentMySQLSnapshot(t *testing.T, db *gorm.DB) interface{} {
 	return []interface{}{ddl, rows}
 }
 
+// Matches the metadata observed on the original deployment: early GORM used
+// unsigned IDs and nullable fields, whereas 0002 declares signed NOT NULL keys.
+func resetLegacyGORMBuyerIntentFixture(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	resetBuyerIntentMySQLFixture(t, db)
+	if err := db.Exec(`ALTER TABLE buyer_intents
+		MODIFY id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		MODIFY intent_no VARCHAR(32) NULL,
+		MODIFY buyer_id BIGINT UNSIGNED NULL,
+		MODIFY product_id BIGINT UNSIGNED NULL,
+		MODIFY status VARCHAR(16) NULL,
+		MODIFY is_open TINYINT(1) NULL`).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuyerIntentMySQLLegacyGORMMigration(t *testing.T) {
+	db := newBuyerIntentMySQLDB(t)
+	t.Run("preserves_legacy_columns_and_history", func(t *testing.T) {
+		resetLegacyGORMBuyerIntentFixture(t, db)
+		before := legacyBuyerIntentColumns(t, db)
+		original := model.BuyerIntent{IntentNo: "legacy-gorm", BuyerID: 10, ProductID: 20, MerchantID: 7, Status: model.IntentNew, IsOpen: true}
+		if err := db.Create(&original).Error; err != nil {
+			t.Fatal(err)
+		}
+		applyBuyerIntentSQL(t, db)
+		for cycle := 0; cycle < 3; cycle++ {
+			if err := db.Model(&original).Updates(map[string]interface{}{"status": model.IntentClosed, "is_open": false, "closed_at": time.Now()}).Error; err != nil {
+				t.Fatal(err)
+			}
+			original = model.BuyerIntent{IntentNo: fmt.Sprintf("gorm-cycle-%d", cycle), BuyerID: 10, ProductID: 20, MerchantID: 7, Status: model.IntentNew, IsOpen: true}
+			if err := db.Create(&original).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		duplicate := original
+		duplicate.ID, duplicate.IntentNo = 0, "gorm-duplicate"
+		if err := db.Create(&duplicate).Error; !isIdempotencyDuplicate(err) {
+			t.Fatalf("second open must hit unique constraint: %v", err)
+		}
+		applyBuyerIntentSQL(t, db)
+		if err := VerifyBuyerIntentSchema(db); err != nil {
+			t.Fatalf("post-migration read-only verification: %v", err)
+		}
+		if after := legacyBuyerIntentColumns(t, db); !reflect.DeepEqual(before, after) {
+			t.Fatalf("migration changed legacy column definitions: %v -> %v", before, after)
+		}
+		var count int64
+		if err := db.Model(&model.BuyerIntent{}).Count(&count).Error; err != nil || count != 4 {
+			t.Fatalf("preserved history count=%d err=%v", count, err)
+		}
+	})
+	for _, column := range []string{"buyer_id", "product_id", "intent_no", "status", "is_open"} {
+		t.Run("reject_null_"+column, func(t *testing.T) {
+			resetLegacyGORMBuyerIntentFixture(t, db)
+			if err := db.Exec("INSERT INTO buyer_intents (intent_no,buyer_id,product_id,merchant_id,status,is_open) VALUES ('null-fixture',1,2,7,'NEW',1)").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Table("buyer_intents").Where("id = 1").Update(column, nil).Error; err != nil {
+				t.Fatal(err)
+			}
+			before := buyerIntentMySQLSnapshot(t, db)
+			for _, suffix := range []string{"preflight", "up"} {
+				if err := runBuyerIntentSQL(db, suffix); err == nil {
+					t.Fatalf("%s accepted null %s", suffix, column)
+				}
+			}
+			if after := buyerIntentMySQLSnapshot(t, db); !reflect.DeepEqual(before, after) {
+				t.Fatal("rejected migration changed legacy schema or data")
+			}
+		})
+	}
+	t.Run("reject_mixed_column_layout", func(t *testing.T) {
+		resetLegacyGORMBuyerIntentFixture(t, db)
+		if err := db.Exec("ALTER TABLE buyer_intents MODIFY status VARCHAR(16) NOT NULL").Error; err != nil {
+			t.Fatal(err)
+		}
+		before := buyerIntentMySQLSnapshot(t, db)
+		if err := runBuyerIntentSQL(db, "up"); err == nil {
+			t.Fatal("migration accepted an unknown mixed layout")
+		}
+		if after := buyerIntentMySQLSnapshot(t, db); !reflect.DeepEqual(before, after) {
+			t.Fatal("rejected migration changed mixed layout")
+		}
+	})
+}
+
+func legacyBuyerIntentColumns(t *testing.T, db *gorm.DB) []mysqlBuyerIntentColumn {
+	t.Helper()
+	var columns []mysqlBuyerIntentColumn
+	if err := db.Raw(`SELECT column_name AS column_name, column_type AS column_type,
+		is_nullable AS is_nullable, extra AS extra
+		FROM information_schema.columns WHERE table_schema=DATABASE()
+		AND table_name='buyer_intents' AND column_name <> 'open_marker'
+		ORDER BY ordinal_position`).Scan(&columns).Error; err != nil {
+		t.Fatal(err)
+	}
+	return columns
+}
+
 func TestBuyerIntentMySQLConcurrentLifecycle(t *testing.T) {
 	db := newBuyerIntentMySQLDB(t)
 	resetBuyerIntentMySQLFixture(t, db)

@@ -115,7 +115,7 @@ func verifyBuyerIntentRows(db *gorm.DB) error {
 		statusColumn = "BINARY status"
 	}
 	err := db.Table("buyer_intents").Where(fmt.Sprintf(`
-		CASE
+		buyer_id IS NULL OR product_id IS NULL OR intent_no IS NULL OR CASE
 			WHEN %s IN ? AND is_open = 1 THEN 0
 			WHEN %s = ? AND is_open = 0 THEN 0
 			ELSE 1

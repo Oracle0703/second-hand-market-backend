@@ -66,6 +66,29 @@ BEGIN
       OR (column_name = 'is_open' AND ordinal_position = 8
         AND data_type = 'tinyint' AND column_type = 'tinyint(1)' AND is_nullable = 'NO')
     );
+  -- The original deployment was created by early GORM. Accept that complete
+  -- known layout as well as 0002, without loosening arbitrary mixed schemas.
+  IF v_count <> 6 THEN
+    SELECT COUNT(*) INTO v_count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'buyer_intents'
+      AND COALESCE(generation_expression, '') = ''
+      AND (
+        (column_name = 'id' AND ordinal_position = 1
+          AND data_type = 'bigint' AND column_type = 'bigint unsigned' AND is_nullable = 'NO')
+        OR (column_name = 'intent_no' AND ordinal_position = 2
+          AND data_type = 'varchar' AND column_type = 'varchar(32)' AND is_nullable = 'YES')
+        OR (column_name = 'buyer_id' AND ordinal_position = 3
+          AND data_type = 'bigint' AND column_type = 'bigint unsigned' AND is_nullable = 'YES')
+        OR (column_name = 'product_id' AND ordinal_position = 5
+          AND data_type = 'bigint' AND column_type = 'bigint unsigned' AND is_nullable = 'YES')
+        OR (column_name = 'status' AND ordinal_position = 7
+          AND data_type = 'varchar' AND column_type = 'varchar(16)' AND is_nullable = 'YES')
+        OR (column_name = 'is_open' AND ordinal_position = 8
+          AND data_type = 'tinyint' AND column_type = 'tinyint(1)' AND is_nullable = 'YES')
+      );
+  END IF;
   IF v_count <> 6 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'buyer intent migration: baseline columns are reordered or drifted';
@@ -198,7 +221,8 @@ BEGIN
 
   SELECT COUNT(*) INTO v_invalid_rows
   FROM buyer_intents
-  WHERE CASE
+  WHERE buyer_id IS NULL OR product_id IS NULL OR intent_no IS NULL
+    OR CASE
     WHEN BINARY status IN (BINARY 'NEW', BINARY 'CONTACTED') AND is_open = 1 THEN 0
     WHEN BINARY status = BINARY 'CLOSED' AND is_open = 0 THEN 0
     ELSE 1

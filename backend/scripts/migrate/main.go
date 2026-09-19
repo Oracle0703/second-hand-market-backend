@@ -32,9 +32,9 @@ var migrationCatalog = map[string]migrationSpec{
 	"0011_buyer_intent_open_uniqueness": {
 		ID: "0011_buyer_intent_open_uniqueness",
 		Sources: []migrationSource{
-			{FileName: "0011_buyer_intent_open_uniqueness.preflight.sql", SHA256: "2e9074126ada24b6bc161d0b72018cd4f50297123ef7d16686d6bd9818db7867"},
-			{FileName: "0011_buyer_intent_open_uniqueness.up.sql", SHA256: "2964c73f550dfad5a09865347caaa37a86af219a3c3c8e32b54414535cfeaa9d"},
-			{FileName: "0011_buyer_intent_open_uniqueness.postflight.sql", SHA256: "f722ea69e53d40acc8dcfab51e85f100f76fd3155ef9d179e530564f9b97401f"},
+			{FileName: "0011_buyer_intent_open_uniqueness.preflight.sql", SHA256: "0ad432d81fa5b35b3a488a804e497e01b994f33480d0ed982c43b26821c406ca"},
+			{FileName: "0011_buyer_intent_open_uniqueness.up.sql", SHA256: "be9112d6f72837c07d3d7f4f21f36ac98b494bf11f679d0c309e66cd74ebab75"},
+			{FileName: "0011_buyer_intent_open_uniqueness.postflight.sql", SHA256: "263eda78ff6dfe98482fb581b1ba73b929a270995d9133016dbd5866fad6b314"},
 		},
 	},
 	"0010_merchant_initial_password": {ID: "0010_merchant_initial_password", Sources: []migrationSource{{FileName: "0010_merchant_initial_password.up.sql", SHA256: "f0f2cbb3e558d18c5596c5090734bd2c48088547b79687f0304cc303fc49392f"}}},
