@@ -19,7 +19,7 @@ type AdminBootstrap struct {
 }
 
 func MigrateSchema(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&model.Merchant{},
 		&model.MerchantAccount{},
 		&model.AdminUser{},
@@ -41,7 +41,10 @@ func MigrateSchema(db *gorm.DB) error {
 		&model.BuyerFavorite{},
 		&model.BuyerHistory{},
 		&model.BuyerIntent{},
-	)
+	); err != nil {
+		return err
+	}
+	return migrateBuyerIntentOpenUniqueness(db)
 }
 
 func BootstrapAdmin(db *gorm.DB, bootstrap AdminBootstrap) error {

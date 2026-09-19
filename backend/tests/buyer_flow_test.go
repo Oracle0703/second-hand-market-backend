@@ -584,6 +584,42 @@ func TestBuyerIntentCreateConflictAndMerchantStatusFlow(t *testing.T) {
 	if createAfterClose.Code != 0 {
 		t.Fatalf("should allow create after previous intent closed: %+v", createAfterClose)
 	}
+
+	// Reopening was already covered; closing the second intent used to collide
+	// with the first closed row's (buyer_id, product_id, is_open=false) key.
+	for cycle := 2; cycle <= 3; cycle++ {
+		nextID := numToUint64(createAfterClose.Data["intent_id"])
+		path := fmt.Sprintf("/api/v1/merchant/intents/%d/close", nextID)
+		for attempt := 0; attempt < 2; attempt++ {
+			closed := requestJSON(t, srv.Router, http.MethodPost, path, map[string]interface{}{"reason": "NO_RESPONSE"}, map[string]string{"Authorization": "Bearer " + merchantToken})
+			if closed.Code != 0 || closed.Data["idempotent"] != (attempt == 1) {
+				t.Fatalf("cycle %d close attempt %d: %+v", cycle, attempt, closed)
+			}
+		}
+		contactClosed := requestJSON(t, srv.Router, http.MethodPost, fmt.Sprintf("/api/v1/merchant/intents/%d/contacted", nextID), map[string]interface{}{}, map[string]string{"Authorization": "Bearer " + merchantToken})
+		if contactClosed.Code != 10005 {
+			t.Fatalf("closed intent must not be contacted: %+v", contactClosed)
+		}
+		createAfterClose = requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/intents", merchantNo), map[string]interface{}{
+			"product_id": productID, "contact_wechat": "wx_after_close",
+		}, map[string]string{"Authorization": "Bearer " + buyerToken, "X-Device-Id": "dev-intent-001"})
+		if createAfterClose.Code != 0 {
+			t.Fatalf("create after cycle %d: %+v", cycle, createAfterClose)
+		}
+	}
+	var closedCount, openCount, closeLogs int64
+	if err := srv.DB.Model(&model.BuyerIntent{}).Where("product_id = ? AND status = ? AND is_open = ?", productID, model.IntentClosed, false).Count(&closedCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.DB.Model(&model.BuyerIntent{}).Where("product_id = ? AND is_open = ?", productID, true).Count(&openCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.DB.Model(&model.OperationLog{}).Where("merchant_id = ? AND action = ?", merchantID, "merchant_intent_close").Count(&closeLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if closedCount != 3 || openCount != 1 || closeLogs != 3 {
+		t.Fatalf("closed=%d open=%d close logs=%d; want 3/1/3", closedCount, openCount, closeLogs)
+	}
 }
 
 func TestBuyerIntentInvalidProductStatusAndPrivilegeBoundary(t *testing.T) {

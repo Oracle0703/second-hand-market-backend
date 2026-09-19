@@ -335,7 +335,7 @@
 - `buyer_users`：provider + openid 唯一；当前 provider 包括微信和抖音。
 - `buyer_device_bindings`：设备与买家绑定关系，设备和买家各自唯一，记录最近合并时间。
 - `buyer_favorites` / `buyer_histories`：通过 `owner_type + owner_key + product_id` 去重，支持 `BUYER` 或 `DEVICE`，并记录 `merchant_id`。
-- `buyer_intents`：同买家同商品最多一条 `is_open=true` 记录；状态为 `NEW/CONTACTED/CLOSED`，不参与库存锁定。
+- `buyer_intents`：同买家同商品最多一条 `is_open=true` 记录；状态为 `NEW/CONTACTED/CLOSED`，不参与库存锁定。0011 迁移以 MySQL 可空生成列 / SQLite 部分唯一索引替换旧三列唯一索引，允许多条关闭历史；见[迁移说明](buyer-intent-history.md)。
 
 说明：`products.closed_at` 是历史字段，为兼容旧数据保留；当前商品状态机不会写入或依赖它，商品关闭语义已由 `OFF_SHELF` 承担。
 

@@ -29,6 +29,14 @@ type migrationSource struct {
 }
 
 var migrationCatalog = map[string]migrationSpec{
+	"0011_buyer_intent_open_uniqueness": {
+		ID: "0011_buyer_intent_open_uniqueness",
+		Sources: []migrationSource{
+			{FileName: "0011_buyer_intent_open_uniqueness.preflight.sql", SHA256: "2e9074126ada24b6bc161d0b72018cd4f50297123ef7d16686d6bd9818db7867"},
+			{FileName: "0011_buyer_intent_open_uniqueness.up.sql", SHA256: "2964c73f550dfad5a09865347caaa37a86af219a3c3c8e32b54414535cfeaa9d"},
+			{FileName: "0011_buyer_intent_open_uniqueness.postflight.sql", SHA256: "f722ea69e53d40acc8dcfab51e85f100f76fd3155ef9d179e530564f9b97401f"},
+		},
+	},
 	"0010_merchant_initial_password": {ID: "0010_merchant_initial_password", Sources: []migrationSource{{FileName: "0010_merchant_initial_password.up.sql", SHA256: "f0f2cbb3e558d18c5596c5090734bd2c48088547b79687f0304cc303fc49392f"}}},
 	"0001_init": {
 		ID: "0001_init",
@@ -255,86 +263,5 @@ func loadMigrationSourceFromDir(directory string, source migrationSource) ([]str
 }
 
 func splitSQLStatements(source string) ([]string, error) {
-	var (
-		statements   []string
-		current      strings.Builder
-		quote        byte
-		lineComment  bool
-		blockComment bool
-	)
-
-	appendStatement := func() {
-		statement := strings.TrimSpace(current.String())
-		current.Reset()
-		if statement != "" {
-			statements = append(statements, statement)
-		}
-	}
-
-	for i := 0; i < len(source); i++ {
-		character := source[i]
-
-		if lineComment {
-			if character == '\n' {
-				lineComment = false
-				current.WriteByte('\n')
-			}
-			continue
-		}
-		if blockComment {
-			if character == '*' && i+1 < len(source) && source[i+1] == '/' {
-				blockComment = false
-				current.WriteByte(' ')
-				i++
-			}
-			continue
-		}
-		if quote != 0 {
-			current.WriteByte(character)
-			if character == '\\' && quote != '`' && i+1 < len(source) {
-				i++
-				current.WriteByte(source[i])
-				continue
-			}
-			if character == quote {
-				if i+1 < len(source) && source[i+1] == quote {
-					i++
-					current.WriteByte(source[i])
-					continue
-				}
-				quote = 0
-			}
-			continue
-		}
-
-		switch {
-		case character == '-' && i+1 < len(source) && source[i+1] == '-':
-			lineComment = true
-			current.WriteByte(' ')
-			i++
-		case character == '#':
-			lineComment = true
-			current.WriteByte(' ')
-		case character == '/' && i+1 < len(source) && source[i+1] == '*':
-			blockComment = true
-			current.WriteByte(' ')
-			i++
-		case character == '\'' || character == '"' || character == '`':
-			quote = character
-			current.WriteByte(character)
-		case character == ';':
-			appendStatement()
-		default:
-			current.WriteByte(character)
-		}
-	}
-
-	if quote != 0 || blockComment {
-		return nil, errors.New("migration SQL is invalid")
-	}
-	appendStatement()
-	if len(statements) == 0 {
-		return nil, errors.New("migration SQL is empty")
-	}
-	return statements, nil
+	return databasecmd.SplitSQLStatements(source)
 }
