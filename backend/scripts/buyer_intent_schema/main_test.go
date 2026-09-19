@@ -17,9 +17,9 @@ func TestCheckDoesNotMigrateAndSQLiteApplyPreservesRows(t *testing.T) {
 	}
 	defer databasecmd.CloseDatabase(db)
 	for _, statement := range []string{
-		"CREATE TABLE buyer_intents (id INTEGER PRIMARY KEY, buyer_id INTEGER NOT NULL, product_id INTEGER NOT NULL, status TEXT NOT NULL, is_open INTEGER NOT NULL)",
+		"CREATE TABLE buyer_intents (id INTEGER PRIMARY KEY, buyer_id INTEGER NOT NULL, product_id INTEGER NOT NULL, status TEXT NOT NULL, is_open INTEGER NOT NULL, intent_no TEXT NOT NULL)",
 		"CREATE UNIQUE INDEX uk_buyer_product_open ON buyer_intents (buyer_id, product_id, is_open)",
-		"INSERT INTO buyer_intents VALUES (1, 10, 20, 'CLOSED', 0)",
+		"INSERT INTO buyer_intents VALUES (1, 10, 20, 'CLOSED', 0, 'history-1')",
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)
@@ -36,7 +36,7 @@ func TestCheckDoesNotMigrateAndSQLiteApplyPreservesRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.Exec("INSERT INTO buyer_intents VALUES (2, 10, 20, 'CLOSED', 0)").Error; err != nil {
+	if err := db.Exec("INSERT INTO buyer_intents VALUES (2, 10, 20, 'CLOSED', 0, 'history-2')").Error; err != nil {
 		t.Fatal(err)
 	}
 	var count int64
