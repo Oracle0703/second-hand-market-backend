@@ -362,24 +362,26 @@ type BuyerHistory struct {
 
 type BuyerIntent struct {
 	ID             uint64  `gorm:"primaryKey"`
-	IntentNo       string  `gorm:"size:32;uniqueIndex"`
-	BuyerID        uint64  `gorm:"uniqueIndex:uk_buyer_product_open,priority:1;index:idx_buyer_intent_buyer_created,priority:1"`
+	IntentNo       string  `gorm:"size:32;not null;uniqueIndex"`
+	BuyerID        uint64  `gorm:"type:bigint;not null;index:idx_buyer_intent_buyer_created,priority:1"`
 	SourceDeviceID *string `gorm:"size:64;index:idx_buyer_intent_source_device_created,priority:1"`
-	ProductID      uint64  `gorm:"uniqueIndex:uk_buyer_product_open,priority:2;index:idx_buyer_intent_product_open,priority:1"`
+	ProductID      uint64  `gorm:"type:bigint;not null;index:idx_buyer_intent_product_open,priority:1"`
 	MerchantID     uint64  `gorm:"index:idx_buyer_intent_merchant_status_created,priority:1"`
-	Status         string  `gorm:"size:16;index:idx_buyer_intent_merchant_status_created,priority:2"`
-	IsOpen         bool    `gorm:"uniqueIndex:uk_buyer_product_open,priority:3;index:idx_buyer_intent_product_open,priority:2"`
-	ContactName    *string `gorm:"size:64"`
-	ContactPhone   *string `gorm:"size:20"`
-	ContactWechat  *string `gorm:"size:64"`
-	Message        *string `gorm:"size:500"`
-	HandledBy      *uint64
-	HandledAt      *time.Time
-	ClosedAt       *time.Time
-	CloseReason    *string   `gorm:"size:32"`
-	MerchantNote   *string   `gorm:"size:255"`
-	CreatedAt      time.Time `gorm:"index:idx_buyer_intent_merchant_status_created,priority:3;index:idx_buyer_intent_buyer_created,priority:2;index:idx_buyer_intent_source_device_created,priority:2"`
-	UpdatedAt      time.Time
+	Status         string  `gorm:"size:16;not null;index:idx_buyer_intent_merchant_status_created,priority:2"`
+	IsOpen         bool    `gorm:"not null;index:idx_buyer_intent_product_open,priority:2"`
+	// MySQL computes this column; SQLite uses a partial index instead.
+	OpenMarker    *uint8  `gorm:"->;-:migration"`
+	ContactName   *string `gorm:"size:64"`
+	ContactPhone  *string `gorm:"size:20"`
+	ContactWechat *string `gorm:"size:64"`
+	Message       *string `gorm:"size:500"`
+	HandledBy     *uint64
+	HandledAt     *time.Time
+	ClosedAt      *time.Time
+	CloseReason   *string   `gorm:"size:32"`
+	MerchantNote  *string   `gorm:"size:255"`
+	CreatedAt     time.Time `gorm:"index:idx_buyer_intent_merchant_status_created,priority:3;index:idx_buyer_intent_buyer_created,priority:2;index:idx_buyer_intent_source_device_created,priority:2"`
+	UpdatedAt     time.Time
 }
 
 type IdempotencyRecord struct {

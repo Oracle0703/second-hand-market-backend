@@ -1045,13 +1045,6 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
 	data, err := s.runWithIdempotency(c, payload, func(idemTx *gorm.DB) (map[string]interface{}, error) {
-		var cnt int64
-		if err := idemTx.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND product_id = ? AND is_open = ?", actor.UserID, merchant.ID, req.ProductID, true).Count(&cnt).Error; err != nil {
-			return nil, common.ErrInternal
-		}
-		if cnt > 0 {
-			return nil, common.ErrConflict
-		}
 		intent := model.BuyerIntent{
 			IntentNo:       common.BuildBizNo("I"),
 			BuyerID:        actor.UserID,
@@ -1065,11 +1058,8 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 			ContactWechat:  req.ContactWechat,
 			Message:        req.Message,
 		}
-		if err := idemTx.Create(&intent).Error; err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
-				return nil, common.ErrConflict
-			}
-			return nil, common.ErrInternal
+		if err := createBuyerIntent(idemTx, &intent); err != nil {
+			return nil, err
 		}
 		return map[string]interface{}{
 			"intent_id":  intent.ID,

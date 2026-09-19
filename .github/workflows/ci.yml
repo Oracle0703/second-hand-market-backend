@@ -101,6 +101,40 @@ jobs:
           P1_MYSQL_DSN: root:p1-ci-only@tcp(127.0.0.1:3306)/p1_test?charset=utf8mb4&parseTime=True&loc=UTC
         run: go test -race ./internal/app -run '^TestP1MySQL' -count=1 -timeout=180s
 
+  buyer-intent-mysql:
+    name: buyer intent history (MySQL ${{ matrix.mysql }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ['8.0', '8.4']
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: intent-ci-only
+          MYSQL_DATABASE: buyer_intent_ci
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pintent-ci-only"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Exercise migration, history, and concurrent requests
+        working-directory: backend
+        env:
+          BUYER_INTENT_MYSQL_TEST: '1'
+          BUYER_INTENT_MYSQL_DSN: root:intent-ci-only@tcp(127.0.0.1:${{ job.services.mysql.ports[3306] }})/buyer_intent_ci?parseTime=true&loc=UTC&timeout=5s&readTimeout=10s&writeTimeout=10s
+        run: go test -race ./internal/app -run '^TestBuyerIntentMySQL' -count=1 -timeout=180s -v
+
   browser-flow:
     name: browser (admin security + merchant flow)
     runs-on: ubuntu-latest

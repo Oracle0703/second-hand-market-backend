@@ -59,6 +59,20 @@ func TestParseMigrationSelectionRequiresExactlyOneAllowlistedMigration(t *testin
 	}
 }
 
+func TestBuyerIntentMigrationLoadsAllThreeStages(t *testing.T) {
+	spec := migrationCatalog["0011_buyer_intent_open_uniqueness"]
+	statements, err := loadMigrationStatementsFromDir("../../migrations", spec)
+	if err != nil || len(statements) != 12 {
+		t.Fatalf("statements=%d, err=%v", len(statements), err)
+	}
+	for i, stage := range []string{"preflight", "migration", "postflight"} {
+		if !strings.HasPrefix(statements[i*4+1], "CREATE PROCEDURE buyer_intent_open_uniqueness_"+stage+"()") ||
+			statements[i*4+2] != "CALL buyer_intent_open_uniqueness_"+stage+"()" {
+			t.Fatalf("unexpected stage %d statements: %q", i, statements[i*4:i*4+4])
+		}
+	}
+}
+
 func Test0004MigrationLoadsAllThreeStages(t *testing.T) {
 	spec, err := parseMigrationSelection([]string{"--migration", "0004_merchant_multi_stock"})
 	if err != nil {

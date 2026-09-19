@@ -16,6 +16,7 @@ go run ./scripts/migrate --migration 0001_init
 go run ./scripts/migrate --migration 0002_buyer_domain
 go run ./scripts/migrate --migration 0003_buyer_auth_provider
 go run ./scripts/migrate --migration 0004_merchant_multi_stock
+go run ./scripts/migrate --migration 0011_buyer_intent_open_uniqueness
 ```
 
 The first three selections each validate and execute one existing `.up.sql` source. The 0004
@@ -38,6 +39,11 @@ retry it.
 
 `0004_merchant_multi_stock` must not be run against an active environment until Issue #17 /
 F-07 is included in the same separately authorized maintenance release with writers stopped.
+
+`0011_buyer_intent_open_uniqueness` validates and executes its preflight, up, and
+postflight sources in order. It supports MySQL client `DELIMITER` directives for
+the migration's stored procedures. See [the release instructions](../../docs/buyer-intent-history.md)
+for the separate SQLite maintenance command, required privileges, and rollback limits.
 
 ## Bootstrap one administrator
 

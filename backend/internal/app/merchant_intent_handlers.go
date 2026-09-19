@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
@@ -15,7 +16,9 @@ import (
 func (s *Server) loadOwnedIntent(tx *gorm.DB, intentID, merchantID uint64) (model.BuyerIntent, error) {
 	target := s.DB
 	if tx != nil {
-		target = tx
+		// Contact/close must observe the last committed state, including when
+		// another request just closed this intent. SQLite omits FOR UPDATE.
+		target = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	var intent model.BuyerIntent
 	if err := target.Where("id = ?", intentID).First(&intent).Error; err != nil {
@@ -23,6 +26,9 @@ func (s *Server) loadOwnedIntent(tx *gorm.DB, intentID, merchantID uint64) (mode
 	}
 	if intent.MerchantID != merchantID {
 		return model.BuyerIntent{}, common.ErrForbidden
+	}
+	if err := validateBuyerIntentState(intent); err != nil {
+		return model.BuyerIntent{}, err
 	}
 	return intent, nil
 }

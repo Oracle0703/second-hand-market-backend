@@ -151,6 +151,7 @@
 | merchant_id | bigint | 商家 ID |
 | status | varchar(16) | `NEW/CONTACTED/CLOSED` |
 | is_open | tinyint(1) | 1=未关闭，0=已关闭 |
+| open_marker | tinyint null（MySQL 生成列） | 未关闭为 1，关闭为 NULL；0011 迁移后生效 |
 | contact_name | varchar(64) null | 联系人 |
 | contact_phone | varchar(20) null | 手机号 |
 | contact_wechat | varchar(64) null | 微信号 |
@@ -164,7 +165,10 @@
 | updated_at | datetime | 更新时间 |
 
 唯一约束：
-1. `uk_buyer_product_open(buyer_id, product_id, is_open)`
+1. MySQL：`uk_buyer_intent_open(buyer_id, product_id, open_marker)`。
+2. SQLite：`UNIQUE (buyer_id, product_id) WHERE is_open = 1`。
+3. 最多一条未关闭意向，已关闭历史可保留多条。旧 `uk_buyer_product_open` 由
+   `0011_buyer_intent_open_uniqueness` 替换；部署前执行[迁移与检查](buyer-intent-history.md)。
 
 索引建议：
 1. `idx_merchant_status_created(merchant_id, status, created_at)`
