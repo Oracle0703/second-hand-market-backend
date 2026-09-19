@@ -177,3 +177,7 @@ backend/uploads/
 
 # Leftover local miniapp build dump (node_modules/dist only, no source)
 /miniapp-aircon/
+
+# Browser test reports (synthetic fixtures only)
+/frontend/playwright-report/
+/frontend/test-results/

@@ -18,7 +18,8 @@ import { useAuthStore } from '../stores/auth-store'
 
 const adminMenus: MenuDataItem[] = [
   { path: '/admin/merchants/reviews', name: '商户管理', icon: <AuditOutlined /> },
-  { path: '/admin/logs', name: '全局日志', icon: <FileTextOutlined /> }
+  { path: '/admin/logs', name: '全局日志', icon: <FileTextOutlined /> },
+  { path: '/admin/security', name: '安全设置', icon: <SettingOutlined /> }
 ]
 
 const merchantMenus: MenuDataItem[] = [

@@ -28,6 +28,8 @@ function loadable(node: ReactNode) {
   return <Suspense fallback={<p>加载中...</p>}>{node}</Suspense>
 }
 
+const AdminSecurityPage = lazy(() => import('../pages/admin/security/SecurityPage').then((m) => ({ default: m.SecurityPage })))
+
 export function App() {
   return (
     <BrowserRouter>
@@ -45,6 +47,7 @@ export function App() {
               <Route path="/admin/merchants/reviews" element={loadable(<AdminReviewsPage />)} />
               <Route path="/admin/merchants/reviews/:merchantId" element={loadable(<AdminReviewDetailPage />)} />
               <Route path="/admin/logs" element={loadable(<AdminLogsPage />)} />
+              <Route path="/admin/security" element={loadable(<AdminSecurityPage />)} />
             </Route>
 
             <Route element={<RequireAuth role="MERCHANT" scope="full" />}>

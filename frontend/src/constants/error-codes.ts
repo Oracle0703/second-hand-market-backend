@@ -28,6 +28,11 @@ const UPLOAD_ERROR_MESSAGES: Record<string, Partial<Record<number, string>>> = {
 }
 
 export function apiErrorMessage(code: number, path?: string, fallback?: string) {
+  if (path === '/admin/account/password') {
+    if (code === 10001) return '旧密码不正确，或新密码不符合要求'
+    if (code === 10010) return '账号状态已变化，请重新登录后再试'
+    if (code === 20001) return '密码修改失败，请稍后重试'
+  }
   const uploadMessage = UPLOAD_ERROR_MESSAGES[path ?? '']?.[code]
   if (uploadMessage) return uploadMessage
   return ERROR_MESSAGES[code] ?? fallback ?? '请求失败，请稍后重试'
