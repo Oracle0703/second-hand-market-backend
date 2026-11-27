@@ -4,7 +4,10 @@ import React from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import Taro from '@tarojs/taro'
+import Taro, { useDidShow } from '@tarojs/taro'
+import { trackClick } from '@/services/analytics'
+import { usePageExposure } from '@/hooks/usePageExposure'
+import { fetchBuyerProducts } from '../src/services/buyer'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -20,6 +23,9 @@ vi.mock('@tarojs/taro', () => ({
   useDidShow: vi.fn(),
   useReachBottom: vi.fn()
 }))
+
+vi.mock('@/services/analytics', () => ({ trackClick: vi.fn() }))
+vi.mock('@/hooks/usePageExposure', () => ({ usePageExposure: vi.fn() }))
 
 vi.mock('@tarojs/components', async () => {
   const react = await import('react')
@@ -49,7 +55,7 @@ vi.mock('@tarojs/components', async () => {
   return {
     Button: component('button'),
     Image: component('img'),
-    Swiper: component('swiper'),
+    Swiper: component('taro-swiper'),
     SwiperItem: component('swiper-item'),
     Text: component('span'),
     View: component('div')
@@ -75,6 +81,7 @@ afterEach(() => {
     root.unmount()
   })
   container.remove()
+  vi.clearAllMocks()
 })
 
 describe('首页视频导航入口', () => {
@@ -100,5 +107,40 @@ describe('首页视频导航入口', () => {
     })
 
     expect(Taro.navigateTo).toHaveBeenCalledWith({ url: '/pages/store-guide/index' })
+  })
+
+  test('同一商品在首页不同位置点击时各记录对应入口', async () => {
+    vi.mocked(fetchBuyerProducts).mockResolvedValueOnce({
+      items: [{
+        id: 17, title: '商品', stock: 1, price_cent: 100, condition_level: 'GOOD', cover_url: '',
+        status: 'ON_SHELF', merchant_id: 1, merchant_name: '门店', is_favorited: false
+      }],
+      total: 1, page: 1, page_size: 10
+    })
+    vi.mocked(Taro.showModal).mockResolvedValue({ confirm: false, cancel: true, errMsg: 'ok' })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => root.render(React.createElement(HomePage)))
+    const onShow = vi.mocked(useDidShow).mock.calls[0][0]
+    await act(async () => { onShow() })
+
+    await act(async () => {
+      container.querySelector<HTMLElement>('.home-swiper-slide')!.click()
+      container.querySelector<HTMLElement>('.home-product-cover-wrap')!.click()
+      container.querySelector<HTMLElement>('.home-location-btn')!.click()
+      container.querySelector<HTMLElement>('.home-want-btn')!.click()
+    })
+
+    const page = 'pages/home/index'
+    expect(usePageExposure).toHaveBeenCalledWith(page)
+    expect(vi.mocked(trackClick).mock.calls).toEqual([
+      ['product_click', page, 'home_carousel', 17],
+      ['product_click', page, 'home_grid', 17],
+      ['contact_click', page, 'home_store_phone', undefined],
+      ['contact_click', page, 'home_want', 17]
+    ])
+    expect(Taro.navigateTo).toHaveBeenCalledTimes(2)
+    expect(Taro.navigateTo).toHaveBeenCalledWith({ url: '/pages/product/detail/index?id=17' })
   })
 })

@@ -21,6 +21,7 @@ vi.mock('@tarojs/taro', () => ({
     showToast: mocks.showToast,
     redirectTo: mocks.redirectTo
   },
+  useDidShow: vi.fn(),
   useRouter: () => ({ params: { redirect: '%2Fpages%2Fhistory%2Findex' } })
 }))
 vi.mock('@tarojs/components', async () => {

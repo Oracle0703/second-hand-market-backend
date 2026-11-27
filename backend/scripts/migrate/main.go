@@ -29,6 +29,13 @@ type migrationSource struct {
 }
 
 var migrationCatalog = map[string]migrationSpec{
+	"0012_miniapp_analytics": {
+		ID: "0012_miniapp_analytics",
+		Sources: []migrationSource{{
+			FileName: "0012_miniapp_analytics.up.sql",
+			SHA256:   "a17e8c3729762d9f52137ac90c1705cdf65836557d93de27e498564b49466db4",
+		}},
+	},
 	"0011_buyer_intent_open_uniqueness": {
 		ID: "0011_buyer_intent_open_uniqueness",
 		Sources: []migrationSource{

@@ -3,10 +3,15 @@ import { useQuery, useQueryClient } from '@/libs/react-query'
 import { useToastMutation } from '@/hooks/useToastMutation'
 import Taro from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
+import { trackClick } from '@/services/analytics'
 import { BuyerHistoryItem, clearHistories, listHistories } from '../../services/buyer'
 import { centToYuanText } from '../../utils/price'
 
+const PAGE = 'pages/history/index'
+
 export default function HistoryPage() {
+  usePageExposure(PAGE)
   const queryClient = useQueryClient()
   const query = useQuery({ queryKey: ['buyer-histories'], queryFn: () => listHistories(1, 50) })
   const clearMutation = useToastMutation({
@@ -37,7 +42,14 @@ export default function HistoryPage() {
 
       <View className="card">
         {(query.data?.items || []).map((item: BuyerHistoryItem) => (
-          <View key={item.product_id} className="list-item" onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.product_id}` })}>
+          <View
+            key={item.product_id}
+            className="list-item"
+            onClick={() => {
+              trackClick('product_click', PAGE, 'history_list', item.product_id)
+              Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.product_id}` })
+            }}
+          >
             <Text>{item.title}</Text>
             <View style={{ marginTop: '8rpx', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
               <Text style={{ color: '#d24b2f' }}>售价 ¥{centToYuanText(item.price_cent)}</Text>

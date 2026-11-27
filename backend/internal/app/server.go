@@ -203,6 +203,7 @@ func (s *Server) registerRoutes() {
 			merchant.PUT("/categories/:id", middleware.RequireFullMerchantScope(), s.handleUpdateCategory)
 			merchant.DELETE("/categories/:id", middleware.RequireFullMerchantScope(), s.handleDeleteCategory)
 			merchant.GET("/dashboard", middleware.RequireFullMerchantScope(), s.handleDashboard)
+			merchant.GET("/analytics", middleware.RequireFullMerchantScope(), s.handleMerchantAnalytics)
 
 			merchant.POST("/products", middleware.RequireFullMerchantScope(), s.handleCreateProduct)
 			merchant.PUT("/products/:id", middleware.RequireFullMerchantScope(), s.handleUpdateProduct)
@@ -231,6 +232,7 @@ func (s *Server) registerRoutes() {
 			buyer.GET("/categories", s.handleBuyerCategories)
 			buyer.GET("/products", s.handleBuyerProducts)
 			buyer.GET("/products/:id", s.handleBuyerProductDetail)
+			buyer.POST("/analytics/events", requestBodyLimit(32<<10), s.handleBuyerAnalyticsEvents)
 
 			buyer.POST("/auth/miniapp-login", s.handleBuyerMiniProgramLogin)
 			buyer.POST("/auth/wechat-login", s.handleBuyerWechatLogin)

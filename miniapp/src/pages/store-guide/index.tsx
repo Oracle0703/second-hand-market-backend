@@ -1,8 +1,10 @@
 import React from 'react'
 import { Text, Video, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
 import { hasStoreGuideVideo, STORE_GUIDE_VIDEO } from '../../constants/store'
 
 export default function StoreGuidePage() {
+  usePageExposure('pages/store-guide/index')
   const ready = hasStoreGuideVideo(STORE_GUIDE_VIDEO)
 
   return (

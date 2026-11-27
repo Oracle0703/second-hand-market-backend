@@ -1,10 +1,12 @@
 import React, { useState } from 'react'
 import Taro from '@tarojs/taro'
 import { Button, Input, Text, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
 
 const KEY = 'buyer_search_history'
 
 export default function SearchPage() {
+  usePageExposure('pages/search/index')
   const [keyword, setKeyword] = useState('')
   const [history, setHistory] = useState<string[]>(() => Taro.getStorageSync<string[]>(KEY) || [])
 

@@ -1,11 +1,13 @@
 import React, { useState } from 'react'
 import Taro, { useRouter } from '@tarojs/taro'
+import { usePageExposure } from '@/hooks/usePageExposure'
 import { Button, Text, View } from '@tarojs/components'
 import { loginByMiniProgram, mergeGuest } from '../../services/buyer'
 import { ensureDeviceID, useSessionStore } from '../../stores/session'
 import { getMiniProgramPlatform } from '../../utils/platform'
 
 export default function LoginPage() {
+  usePageExposure('pages/login/index')
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')

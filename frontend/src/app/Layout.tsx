@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   AuditOutlined,
+  BarChartOutlined,
   FileTextOutlined,
   HomeOutlined,
   LogoutOutlined,
@@ -24,6 +25,7 @@ const adminMenus: MenuDataItem[] = [
 
 const merchantMenus: MenuDataItem[] = [
   { path: '/merchant/dashboard', name: '全局', icon: <HomeOutlined /> },
+  { path: '/merchant/analytics', name: '小程序统计', icon: <BarChartOutlined /> },
   { path: '/merchant/products', name: '商品', icon: <ShoppingOutlined /> },
   { path: '/merchant/categories', name: '商品分类', icon: <TagsOutlined /> },
   { path: '/merchant/orders', name: '订单', icon: <OrderedListOutlined /> },

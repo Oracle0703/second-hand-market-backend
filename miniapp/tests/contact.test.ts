@@ -7,6 +7,10 @@ const requirePrivacyAuthorize = vi.fn(({ success }) => success({ errMsg: 'ok' })
 const setClipboardData = vi.fn(async () => ({}))
 const showToast = vi.fn(async () => ({}))
 
+const trackClick = vi.fn()
+const page = 'pages/product/detail/index'
+vi.mock('@/services/analytics', () => ({ trackClick }))
+
 vi.mock('@tarojs/taro', () => ({
   default: {
     showModal,
@@ -27,6 +31,7 @@ describe('联系商家电话', () => {
     requirePrivacyAuthorize.mockClear()
     setClipboardData.mockClear()
     showToast.mockClear()
+    trackClick.mockClear()
     showModal.mockResolvedValue({ confirm: true })
     getPrivacySetting.mockImplementation(({ success }) => success({ needAuthorization: false }))
     requirePrivacyAuthorize.mockImplementation(({ success }) => success({ errMsg: 'ok' }))
@@ -38,8 +43,12 @@ describe('联系商家电话', () => {
   test('确认联系时展示并拨打最新商家电话', async () => {
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
+    await promptAndCallStore(page, 'detail_want', 42)
 
+    expect(trackClick.mock.calls).toEqual([
+      ['contact_click', page, 'detail_want', 42],
+      ['contact_confirm', page, 'detail_want', 42]
+    ])
     expect(showModal).toHaveBeenCalledWith(expect.objectContaining({
       content: '是否拨打 15008387726 这个电话？'
     }))
@@ -52,7 +61,7 @@ describe('联系商家电话', () => {
     getPrivacySetting.mockImplementation(({ success }) => success({ needAuthorization: true }))
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
+    await promptAndCallStore(page, 'detail_want', 42)
 
     expect(requirePrivacyAuthorize).toHaveBeenCalled()
     expect(makePhoneCall).toHaveBeenCalledWith({ phoneNumber: '15008387726' })
@@ -67,8 +76,8 @@ describe('联系商家电话', () => {
     })
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
-    await promptAndCallStore()
+    await promptAndCallStore(page, 'detail_want', 42)
+    await promptAndCallStore(page, 'detail_want', 42)
 
     expect(getPrivacySetting).toHaveBeenCalledTimes(2)
     expect(requirePrivacyAuthorize).toHaveBeenCalledTimes(1)
@@ -83,8 +92,8 @@ describe('联系商家电话', () => {
     })
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
-    await promptAndCallStore()
+    await promptAndCallStore(page, 'detail_want', 42)
+    await promptAndCallStore(page, 'detail_want', 42)
 
     expect(getPrivacySetting).toHaveBeenCalledTimes(2)
     expect(requirePrivacyAuthorize).toHaveBeenCalledTimes(1)
@@ -95,8 +104,9 @@ describe('联系商家电话', () => {
     showModal.mockResolvedValue({ confirm: false })
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
+    await promptAndCallStore('pages/home/index', 'home_store_phone')
 
+    expect(trackClick.mock.calls).toEqual([['contact_click', 'pages/home/index', 'home_store_phone', undefined]])
     expect(makePhoneCall).not.toHaveBeenCalled()
   })
 
@@ -105,8 +115,12 @@ describe('联系商家电话', () => {
     requirePrivacyAuthorize.mockImplementation(({ fail }) => fail({ errNo: 113280, errMsg: 'privacy permission is not authorized' }))
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
+    await promptAndCallStore(page, 'detail_want', 42)
 
+    expect(trackClick.mock.calls).toEqual([
+      ['contact_click', page, 'detail_want', 42],
+      ['contact_confirm', page, 'detail_want', 42]
+    ])
     expect(makePhoneCall).not.toHaveBeenCalled()
     expect(showModal).toHaveBeenLastCalledWith(expect.objectContaining({
       title: '无法拉起拨号',
@@ -118,7 +132,7 @@ describe('联系商家电话', () => {
     makePhoneCall.mockRejectedValue({ errNo: 113279, errMsg: 'privacy declaration missing' })
     const { promptAndCallStore } = await import('../src/utils/contact')
 
-    await promptAndCallStore()
+    await promptAndCallStore(page, 'detail_want', 42)
 
     expect(showModal).toHaveBeenLastCalledWith(expect.objectContaining({
       title: '无法拉起拨号',

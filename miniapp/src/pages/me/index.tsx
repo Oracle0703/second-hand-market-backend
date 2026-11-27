@@ -1,12 +1,14 @@
 import React, { useEffect } from 'react'
 import { useQuery, useQueryClient } from '@/libs/react-query'
 import Taro, { useDidShow } from '@tarojs/taro'
+import { usePageExposure } from '@/hooks/usePageExposure'
 import { Button, Text, View } from '@tarojs/components'
 import { fetchSummary, logoutBuyer } from '../../services/buyer'
 import { ensureDeviceID, useSessionStore } from '../../stores/session'
 import { getMiniProgramPlatform } from '../../utils/platform'
 
 export default function MePage() {
+  usePageExposure('pages/me/index')
   const owner = useSessionStore((state) => {
     if (!state.hydrated) return null
     if (state.accessToken) return `buyer:${state.profile?.id ?? 'unknown'}:${state.sessionVersion}`

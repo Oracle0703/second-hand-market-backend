@@ -158,4 +158,10 @@ describe('Layout logout', () => {
 
     expect(screen.getByRole('link', { name: '商品分类' })).toHaveAttribute('href', '/merchant/categories')
   })
+
+  it('shows miniapp analytics in the merchant menu', () => {
+    setAuthenticatedUser('OWNER')
+    renderLayout()
+    expect(screen.getByRole('link', { name: '小程序统计' })).toHaveAttribute('href', '/merchant/analytics')
+  })
 })

@@ -1,4 +1,5 @@
 import Taro from '@tarojs/taro'
+import { trackClick } from '@/services/analytics'
 import { STORE_PHONE_NUMBER } from '../constants/contact'
 
 type CallbackResult = {
@@ -192,7 +193,8 @@ export async function ensureStorePhonePrivacyAuthorized(options: EnsurePrivacyOp
   }
 }
 
-export async function promptAndCallStore(): Promise<void> {
+export async function promptAndCallStore(page: string, source: string, productId?: number): Promise<void> {
+  trackClick('contact_click', page, source, productId)
   const modal = await Taro.showModal({
     title: '联系商家',
     content: `是否拨打 ${STORE_PHONE_NUMBER} 这个电话？`,
@@ -204,6 +206,7 @@ export async function promptAndCallStore(): Promise<void> {
     return
   }
 
+  trackClick('contact_confirm', page, source, productId)
   const authorized = await ensureStorePhonePrivacyAuthorized({ showFailure: true })
   if (!authorized) {
     return
