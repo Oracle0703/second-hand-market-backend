@@ -962,10 +962,15 @@ func TestOrderDetailHandlesMissingProductAndQueryErrors(t *testing.T) {
 	if err := srv.DB.Unscoped().Model(&model.Product{}).Where("id = ?", productID).Update("merchant_id", merchantID+1).Error; err != nil {
 		t.Fatal(err)
 	}
-	foreign := orderDetail(requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth))
-	if foreign["product"] != nil || foreign["product_missing"] != true {
-		t.Fatalf("foreign product should be unavailable in this merchant's order: %+v", foreign)
+	assertMissingProduct := func(detail map[string]interface{}) {
+		t.Helper()
+		// Existing web pages dereference product.id/title/status without a null check.
+		product, ok := detail["product"].(map[string]interface{})
+		if !ok || product["id"] != float64(0) || product["title"] != "" || product["status"] != "" || detail["product_missing"] != true {
+			t.Fatalf("missing product must keep the legacy fields without exposing another merchant: %+v", detail)
+		}
 	}
+	assertMissingProduct(orderDetail(requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)))
 
 	if err := srv.DB.Migrator().DropTable(&model.OrderEvent{}); err != nil {
 		t.Fatalf("drop order events table: %v", err)
@@ -986,9 +991,7 @@ func TestOrderDetailHandlesMissingProductAndQueryErrors(t *testing.T) {
 		t.Fatalf("order detail with missing product should degrade, got: status=%d resp=%+v", missing.HTTPStatus, missing)
 	}
 	detail = orderDetail(missing)
-	if p, exists := detail["product"]; !exists || p != nil || detail["product_missing"] != true {
-		t.Fatalf("missing product should be null with product_missing=true: %+v", detail)
-	}
+	assertMissingProduct(detail)
 	if numToUint64(detail["id"]) != orderID {
 		t.Fatalf("order fields should still be returned: %+v", detail)
 	}

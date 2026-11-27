@@ -128,6 +128,18 @@ jobs:
             docker exec -i -e MYSQL_PWD "$MYSQL_SERVICE" mysql -uroot p1_test < "migrations/$migration.up.sql"
           done
           go run ./scripts/check_transaction_tables
+          merchant_tables=(auth_sessions categories merchant_accounts merchant_audit_logs merchants)
+          for table in "${merchant_tables[@]}"; do
+            docker exec -e MYSQL_PWD "$MYSQL_SERVICE" mysql -uroot p1_test -e "ALTER TABLE $table ENGINE=MEMORY"
+          done
+          if output=$(go run ./scripts/check_transaction_tables 2>&1); then
+            echo "Preflight accepted nontransactional merchant tables" >&2
+            exit 1
+          fi
+          printf '%s\n' "$output"
+          for table in "${merchant_tables[@]}"; do
+            grep -qw "$table" <<< "$output"
+          done
 
   buyer-intent-mysql:
     name: buyer intent history (MySQL ${{ matrix.mysql }})

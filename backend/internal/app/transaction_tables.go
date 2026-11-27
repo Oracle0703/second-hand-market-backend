@@ -8,11 +8,12 @@ import (
 	"strings"
 )
 
-// VerifyTransactionTables checks the tables used together by order, intent,
-// inventory and product-image transactions before a MySQL release.
+// VerifyTransactionTables checks the storage engines used by merchant account,
+// category, order, intent, inventory and product-image transactions before release.
 func VerifyTransactionTables(ctx context.Context, db *sql.DB) error {
 	return verifyTransactionTables(ctx, db, []string{
-		"buyer_intents", "files", "idempotency_records", "operation_logs",
+		"auth_sessions", "buyer_intents", "categories", "files", "idempotency_records",
+		"merchant_accounts", "merchant_audit_logs", "merchants", "operation_logs",
 		"order_events", "orders", "product_images", "product_stock_adjustments", "products",
 	})
 }

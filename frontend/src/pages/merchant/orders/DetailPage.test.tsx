@@ -40,11 +40,14 @@ vi.mock('@ant-design/pro-components', async () => {
 
 const mockedApi = vi.mocked(api)
 
-function mockOrderDetail(product: Record<string, unknown> | null, productMissing: boolean) {
+function mockOrderDetail(product: Record<string, unknown> | null, productMissing?: boolean) {
   mockedApi.orderDetail.mockResolvedValue({
     data: {
       data: {
-        order_detail: { id: 7, order_no: 'O7', status: 'COMPLETED', deal_price_cent: 9900, product, product_missing: productMissing },
+        order_detail: {
+          id: 7, order_no: 'O7', status: 'COMPLETED', deal_price_cent: 9900, product,
+          ...(productMissing === undefined ? {} : { product_missing: productMissing })
+        },
         events: []
       }
     }
@@ -69,8 +72,10 @@ describe('Order DetailPage product cell', () => {
     vi.clearAllMocks()
   })
 
-  it('links to an existing product', async () => {
-    mockOrderDetail({ id: 3, title: '格力空调', status: 'SOLD', is_deleted: false }, false)
+  it.each([true, false])('links to an existing product with API availability flags = %s', async (hasFlags) => {
+    const product = { id: 3, title: '格力空调', status: 'SOLD' }
+    if (hasFlags) mockOrderDetail({ ...product, is_deleted: false }, false)
+    else mockOrderDetail(product)
     renderPage()
 
     const link = await screen.findByRole('link', { name: '格力空调' })
@@ -87,12 +92,16 @@ describe('Order DetailPage product cell', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
-  it('renders a missing product without a link', async () => {
-    mockOrderDetail(null, true)
+  it.each([
+    { format: 'flagged placeholder', product: { id: 0, title: '', status: '', is_deleted: false }, missing: true },
+    { format: 'legacy zero-value object', product: { id: 0, title: '', status: '' }, missing: undefined },
+    { format: 'null product', product: null, missing: true }
+  ])('shows a missing product without a link for a $format', async ({ product, missing }) => {
+    mockOrderDetail(product, missing)
     renderPage()
 
-    expect(await screen.findByText('已删除')).toBeInTheDocument()
-    expect(screen.getByText(/商品缺失/)).toBeInTheDocument()
+    expect(await screen.findByText('商品缺失')).toBeInTheDocument()
+    expect(screen.queryByText('已删除')).not.toBeInTheDocument()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 })

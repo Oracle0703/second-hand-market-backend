@@ -100,20 +100,21 @@ func (s *Server) handleOrderDetail(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	var productOut gin.H
 	var product model.Product
-	if err := s.DB.Unscoped().Where("id = ? AND merchant_id = ?", order.ProductID, order.MerchantID).First(&product).Error; err == nil {
-		productOut = gin.H{"id": product.ID, "title": product.Title, "status": product.Status, "is_deleted": product.DeletedAt.Valid}
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+	err = s.DB.Unscoped().Where("id = ? AND merchant_id = ?", order.ProductID, order.MerchantID).First(&product).Error
+	productMissing := errors.Is(err, gorm.ErrRecordNotFound)
+	if err != nil && !productMissing {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
+	// Older management pages always read product.id, including for missing products.
+	productOut := gin.H{"id": product.ID, "title": product.Title, "status": product.Status, "is_deleted": product.DeletedAt.Valid}
 	events := make([]model.OrderEvent, 0)
 	if err := s.DB.Where("order_id = ?", order.ID).Order("id ASC").Find(&events).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, gin.H{"order_detail": gin.H{"id": order.ID, "order_no": order.OrderNo, "status": order.Status, "deal_price_cent": order.DealPriceCent, "product": productOut, "product_missing": productOut == nil}, "events": events})
+	common.Success(c, gin.H{"order_detail": gin.H{"id": order.ID, "order_no": order.OrderNo, "status": order.Status, "deal_price_cent": order.DealPriceCent, "product": productOut, "product_missing": productMissing}, "events": events})
 }
 
 func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action string, note *string) {
