@@ -45,6 +45,11 @@ jobs:
       - name: docker build
         run: docker build -f backend/Dockerfile -t second-hand-market-api:ci .
 
+      - name: Verify the candidate image includes the release preflight
+        run: |
+          docker run --rm --network none --entrypoint /srv/check-transaction-tables \
+            -e DB_DRIVER=sqlite -e DB_DSN=file:/tmp/staging.db second-hand-market-api:ci
+
       - name: Deployment handover and rollback integration
         run: python3 deploy/app-server/tests/handover_test.py
 
@@ -74,11 +79,15 @@ jobs:
         run: npm run build
 
   p1-mysql:
-    name: P1 inventory concurrency (MySQL)
+    name: P1 inventory and transaction concurrency (MySQL ${{ matrix.mysql }})
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["8.0", "8.4"]
     runs-on: ubuntu-latest
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:${{ matrix.mysql }}
         env:
           MYSQL_ROOT_PASSWORD: p1-ci-only
           MYSQL_DATABASE: p1_test
@@ -95,11 +104,30 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: Exercise stock and administrator password concurrency
+      - name: Exercise transaction preflight and concurrent business writes
         working-directory: backend
         env:
           P1_MYSQL_DSN: root:p1-ci-only@tcp(127.0.0.1:3306)/p1_test?charset=utf8mb4&parseTime=True&loc=UTC
-        run: go test -race ./internal/app -run '^TestP1MySQL' -count=1 -timeout=180s
+        run: |
+          go test -json -race ./internal/app -run '^TestP1MySQL' -count=1 -timeout=180s > /tmp/p1-tests.json
+          python3 ../scripts/check-go-test-results.py /tmp/p1-tests.json \
+            TestP1MySQLAdminPasswordSerializesConcurrentLogin TestP1MySQLMerchantPasswordSerializesConcurrentLogin \
+            TestP1MySQLConcurrentStockIdempotency TestP1MySQLEditDoesNotOverwriteConcurrentStock \
+            TestP1MySQLIdempotencyConflictingPayload TestP1MySQLIdempotencyWaiterTakesOverAfterRollback \
+            TestP1MySQLIdempotencyFinalizeRollback TestP1MySQLProductImageBindingSerializesWithDeletion \
+            TestP1MySQLTransactionTablePreflight
+      - name: Check release transaction tables on a migrated MySQL schema
+        working-directory: backend
+        env:
+          MYSQL_SERVICE: ${{ job.services.mysql.id }}
+          MYSQL_PWD: p1-ci-only
+          DB_DRIVER: mysql
+          DB_DSN: root:p1-ci-only@tcp(127.0.0.1:3306)/p1_test?charset=utf8mb4&parseTime=True&loc=UTC
+        run: |
+          for migration in 0001_init 0002_buyer_domain 0006_product_stock_adjustments; do
+            docker exec -i -e MYSQL_PWD "$MYSQL_SERVICE" mysql -uroot p1_test < "migrations/$migration.up.sql"
+          done
+          go run ./scripts/check_transaction_tables
 
   buyer-intent-mysql:
     name: buyer intent history (MySQL ${{ matrix.mysql }})
