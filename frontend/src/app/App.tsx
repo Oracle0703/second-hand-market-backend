@@ -9,6 +9,7 @@ const RegisterStatusPage = lazy(() => import('@/pages/auth/RegisterStatusPage').
 const AdminReviewsPage = lazy(() => import('@/pages/admin/merchants/ReviewsPage').then((m) => ({ default: m.ReviewsPage })))
 const DashboardPage = lazy(() => import('@/pages/merchant/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 const AnalyticsPage = lazy(() => import('@/pages/merchant/analytics/AnalyticsPage'))
+const ExplorePage = lazy(() => import('@/pages/merchant/analytics/ExplorePage'))
 const ProductListPage = lazy(() => import('@/pages/merchant/products/ListPage').then((m) => ({ default: m.ListPage })))
 const CategoryListPage = lazy(() => import('@/pages/merchant/categories/ListPage').then((m) => ({ default: m.ListPage })))
 const OrderListPage = lazy(() => import('@/pages/merchant/orders/ListPage').then((m) => ({ default: m.ListPage })))
@@ -45,6 +46,7 @@ export function App() {
         <Route element={<RequireAuth />}>
           <Route element={loadable(<Layout />)}>
             <Route element={<RequireAuth role="ADMIN" />}>
+              <Route path="/admin/analytics/explore" element={loadable(<ExplorePage scope="admin" />)} />
               <Route path="/admin/merchants/reviews" element={loadable(<AdminReviewsPage />)} />
               <Route path="/admin/merchants/reviews/:merchantId" element={loadable(<AdminReviewDetailPage />)} />
               <Route path="/admin/logs" element={loadable(<AdminLogsPage />)} />
@@ -54,6 +56,7 @@ export function App() {
             <Route element={<RequireAuth role="MERCHANT" scope="full" />}>
               <Route path="/merchant/dashboard" element={loadable(<DashboardPage />)} />
               <Route path="/merchant/analytics" element={loadable(<AnalyticsPage />)} />
+              <Route path="/merchant/analytics/explore" element={loadable(<ExplorePage scope="merchant" />)} />
               <Route path="/merchant/products" element={loadable(<ProductListPage />)} />
               <Route path="/merchant/categories" element={loadable(<CategoryListPage />)} />
               <Route path="/merchant/products/new" element={loadable(<ProductCreatePage />)} />

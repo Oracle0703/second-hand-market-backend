@@ -204,6 +204,8 @@ func (s *Server) registerRoutes() {
 			merchant.DELETE("/categories/:id", middleware.RequireFullMerchantScope(), s.handleDeleteCategory)
 			merchant.GET("/dashboard", middleware.RequireFullMerchantScope(), s.handleDashboard)
 			merchant.GET("/analytics", middleware.RequireFullMerchantScope(), s.handleMerchantAnalytics)
+			merchant.GET("/analytics/explore", middleware.RequireFullMerchantScope(), s.handleAnalyticsExplore)
+			merchant.GET("/analytics/dimensions", middleware.RequireFullMerchantScope(), s.handleAnalyticsDimensions)
 
 			merchant.POST("/products", middleware.RequireFullMerchantScope(), s.handleCreateProduct)
 			merchant.PUT("/products/:id", middleware.RequireFullMerchantScope(), s.handleUpdateProduct)
@@ -232,7 +234,7 @@ func (s *Server) registerRoutes() {
 			buyer.GET("/categories", s.handleBuyerCategories)
 			buyer.GET("/products", s.handleBuyerProducts)
 			buyer.GET("/products/:id", s.handleBuyerProductDetail)
-			buyer.POST("/analytics/events", requestBodyLimit(32<<10), s.handleBuyerAnalyticsEvents)
+			buyer.POST("/analytics/events", requestBodyLimit(1<<20), s.handleBuyerAnalyticsEvents)
 
 			buyer.POST("/auth/miniapp-login", s.handleBuyerMiniProgramLogin)
 			buyer.POST("/auth/wechat-login", s.handleBuyerWechatLogin)
@@ -262,6 +264,8 @@ func (s *Server) registerRoutes() {
 		admin.Use(middleware.RequireAuth(model.UserTypeAdmin))
 		{
 			admin.GET("/account", s.handleAdminAccount)
+			admin.GET("/analytics/explore", s.handleAnalyticsExplore)
+			admin.GET("/analytics/dimensions", s.handleAnalyticsDimensions)
 			admin.PUT("/account/password", s.handleAdminChangePassword)
 			admin.GET("/merchants", s.handleAdminMerchantList)
 			admin.GET("/merchants/:id", s.handleAdminMerchantDetail)

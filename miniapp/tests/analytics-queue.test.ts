@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { TrackEventOptions } from '../src/services/analytics'
 
 const storage = new Map<string, unknown>()
 const request = vi.fn()
+const currentInstance = vi.fn()
 let env: 'weapp' | 'tt'
 let onShow: () => void
 
@@ -9,6 +11,7 @@ vi.mock('@tarojs/taro', () => ({
   ENV_TYPE: { WEAPP: 'weapp', TT: 'tt' },
   useDidShow: (callback: () => void) => { onShow = callback },
   default: {
+    getCurrentInstance: currentInstance,
     getEnv: () => env,
     getStorageSync: (key: string) => storage.get(key),
     setStorageSync: (key: string, value: unknown) => storage.set(key, structuredClone(value))
@@ -27,6 +30,7 @@ describe('小程序埋点队列', () => {
     vi.stubGlobal('__MERCHANT_NO__', 'M_test')
     env = 'weapp'
     storage.clear()
+    currentInstance.mockReset()
     request.mockReset().mockResolvedValue({})
   })
 
@@ -122,6 +126,86 @@ describe('小程序埋点队列', () => {
     expect(request).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(request.mock.calls[1][0].data.events).toEqual(events)
+    expect(storage.get(key)).toEqual([])
+  })
+
+  it.each(['weapp', 'tt'] as const)('%s 无需登记下单事件，自动取页面且剔除参数，属性在调用时快照', async (platform) => {
+    env = platform
+    currentInstance.mockReturnValue({ router: { path: '/orders/checkout/index?token=private#payment' } })
+    const sdk = await load()
+    const properties = { amount_cent: 89900, delivery: '自提', first_order: true }
+    expect(sdk.trackEvent('order_submitted', { source: 'checkout_submit', productId: 7, properties })).toBe(true)
+    properties.amount_cent = 0
+    currentInstance.mockReturnValue(undefined)
+    expect(sdk.trackEvent('inventory_synced')).toBe(true)
+    sdk.trackClick('delivery_option_selected', 'orders/checkout/index', 'pickup_tab', 7)
+    expect(sdk.trackEvent('page_view')).toBe(false)
+    await sdk.flushAnalytics()
+    const { data } = request.mock.calls[0][0]
+    expect(data.platform).toBe(platform)
+    expect(data.events).toHaveLength(3)
+    expect(data.events[0]).toMatchObject({
+      name: 'order_submitted', page: 'orders/checkout/index', source: 'checkout_submit', product_id: 7,
+      properties: { amount_cent: 89900, delivery: '自提', first_order: true }
+    })
+    expect(data.events[1]).toMatchObject({ name: 'inventory_synced' })
+    expect(data.events[1]).not.toHaveProperty('page')
+    expect(data.events[2]).toMatchObject({
+      name: 'delivery_option_selected', page: 'orders/checkout/index', source: 'pickup_tab', product_id: 7
+    })
+    expect(JSON.stringify(data.events)).not.toContain('private')
+  })
+
+  it('无效或敏感事件不会进入缓存或挤掉其他事件', async () => {
+    const sdk = await load()
+    for (const name of ['OrderSubmitted', 'order__submitted', 'a'.repeat(65), '']) {
+      expect(sdk.trackEvent(name)).toBe(false)
+    }
+    const invalid: unknown[] = [
+      { source: 'wrong source' }, { page: '/checkout/index?email=test' }, { productId: 0 },
+      { properties: { cart_item: { count: 1 } } }, { properties: { amounts: [1] } },
+      { properties: { amount: null } }, { properties: { amount: Infinity } },
+      { properties: { amount: Number.MAX_SAFE_INTEGER + 1 } }, { properties: { status: 'OK\n' } },
+      { properties: { status: '📦'.repeat(129) } }, { properties: { ['a'.repeat(49)]: true } },
+      { properties: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, i])) },
+      ...['session', 'billing_address', 'buyer_open_id', 'api_key_hint', 'access_token', 'user_mobile_mask']
+        .map((key) => ({ properties: { [key]: 'private' } }))
+    ]
+    for (const options of invalid) {
+      expect(sdk.trackEvent('order_submitted', options as TrackEventOptions)).toBe(false)
+    }
+    expect(storage.size).toBe(0)
+    expect(sdk.trackEvent('order_submitted', { properties: { package_label: '📦'.repeat(128) } })).toBe(true)
+    sdk.trackPageView(home, NaN)
+    await sdk.flushAnalytics()
+    const events = request.mock.calls[0][0].data.events
+    expect(events).toHaveLength(2)
+    expect(events[1]).toMatchObject({ name: 'page_view', page: home })
+    expect(events[1]).not.toHaveProperty('product_id')
+  })
+
+  it('冷启动恢复旧格式和未登记事件，丢失回执后以相同 ID 和属性补报', async () => {
+    const sdk = await load()
+    sdk.trackPageView(home)
+    const [key, saved] = [...storage.entries()][0]
+    const [legacy] = saved as Record<string, unknown>[]
+    const custom = {
+      event_id: 'offline_order_1', occurred_at: new Date().toISOString(), name: 'order_fulfilled',
+      properties: { stage: 'fulfilled', items: 2, pickup: false }
+    }
+    storage.set(key, [legacy, custom, custom, { ...custom, event_id: 'unsafe', properties: { customer_phone: 'private' } }])
+    vi.clearAllTimers()
+    vi.resetModules()
+    const restored = await load()
+    request.mockRejectedValueOnce(new Error('response lost'))
+    await restored.flushAnalytics()
+    const first = request.mock.calls[0][0].data.events
+    expect(first).toEqual([legacy, custom])
+    expect(storage.get(key)).toEqual(first)
+    vi.clearAllTimers()
+    vi.resetModules()
+    await (await load()).flushAnalytics()
+    expect(request.mock.calls[1][0].data.events).toEqual(first)
     expect(storage.get(key)).toEqual([])
   })
 })

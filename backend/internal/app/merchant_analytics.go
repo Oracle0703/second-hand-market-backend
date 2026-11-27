@@ -46,6 +46,12 @@ const analyticsCountSQL = `
 	COUNT(CASE WHEN name = 'contact_click' THEN 1 END) AS contact_clicks,
 	COUNT(CASE WHEN name = 'contact_confirm' THEN 1 END) AS contact_confirms`
 
+func analyticsDates(startDate, endDate string) (time.Time, time.Time, bool) {
+	start, firstErr := time.ParseInLocation(time.DateOnly, startDate, analyticsZone)
+	end, lastErr := time.ParseInLocation(time.DateOnly, endDate, analyticsZone)
+	return start, end, firstErr == nil && lastErr == nil && !end.Before(start) && end.Sub(start) < 93*24*time.Hour
+}
+
 func (s *Server) handleMerchantAnalytics(c *gin.Context) {
 	actor, err := actorFromContext(c)
 	if err != nil {
@@ -53,10 +59,9 @@ func (s *Server) handleMerchantAnalytics(c *gin.Context) {
 		return
 	}
 	startDate, endDate := c.Query("start_date"), c.Query("end_date")
-	start, errStart := time.ParseInLocation(time.DateOnly, startDate, analyticsZone)
-	end, errEnd := time.ParseInLocation(time.DateOnly, endDate, analyticsZone)
+	start, end, validDates := analyticsDates(startDate, endDate)
 	platform := c.Query("platform")
-	if errStart != nil || errEnd != nil || end.Before(start) || end.Sub(start) >= 93*24*time.Hour ||
+	if !validDates ||
 		(platform != "" && !validAnalyticsPlatform(platform)) {
 		common.Fail(c, common.ErrInvalidArgument)
 		return
@@ -86,7 +91,7 @@ func (s *Server) handleMerchantAnalytics(c *gin.Context) {
 			Group("page").Order("page_views DESC, page ASC").Scan(&pages).Error; err != nil {
 			return err
 		}
-		return query.Where("name <> ?", "page_view").
+		return query.Where("name IN ?", []string{"product_click", "favorite_click", "contact_click", "contact_confirm"}).
 			Select("name, page, source, product_id, COUNT(*) AS clicks").
 			Group("name, page, source, product_id").Order("clicks DESC, name, page, source, product_id").
 			Limit(100).Scan(&actions).Error

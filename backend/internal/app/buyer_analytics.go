@@ -5,11 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
 	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
@@ -17,32 +22,32 @@ import (
 )
 
 var (
-	analyticsZone  = time.FixedZone("Asia/Shanghai", 8*60*60)
-	analyticsID    = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
-	analyticsPages = []string{
-		"pages/home/index", "pages/category/index", "pages/search/index", "pages/product/list/index",
-		"pages/product/detail/index", "pages/favorite/index", "pages/history/index", "pages/login/index",
-		"pages/store-guide/index", "pages/me/index",
-	}
+	analyticsZone       = time.FixedZone("Asia/Shanghai", 8*60*60)
+	analyticsID         = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	analyticsKey        = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
+	analyticsRoute      = regexp.MustCompile(`^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)+$`)
+	privateAnalyticsKey = regexp.MustCompile(`(^|_)(token|password|passwd|secret|credential|authorization|cookie|phone|mobile|email|openid|unionid|address|idcard|session|id_card|open_id|union_id|access_key|api_key)($|_)`)
 )
 
-// Keys are UI entry points. Never store free-form labels, search terms or URLs.
-var analyticsSources = map[string]struct{ page, name string }{
-	"home_carousel":       {"pages/home/index", "product_click"},
-	"home_grid":           {"pages/home/index", "product_click"},
-	"category_list":       {"pages/category/index", "product_click"},
-	"search_results":      {"pages/product/list/index", "product_click"},
-	"product_list":        {"pages/product/list/index", "product_click"},
-	"favorite_list":       {"pages/favorite/index", "product_click"},
-	"history_list":        {"pages/history/index", "product_click"},
-	"detail_favorite":     {"pages/product/detail/index", "favorite_click"},
-	"detail_unfavorite":   {"pages/product/detail/index", "favorite_click"},
-	"favorite_unfavorite": {"pages/favorite/index", "favorite_click"},
-	"home_store_phone":    {"pages/home/index", "contact_click"},
-	"home_want":           {"pages/home/index", "contact_click"},
-	"category_want":       {"pages/category/index", "contact_click"},
-	"favorite_want":       {"pages/favorite/index", "contact_click"},
-	"detail_want":         {"pages/product/detail/index", "contact_click"},
+func validAnalyticsKey(value string, limit int) bool {
+	return len(value) <= limit && analyticsKey.MatchString(value)
+}
+
+func validAnalyticsPropertyKey(key string) bool {
+	return validAnalyticsKey(key, 48) && !privateAnalyticsKey.MatchString(key)
+}
+
+func validAnalyticsScalar(value any) bool {
+	switch v := value.(type) {
+	case string:
+		return utf8.RuneCountInString(v) <= 128 && strings.IndexFunc(v, unicode.IsControl) < 0
+	case float64:
+		return math.Abs(v) <= 1<<53-1
+	case bool:
+		return true
+	default:
+		return false
+	}
 }
 
 func validAnalyticsPlatform(platform string) bool {
@@ -50,34 +55,44 @@ func validAnalyticsPlatform(platform string) bool {
 }
 
 type analyticsEventInput struct {
-	EventID    string    `json:"event_id"`
-	Name       string    `json:"name"`
-	Page       string    `json:"page"`
-	Source     string    `json:"source"`
-	ProductID  *uint64   `json:"product_id"`
-	OccurredAt time.Time `json:"occurred_at"`
+	EventID    string         `json:"event_id"`
+	Name       string         `json:"name"`
+	Page       string         `json:"page"`
+	Source     string         `json:"source"`
+	ProductID  *uint64        `json:"product_id"`
+	Properties map[string]any `json:"properties"`
+	OccurredAt time.Time      `json:"occurred_at"`
 }
 
-func (e analyticsEventInput) valid() bool {
-	if !analyticsID.MatchString(e.EventID) || !slices.Contains(analyticsPages, e.Page) ||
-		e.OccurredAt.IsZero() || (e.ProductID != nil && (*e.ProductID == 0 || *e.ProductID > 1<<53-1)) {
-		return false
+func (e analyticsEventInput) rejectionReason() string {
+	switch {
+	case !analyticsID.MatchString(e.EventID):
+		return "invalid_event_id"
+	case !validAnalyticsKey(e.Name, 64):
+		return "invalid_name"
+	case (e.Page == "" && e.Name == "page_view") || (e.Page != "" && (len(e.Page) > 128 || !analyticsRoute.MatchString(e.Page))):
+		return "invalid_page"
+	case e.Source != "" && !validAnalyticsKey(e.Source, 64):
+		return "invalid_source"
+	case e.OccurredAt.IsZero():
+		return "invalid_time"
+	case e.ProductID != nil && (*e.ProductID == 0 || *e.ProductID > 1<<53-1):
+		return "invalid_product_id"
+	case len(e.Properties) > 16:
+		return "too_many_properties"
 	}
-	name := e.Name
-	switch name {
-	case "page_view":
-		return e.Source == ""
-	case "contact_confirm":
-		name = "contact_click"
-	case "product_click", "favorite_click", "contact_click":
-	default:
-		return false
+	for key, value := range e.Properties {
+		if !validAnalyticsKey(key, 48) {
+			return "invalid_property_key"
+		}
+		if privateAnalyticsKey.MatchString(key) {
+			return "restricted_property"
+		}
+		if !validAnalyticsScalar(value) {
+			return "invalid_property_value"
+		}
 	}
-	if e.Source == "" {
-		return true
-	}
-	source, ok := analyticsSources[e.Source]
-	return ok && source.page == e.Page && source.name == name
+	return ""
 }
 
 func (s *Server) handleBuyerAnalyticsEvents(c *gin.Context) {
@@ -114,14 +129,42 @@ func (s *Server) handleBuyerAnalyticsEvents(c *gin.Context) {
 	earliest, latest := now.Add(-30*24*time.Hour), now.Add(10*time.Minute)
 	events := make([]model.MiniappAnalyticsEvent, 0, len(req.Events))
 	productIDs := make([]uint64, 0, len(req.Events))
-	for _, raw := range req.Events {
+	type rejection struct {
+		Index  int    `json:"index"`
+		Reason string `json:"reason"`
+	}
+	rejected := []rejection{}
+	for i, raw := range req.Events {
 		var input analyticsEventInput
-		if json.Unmarshal(raw, &input) != nil || !input.valid() ||
-			input.OccurredAt.Before(earliest) || input.OccurredAt.After(latest) {
+		reason := "malformed_event"
+		if json.Unmarshal(raw, &input) == nil {
+			reason = input.rejectionReason()
+			if reason == "" && (input.OccurredAt.Before(earliest) || input.OccurredAt.After(latest)) {
+				reason = "time_out_of_range"
+			}
+		}
+		if reason != "" {
+			rejected = append(rejected, rejection{i, reason})
 			continue
 		}
+		var properties datatypes.JSON
+		if len(input.Properties) > 0 {
+			// JSON permits negative zero. Store a single representation for zero
+			// so SQLite and MySQL group all numerically equal zeros together.
+			for key, value := range input.Properties {
+				if n, ok := value.(float64); ok && n == 0 {
+					input.Properties[key] = float64(0)
+				}
+			}
+			encoded, err := json.Marshal(input.Properties)
+			if err != nil {
+				rejected = append(rejected, rejection{i, "invalid_properties"})
+				continue
+			}
+			properties = encoded
+		}
 		events = append(events, model.MiniappAnalyticsEvent{
-			MerchantID: merchant.ID, EventID: input.EventID, Platform: req.Platform, DeviceKey: deviceKey,
+			MerchantID: merchant.ID, EventID: input.EventID, Platform: req.Platform, DeviceKey: deviceKey, Properties: properties,
 			Name: input.Name, Page: input.Page, Source: input.Source, ProductID: input.ProductID,
 			OccurredAtMS: input.OccurredAt.UnixMilli(), EventDate: input.OccurredAt.In(analyticsZone).Format(time.DateOnly),
 		})
@@ -151,5 +194,5 @@ func (s *Server) handleBuyerAnalyticsEvents(c *gin.Context) {
 			return
 		}
 	}
-	common.Success(c, gin.H{"received": len(req.Events), "discarded": len(req.Events) - len(events)})
+	common.Success(c, gin.H{"received": len(req.Events), "discarded": len(rejected), "rejected": rejected})
 }
