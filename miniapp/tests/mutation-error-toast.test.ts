@@ -4,6 +4,8 @@ import React from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { trackClick } from '@/services/analytics'
+import { usePageExposure } from '@/hooks/usePageExposure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -55,6 +57,8 @@ vi.mock('../src/services/buyer', () => ({
 }))
 
 vi.mock('../src/utils/contact', () => ({ promptAndCallStore: vi.fn() }))
+vi.mock('@/services/analytics', () => ({ trackClick: vi.fn() }))
+vi.mock('@/hooks/usePageExposure', () => ({ usePageExposure: vi.fn() }))
 
 import { QueryClient, QueryClientProvider } from '../src/libs/react-query'
 import { getMutationErrorMessage } from '../src/hooks/useToastMutation'
@@ -162,6 +166,22 @@ describe('小程序 mutation 失败提示与防重复提交', () => {
       findButton('收藏').click()
     })
     expect(mocks.showToast).toHaveBeenCalledWith({ title: '登录已过期，请重新登录', icon: 'none' })
+  })
+
+  test('详情页收藏与取消收藏按动作分别记录，即使业务请求失败也保留点击', async () => {
+    await renderPage(ProductDetailPage)
+    expect(usePageExposure).toHaveBeenCalledWith('pages/product/detail/index', 1)
+    mocks.fetchBuyerProductDetail.mockResolvedValueOnce({
+      product: { ...productItem, id: 1, is_favorited: true, images: [] }
+    })
+    await act(async () => { findButton('收藏').click() })
+    mocks.removeFavorite.mockRejectedValueOnce(new Error('无法取消收藏'))
+    await act(async () => { findButton('取消收藏').click() })
+
+    expect(vi.mocked(trackClick).mock.calls).toEqual([
+      ['favorite_click', 'pages/product/detail/index', 'detail_favorite', 1],
+      ['favorite_click', 'pages/product/detail/index', 'detail_unfavorite', 1]
+    ])
   })
 })
 

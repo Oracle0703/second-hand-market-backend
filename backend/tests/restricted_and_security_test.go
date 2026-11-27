@@ -146,6 +146,10 @@ func TestRestrictedLoginScope(t *testing.T) {
 	if ordersDenied.Code != 10006 {
 		t.Fatalf("pending orders should be denied by scope: %+v", ordersDenied)
 	}
+	reportDenied := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/analytics?start_date=2026-01-01&end_date=2026-01-01", nil, map[string]string{"Authorization": "Bearer " + pendingToken})
+	if reportDenied.Code != common.CodeReviewNotApproved {
+		t.Fatalf("pending merchant analytics should be denied by scope: %+v", reportDenied)
+	}
 	uploadDenied := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/files/presign", map[string]interface{}{
 		"biz_type": "PRODUCT_IMAGE", "file_name": "p.jpg", "file_size": 1000, "mime_type": "image/jpeg",
 	}, map[string]string{"Authorization": "Bearer " + pendingToken})

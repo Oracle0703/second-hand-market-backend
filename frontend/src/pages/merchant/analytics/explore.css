@@ -1,0 +1,49 @@
+.explore-filter-form {
+  display: grid;
+  gap: 16px;
+}
+.explore-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 18px;
+}
+.explore-field {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 5px;
+}
+.explore-field select {
+  width: 100%;
+  min-height: 32px;
+  padding: 3px 8px;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+}
+.explore-field select:focus-visible {
+  outline: 2px solid #1677ff;
+}
+.explore-condition-header, .explore-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.explore-condition {
+  display: grid;
+  grid-template-columns: minmax(160px, 2fr) 1fr 1fr minmax(120px, 2fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+.explore-summary { gap: 64px; }
+.explore-note { margin: 8px 0 12px; }
+.explore-event-details { overflow-wrap: anywhere; }
+.explore-event-details dl { display: grid; gap: 4px; }
+.explore-event-details dl > div { display: flex; gap: 12px; }
+.explore-event-details dt { font-weight: 500; }
+.explore-event-details dd { margin: 0; white-space: pre-wrap; }
+@media (max-width: 720px) {
+  .explore-condition { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .explore-condition > button { justify-self: start; }
+}

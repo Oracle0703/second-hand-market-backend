@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   AuditOutlined,
+  BarChartOutlined,
   FileTextOutlined,
   HomeOutlined,
   LogoutOutlined,
@@ -17,6 +18,7 @@ import { api } from '../services/api'
 import { useAuthStore } from '../stores/auth-store'
 
 const adminMenus: MenuDataItem[] = [
+  { path: '/admin/analytics/explore', name: '事件查询', icon: <BarChartOutlined /> },
   { path: '/admin/merchants/reviews', name: '商户管理', icon: <AuditOutlined /> },
   { path: '/admin/logs', name: '全局日志', icon: <FileTextOutlined /> },
   { path: '/admin/security', name: '安全设置', icon: <SettingOutlined /> }
@@ -24,6 +26,8 @@ const adminMenus: MenuDataItem[] = [
 
 const merchantMenus: MenuDataItem[] = [
   { path: '/merchant/dashboard', name: '全局', icon: <HomeOutlined /> },
+  { path: '/merchant/analytics', name: '小程序统计', icon: <BarChartOutlined /> },
+  { path: '/merchant/analytics/explore', name: '事件查询', icon: <BarChartOutlined /> },
   { path: '/merchant/products', name: '商品', icon: <ShoppingOutlined /> },
   { path: '/merchant/categories', name: '商品分类', icon: <TagsOutlined /> },
   { path: '/merchant/orders', name: '订单', icon: <OrderedListOutlined /> },

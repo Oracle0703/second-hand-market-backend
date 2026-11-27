@@ -1,6 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react'
 import Taro, { useDidShow, useReachBottom } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
+import { trackClick } from '@/services/analytics'
 import { BuyerProduct, fetchBuyerProducts } from '../../services/buyer'
 import { hasStoreGuideVideo, hasStoreLocation, STORE_GUIDE_VIDEO, STORE_LOCATION } from '../../constants/store'
 import { promptAndCallStore } from '../../utils/contact'
@@ -8,6 +10,7 @@ import { centToYuanText } from '../../utils/price'
 import { resolveAssetURL } from '../../utils/url'
 
 const PAGE_SIZE = 10
+const PAGE = 'pages/home/index'
 
 function mergeProducts(current: BuyerProduct[], incoming: BuyerProduct[]): BuyerProduct[] {
   const seen = new Set<number>()
@@ -23,6 +26,7 @@ function mergeProducts(current: BuyerProduct[], incoming: BuyerProduct[]): Buyer
 }
 
 export default function HomePage() {
+  usePageExposure(PAGE)
   const [items, setItems] = useState<BuyerProduct[]>([])
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
@@ -71,7 +75,8 @@ export default function HomePage() {
     await loadProducts(1, true)
   }
 
-  const goDetail = (id: number) => {
+  const goDetail = (id: number, source: 'home_carousel' | 'home_grid') => {
+    trackClick('product_click', PAGE, source, id)
     Taro.navigateTo({ url: `/pages/product/detail/index?id=${id}` })
   }
 
@@ -150,7 +155,7 @@ export default function HomePage() {
           <Swiper className="home-swiper" indicatorDots autoplay circular interval={3500} duration={500}>
             {heroItems.map((item) => (
               <SwiperItem key={item.id}>
-                <View className="home-swiper-slide" onClick={() => goDetail(item.id)}>
+                <View className="home-swiper-slide" onClick={() => goDetail(item.id, 'home_carousel')}>
                   {item.cover_url ? (
                     <Image className="home-swiper-image" src={resolveAssetURL(item.cover_url)} mode="aspectFill" />
                   ) : (
@@ -193,7 +198,7 @@ export default function HomePage() {
             size="mini"
             onClick={(event) => {
               event.stopPropagation()
-              void promptAndCallStore()
+              void promptAndCallStore(PAGE, 'home_store_phone')
             }}
           >
             拨打电话
@@ -238,7 +243,7 @@ export default function HomePage() {
 
           return (
             <View key={item.id} className="home-product-card">
-              <View className="home-product-cover-wrap" onClick={() => goDetail(item.id)}>
+              <View className="home-product-cover-wrap" onClick={() => goDetail(item.id, 'home_grid')}>
                 {item.cover_url ? (
                   <Image className="home-product-cover" src={resolveAssetURL(item.cover_url)} mode="aspectFill" lazyLoad />
                 ) : (
@@ -261,7 +266,7 @@ export default function HomePage() {
                     size="mini"
                     onClick={(event) => {
                       event.stopPropagation()
-                      void promptAndCallStore()
+                      void promptAndCallStore(PAGE, 'home_want', item.id)
                     }}
                   >
                     我想要

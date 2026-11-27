@@ -64,7 +64,7 @@ export type BuyerIntent = {
   product: { id: number; title: string; cover_url: string }
 }
 
-function merchantNo(): string {
+export function merchantNo(): string {
   return (typeof __MERCHANT_NO__ === 'string' && __MERCHANT_NO__.trim()) || ''
 }
 
@@ -72,7 +72,7 @@ function withMerchantData(params: Record<string, unknown> = {}) {
   return { ...params, merchant_no: merchantNo() }
 }
 
-function withMerchantPath(path: string) {
+export function withMerchantPath(path: string) {
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}merchant_no=${encodeURIComponent(merchantNo())}`
 }

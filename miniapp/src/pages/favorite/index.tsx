@@ -3,12 +3,17 @@ import { useQuery, useQueryClient } from '@/libs/react-query'
 import { useToastMutation } from '@/hooks/useToastMutation'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
+import { trackClick } from '@/services/analytics'
 import { BuyerFavoriteItem, listFavorites, removeFavorite } from '../../services/buyer'
 import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
 import { canContactForProduct, getProductStatusText } from '../../utils/product-status'
 
+const PAGE = 'pages/favorite/index'
+
 export default function FavoritePage() {
+  usePageExposure(PAGE)
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['buyer-favorites'],
@@ -40,7 +45,10 @@ export default function FavoritePage() {
       <View className="card">
         {(query.data?.items || []).map((item: BuyerFavoriteItem) => (
           <View key={item.product_id} className="list-item">
-            <View onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.product_id}` })}>
+            <View onClick={() => {
+              trackClick('product_click', PAGE, 'favorite_list', item.product_id)
+              Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.product_id}` })
+            }}>
               <Text>{item.title}</Text>
               <View style={{ marginTop: '8rpx', display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
                 <Text style={{ color: '#d24b2f' }}>售价 ¥{centToYuanText(item.price_cent)}</Text>
@@ -57,12 +65,15 @@ export default function FavoritePage() {
                 size="mini"
                 disabled={removeMutation.isPending}
                 loading={removeMutation.isPending}
-                onClick={() => removeMutation.mutate(item.product_id)}
+                onClick={() => {
+                  trackClick('favorite_click', PAGE, 'favorite_unfavorite', item.product_id)
+                  removeMutation.mutate(item.product_id)
+                }}
               >
                 取消收藏
               </Button>
               {canContactForProduct(item.status) ? (
-                <Button className="btn-primary" size="mini" onClick={() => void promptAndCallStore()}>
+                <Button className="btn-primary" size="mini" onClick={() => void promptAndCallStore(PAGE, 'favorite_want', item.product_id)}>
                   我想要
                 </Button>
               ) : null}

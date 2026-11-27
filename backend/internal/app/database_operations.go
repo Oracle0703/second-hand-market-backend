@@ -40,6 +40,7 @@ func MigrateSchema(db *gorm.DB) error {
 		&model.BuyerDeviceBinding{},
 		&model.BuyerFavorite{},
 		&model.BuyerHistory{},
+		&model.MiniappAnalyticsEvent{},
 		&model.BuyerIntent{},
 	); err != nil {
 		return err

@@ -3,16 +3,21 @@ import { useQuery, useQueryClient } from '@/libs/react-query'
 import { useToastMutation } from '@/hooks/useToastMutation'
 import Taro, { useDidShow, useRouter, useShareAppMessage } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
+import { trackClick } from '@/services/analytics'
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
 import { promptAndCallStore } from '../../../utils/contact'
 import { centToYuanText } from '../../../utils/price'
 import { canContactForProduct, getProductStatusText } from '../../../utils/product-status'
 import { resolveAssetURL } from '../../../utils/url'
 
+const PAGE = 'pages/product/detail/index'
+
 export default function ProductDetailPage() {
   const router = useRouter()
   const queryClient = useQueryClient()
   const id = Number(router.params.id || 0)
+  usePageExposure(PAGE, Number.isSafeInteger(id) && id > 0 ? id : undefined)
 
   const detail = useQuery({
     queryKey: ['buyer-product-detail', id],
@@ -111,14 +116,17 @@ export default function ProductDetailPage() {
           <View className="toolbar" style={{ marginTop: '18rpx', display: 'flex', gap: '12rpx' }}>
             <Button
               className="btn-secondary"
-              onClick={() => favoriteMutation.mutate(!product.is_favorited)}
+              onClick={() => {
+                trackClick('favorite_click', PAGE, product.is_favorited ? 'detail_unfavorite' : 'detail_favorite', id)
+                favoriteMutation.mutate(!product.is_favorited)
+              }}
               disabled={favoriteMutation.isPending}
               loading={favoriteMutation.isPending}
             >
               {product.is_favorited ? '取消收藏' : '收藏'}
             </Button>
             {canContactForProduct(product.status, product.can_submit_intent) ? (
-              <Button className="btn-primary" onClick={() => void promptAndCallStore()}>
+              <Button className="btn-primary" onClick={() => void promptAndCallStore(PAGE, 'detail_want', id)}>
                 我想要
               </Button>
             ) : null}

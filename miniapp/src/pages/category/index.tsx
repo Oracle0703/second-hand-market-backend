@@ -2,12 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@/libs/react-query'
 import Taro, { useDidShow, useReachBottom } from '@tarojs/taro'
 import { Button, Image, Text, View } from '@tarojs/components'
+import { usePageExposure } from '@/hooks/usePageExposure'
+import { trackClick } from '@/services/analytics'
 import { BuyerProduct, fetchBuyerCategories, fetchBuyerProducts } from '../../services/buyer'
 import { promptAndCallStore } from '../../utils/contact'
 import { centToYuanText } from '../../utils/price'
 import { resolveAssetURL } from '../../utils/url'
 
 const PAGE_SIZE = 10
+const PAGE = 'pages/category/index'
+
+function openProduct(id: number) {
+  trackClick('product_click', PAGE, 'category_list', id)
+  Taro.navigateTo({ url: `/pages/product/detail/index?id=${id}` })
+}
 
 function mergeProducts(current: BuyerProduct[], incoming: BuyerProduct[]): BuyerProduct[] {
   const seen = new Set<number>()
@@ -21,6 +29,7 @@ function mergeProducts(current: BuyerProduct[], incoming: BuyerProduct[]): Buyer
 }
 
 export default function CategoryPage() {
+  usePageExposure(PAGE)
   const level1Query = useQuery({ queryKey: ['buyer-categories-l1'], queryFn: () => fetchBuyerCategories({ level: 1 }) })
   const [activeParentID, setActiveParentID] = useState<number | undefined>(undefined)
   const [selectedChildID, setSelectedChildID] = useState<number | undefined>(undefined)
@@ -207,7 +216,7 @@ export default function CategoryPage() {
 
                   return (
                     <View key={item.id} className="category-product-row">
-                      <View className="category-product-cover-wrap" onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.id}` })}>
+                      <View className="category-product-cover-wrap" onClick={() => openProduct(item.id)}>
                         {item.cover_url ? (
                           <Image className="category-product-cover" src={resolveAssetURL(item.cover_url)} mode="aspectFill" lazyLoad />
                         ) : (
@@ -218,7 +227,7 @@ export default function CategoryPage() {
                       </View>
 
                       <View className="category-product-body">
-                        <Text className="category-product-title" onClick={() => Taro.navigateTo({ url: `/pages/product/detail/index?id=${item.id}` })}>
+                        <Text className="category-product-title" onClick={() => openProduct(item.id)}>
                           {item.title}
                         </Text>
                         <View className="category-product-price-row">
@@ -231,7 +240,7 @@ export default function CategoryPage() {
                             size="mini"
                             onClick={(event) => {
                               event.stopPropagation()
-                              void promptAndCallStore()
+                              void promptAndCallStore(PAGE, 'category_want', item.id)
                             }}
                           >
                             我想要
