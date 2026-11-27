@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,6 +115,62 @@ func runSessionAuthoritySuite(t *testing.T, newServer func(*testing.T) *Server) 
 		})
 	}
 
+	t.Run("logout_records_revocation_once", func(t *testing.T) {
+		srv := newServer(t)
+		tokens := issueAuthorityTokens(t, srv, model.UserTypeBuyer)
+		claims, err := auth.ParseAccessToken(srv.cfg.JWTAccessSecret, tokens.access)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Both requests must pass sessionGuard while the session is still active.
+		// Hold the first just before its write transaction, then let the second finish.
+		paused, release := make(chan struct{}), make(chan struct{})
+		var pauseFirst atomic.Bool
+		if err := srv.DB.Callback().Update().Before("gorm:begin_transaction").Register("test:hold-logout", func(db *gorm.DB) {
+			if db.Statement.Schema != nil && db.Statement.Schema.Name == "AuthSession" && pauseFirst.CompareAndSwap(false, true) {
+				close(paused)
+				<-release
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var once sync.Once
+		unblock := func() { once.Do(func() { close(release) }) }
+		first := make(chan *httptest.ResponseRecorder, 1)
+		var wg sync.WaitGroup
+		defer func() { unblock(); wg.Wait() }()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/buyer/auth/logout", nil)
+			req.Header.Set("Authorization", "Bearer "+tokens.access)
+			rec := httptest.NewRecorder()
+			srv.Router.ServeHTTP(rec, req)
+			first <- rec
+		}()
+		select {
+		case <-paused:
+		case <-time.After(5 * time.Second):
+			t.Fatal("first logout did not reach the revocation write")
+		}
+		assertAuthorityCode(t, srv, http.MethodPost, "/api/v1/auth/logout", tokens.access, nil, common.CodeOK)
+		var winner model.AuthSession
+		if err := srv.DB.First(&winner, claims.SessionID).Error; err != nil || winner.RevokedAt == nil {
+			t.Fatalf("revocation was not persisted: %v", err)
+		}
+		unblock()
+		rec := <-first
+		var response authorityResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusUnauthorized || response.Code != common.CodeUnauthorized {
+			t.Fatalf("concurrent logout returned HTTP %d, body %s", rec.Code, rec.Body.String())
+		}
+		var final model.AuthSession
+		if err := srv.DB.First(&final, claims.SessionID).Error; err != nil || final.RevokedAt == nil || !final.RevokedAt.Equal(*winner.RevokedAt) {
+			t.Fatalf("concurrent logout changed the persisted revocation time: %v", err)
+		}
+		assertAuthorityCode(t, srv, http.MethodGet, "/healthz", tokens.access, nil, common.CodeUnauthorized)
+		assertAuthorityCode(t, srv, http.MethodGet, "/healthz", "", nil, common.CodeOK)
+	})
 	t.Run("merchant_authority_and_review_are_current", func(t *testing.T) {
 		srv := newServer(t)
 		tokens := issueAuthorityTokens(t, srv, model.UserTypeMerchant)
@@ -147,6 +205,82 @@ func runSessionAuthoritySuite(t *testing.T, newServer func(*testing.T) *Server) 
 		mustAuthorityWrite(t, srv.DB.Model(&model.AdminUser{}).Where("id = 1").Update("role", "UNKNOWN"))
 		assertAuthorityCode(t, srv, http.MethodGet, "/session-authority-test", tokens.access, nil, common.CodeUnauthorized)
 		assertAuthorityRefresh(t, srv, response.Data["refresh_token"].(string), common.CodeUnauthorized)
+	})
+	t.Run("refresh_token_rotates_once_on_replay", func(t *testing.T) {
+		srv := newServer(t)
+		tokens := issueAuthorityTokens(t, srv, model.UserTypeBuyer)
+		rotated := assertAuthorityRefresh(t, srv, tokens.refresh, common.CodeOK).Data["refresh_token"].(string)
+		if rotated == tokens.refresh {
+			t.Fatal("refresh did not rotate the token")
+		}
+		assertAuthorityRefresh(t, srv, tokens.refresh, common.CodeUnauthorized)
+		assertAuthorityRefresh(t, srv, rotated, common.CodeOK)
+	})
+	t.Run("refresh_rotation_rejects_interleaved_reuse", func(t *testing.T) {
+		srv := newServer(t)
+		tokens := issueAuthorityTokens(t, srv, model.UserTypeMerchant)
+		claims, _ := auth.ParseRefreshToken(srv.cfg.JWTRefreshSecret, tokens.refresh)
+		// Rotate the session after the handler has validated the presented hash but
+		// before it writes, reproducing the check-then-act window deterministically.
+		interleaved := false
+		if err := srv.DB.Callback().Update().Before("gorm:update").Register("refresh-interleave", func(db *gorm.DB) {
+			if interleaved {
+				return
+			}
+			interleaved = true
+			if err := db.Session(&gorm.Session{NewDB: true, SkipHooks: true}).Exec("UPDATE auth_sessions SET refresh_token_hash = ? WHERE id = ?", "concurrently-rotated", claims.SessionID).Error; err != nil {
+				db.AddError(err)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		assertAuthorityRefresh(t, srv, tokens.refresh, common.CodeUnauthorized)
+		var session model.AuthSession
+		if err := srv.DB.First(&session, claims.SessionID).Error; err != nil || session.RefreshTokenHash != "concurrently-rotated" {
+			t.Fatal("losing refresh overwrote the concurrently rotated hash")
+		}
+	})
+	t.Run("concurrent_refresh_issues_single_token", func(t *testing.T) {
+		srv := newServer(t)
+		tokens := issueAuthorityTokens(t, srv, model.UserTypeAdmin)
+		const attempts = 8
+		codes := make(chan int, attempts)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < attempts; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				raw, _ := json.Marshal(map[string]interface{}{"refresh_token": tokens.refresh})
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", bytes.NewReader(raw))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				srv.Router.ServeHTTP(w, req)
+				var response authorityResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					codes <- -1
+					return
+				}
+				codes <- response.Code
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(codes)
+		successes := 0
+		for code := range codes {
+			switch code {
+			case common.CodeOK:
+				successes++
+			case common.CodeUnauthorized:
+			default:
+				t.Fatalf("unexpected concurrent refresh code %d", code)
+			}
+		}
+		if successes != 1 {
+			t.Fatalf("concurrent refresh succeeded %d times, want exactly 1", successes)
+		}
 	})
 	t.Run("initial_password_restriction_survives_refresh", func(t *testing.T) {
 		srv := newServer(t)

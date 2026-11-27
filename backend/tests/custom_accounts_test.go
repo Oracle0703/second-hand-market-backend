@@ -13,6 +13,28 @@ import (
 	"time"
 )
 
+func TestAdminMerchantDetailDistinguishesMissingOwnerFromQueryFailure(t *testing.T) {
+	srv := newTestServer(t)
+	merchantID, _, _ := registerMerchant(t, srv, "owner_detail")
+	headers := map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)}
+	path := fmt.Sprintf("/api/v1/admin/merchants/%d", merchantID)
+	if err := srv.DB.Where("merchant_id = ? AND role = ?", merchantID, model.AccountRoleOwner).Delete(&model.MerchantAccount{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	missing := requestJSON(t, srv.Router, http.MethodGet, path, nil, headers)
+	account, present := missing.Data["account"]
+	if missing.Code != 0 || !present || account != nil {
+		t.Fatalf("missing owner response = %+v", missing)
+	}
+	if err := srv.DB.Migrator().DropTable(&model.MerchantAccount{}); err != nil {
+		t.Fatal(err)
+	}
+	failed := requestJSON(t, srv.Router, http.MethodGet, path, nil, headers)
+	if failed.HTTPStatus != http.StatusInternalServerError || failed.Code != common.CodeInternal {
+		t.Fatalf("owner query failure = %+v", failed)
+	}
+}
+
 func TestAdminProvisioningAndPasswordLifecycle(t *testing.T) {
 	srv := newTestServer(t)
 	admin := map[string]string{"Authorization": "Bearer " + adminAccessToken(t, srv)}
@@ -38,12 +60,20 @@ func TestAdminProvisioningAndPasswordLifecycle(t *testing.T) {
 		t.Fatalf("unexpected merchant: %+v", merchant)
 	}
 	login := merchantLogin(t, srv, "custom_owner", "InitialPassword!2026")
-	if login.Code != 0 || login.Data["user"].(map[string]interface{})["must_change_password"] != true {
+	if login.Code != 0 || login.Data["review_status"] != model.ReviewApproved || login.Data["user"].(map[string]interface{})["must_change_password"] != true {
 		t.Fatalf("initial login: %+v", login)
 	}
 	initial := map[string]string{"Authorization": "Bearer " + str(login.Data["access_token"])}
 	if got := requestJSON(t, srv.Router, http.MethodGet, "/api/v1/merchant/products", nil, initial); got.Code != common.CodeForbidden {
 		t.Fatalf("initial password bypass: %+v", got)
+	}
+	previous := time.Now().UTC().Truncate(time.Second).Add(-24 * time.Hour)
+	history := model.AuthSession{
+		UserType: model.UserTypeMerchant, UserID: numToUint64(login.Data["user"].(map[string]interface{})["id"]),
+		RefreshTokenHash: "historical-session", ExpiredAt: previous.Add(7 * 24 * time.Hour), RevokedAt: &previous,
+	}
+	if err := srv.DB.Create(&history).Error; err != nil {
+		t.Fatal(err)
 	}
 	changed := requestJSON(t, srv.Router, http.MethodPut, "/api/v1/merchant/account/password", map[string]interface{}{"old_password": "InitialPassword!2026", "new_password": "ReplacementPass!2026"}, initial)
 	if changed.Code != 0 {
@@ -80,6 +110,10 @@ func TestAdminProvisioningAndPasswordLifecycle(t *testing.T) {
 	}
 	if got := merchantLogin(t, srv, "custom_owner", "ResetPassword!2026"); got.Code != common.CodeAccountDisabled {
 		t.Fatalf("disabled login: %+v", got)
+	}
+	var persisted model.AuthSession
+	if err := srv.DB.First(&persisted, history.ID).Error; err != nil || persisted.RevokedAt == nil || !persisted.RevokedAt.Equal(previous) {
+		t.Fatalf("password changes or disablement altered the earlier revocation: %v", err)
 	}
 	var logs []model.MerchantAuditLog
 	if err := srv.DB.Where("merchant_id = ?", id).Find(&logs).Error; err != nil || len(logs) < 3 {

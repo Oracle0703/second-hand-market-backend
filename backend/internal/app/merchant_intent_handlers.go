@@ -171,7 +171,9 @@ func (s *Server) handleMerchantIntentContacted(c *gin.Context) {
 				return err
 			}
 			from, to := intent.Status, model.IntentContacted
-			s.writeOperationLog(c, tx, "intent", intent.ID, "merchant_intent_contacted", &from, &to, common.CodeOK, &actor.MerchantID, nil)
+			if err := s.persistOperationLog(c, tx, "intent", intent.ID, "merchant_intent_contacted", &from, &to, common.CodeOK, &actor.MerchantID, nil); err != nil {
+				return err
+			}
 			result["intent_id"] = intent.ID
 			result["from_status"] = intent.Status
 			result["to_status"] = model.IntentContacted
@@ -241,7 +243,9 @@ func (s *Server) handleMerchantIntentClose(c *gin.Context) {
 				return err
 			}
 			from, to := intent.Status, model.IntentClosed
-			s.writeOperationLog(c, tx, "intent", intent.ID, "merchant_intent_close", &from, &to, common.CodeOK, &actor.MerchantID, nil)
+			if err := s.persistOperationLog(c, tx, "intent", intent.ID, "merchant_intent_close", &from, &to, common.CodeOK, &actor.MerchantID, nil); err != nil {
+				return err
+			}
 			result["intent_id"] = intent.ID
 			result["from_status"] = intent.Status
 			result["to_status"] = model.IntentClosed

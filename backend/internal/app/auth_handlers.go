@@ -63,35 +63,40 @@ func (s *Server) adminLogin(c *gin.Context, req dto.LoginRequest) {
 }
 
 func (s *Server) merchantLogin(c *gin.Context, req dto.LoginRequest) {
+	var data gin.H
 	var acct model.MerchantAccount
-	if err := s.DB.Where("username = ?", req.Username).First(&acct).Error; err != nil {
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
-	if acct.Status == model.AccountStatusDisabled {
-		common.Fail(c, common.ErrAccountDisabled)
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(acct.PasswordHash), []byte(req.Password)); err != nil {
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
 	var merchant model.Merchant
-	if err := s.DB.Where("id = ?", acct.MerchantID).First(&merchant).Error; err != nil {
-		common.Fail(c, common.ErrUnauthorized)
-		return
-	}
 	scope := "full"
-	if merchant.ReviewStatus != model.ReviewApproved {
-		scope = "onboarding"
-	}
-	data, err := s.issueTokens(c, model.UserTypeMerchant, acct.ID, acct.Role, merchant.ID, scope)
+	err := s.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		// Serialize credential verification and session creation with password
+		// changes, resets and status changes so an old-password login cannot
+		// escape their session revocation.
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("username = ?", req.Username).First(&acct).Error; err != nil {
+			return sessionLookupError(err)
+		}
+		if err := activeSessionAccount(acct.Status); err != nil {
+			return err
+		}
+		if bcrypt.CompareHashAndPassword([]byte(acct.PasswordHash), []byte(req.Password)) != nil {
+			return common.ErrUnauthorized
+		}
+		if err := tx.Where("id = ?", acct.MerchantID).First(&merchant).Error; err != nil {
+			return sessionLookupError(err)
+		}
+		if merchant.ReviewStatus != model.ReviewApproved {
+			scope = "onboarding"
+		}
+		var err error
+		data, err = s.issueTokensWithDB(c, tx, model.UserTypeMerchant, acct.ID, acct.Role, merchant.ID, scope)
+		if err != nil {
+			return err
+		}
+		return tx.Model(&model.MerchantAccount{}).Where("id = ?", acct.ID).Update("last_login_at", time.Now()).Error
+	})
 	if err != nil {
 		common.Fail(c, err)
 		return
 	}
-	now := time.Now()
-	_ = s.DB.Model(&model.MerchantAccount{}).Where("id = ?", acct.ID).Update("last_login_at", &now).Error
 	data["user"] = gin.H{"id": acct.ID, "role": acct.Role, "merchant_id": merchant.ID, "must_change_password": acct.MustChangePassword}
 	data["token_scope"] = scope
 	data["review_status"] = merchant.ReviewStatus
@@ -155,8 +160,16 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	if err := s.DB.Model(&model.AuthSession{}).Where("id = ?", session.ID).Updates(map[string]interface{}{"refresh_token_hash": common.SHA256(newRefresh), "expired_at": refreshExp}).Error; err != nil {
+	// Compare-and-swap on the presented hash so a refresh token rotates exactly once.
+	result := s.DB.WithContext(c.Request.Context()).Model(&model.AuthSession{}).
+		Where("id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND expired_at > ?", session.ID, session.RefreshTokenHash, time.Now()).
+		Updates(map[string]interface{}{"refresh_token_hash": common.SHA256(newRefresh), "expired_at": refreshExp})
+	if result.Error != nil {
 		common.Fail(c, common.ErrInternal)
+		return
+	}
+	if result.RowsAffected != 1 {
+		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
 	common.Success(c, gin.H{"access_token": access, "refresh_token": newRefresh, "expires_in": int(s.cfg.AccessTTL.Seconds())})
@@ -169,8 +182,15 @@ func (s *Server) handleLogout(c *gin.Context) {
 		return
 	}
 	now := time.Now()
-	if err := s.DB.Model(&model.AuthSession{}).Where("id = ?", actor.SessionID).Update("revoked_at", &now).Error; err != nil {
+	result := s.DB.WithContext(c.Request.Context()).Model(&model.AuthSession{}).
+		Where("id = ? AND user_type = ? AND user_id = ? AND revoked_at IS NULL AND expired_at > ?", actor.SessionID, actor.UserType, actor.UserID, now).
+		Update("revoked_at", now)
+	if result.Error != nil {
 		common.Fail(c, common.ErrInternal)
+		return
+	}
+	if result.RowsAffected != 1 {
+		common.Fail(c, common.ErrUnauthorized)
 		return
 	}
 	common.Success(c, gin.H{"success": true})

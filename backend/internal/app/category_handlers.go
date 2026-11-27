@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
@@ -84,6 +85,22 @@ func (s *Server) handleDeleteCategory(c *gin.Context) {
 }
 
 func (s *Server) createOwnedCategory(db *gorm.DB, merchantID uint64, req dto.CreateCategoryRequest) (model.Category, error) {
+	var category model.Category
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := s.lockMerchantCategories(tx, merchantID); err != nil {
+			return err
+		}
+		created, err := s.createOwnedCategoryLocked(tx, merchantID, req)
+		if err != nil {
+			return err
+		}
+		category = created
+		return nil
+	})
+	return category, err
+}
+
+func (s *Server) createOwnedCategoryLocked(db *gorm.DB, merchantID uint64, req dto.CreateCategoryRequest) (model.Category, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return model.Category{}, common.ErrInvalidArgument
@@ -112,18 +129,23 @@ func (s *Server) createOwnedCategory(db *gorm.DB, merchantID uint64, req dto.Cre
 		return model.Category{}, common.ErrInvalidArgument
 	}
 
+	conflict, err := categoryNameConflict(db, merchantID, parentID, req.Level, name, 0)
+	if err != nil {
+		return model.Category{}, err
+	}
+	if conflict {
+		return model.Category{}, common.ErrInvalidArgument
+	}
+
 	var existing model.Category
-	query := db.Unscoped().Where("merchant_id = ? AND level = ? AND name = ?", merchantID, req.Level, name)
+	query := db.Unscoped().Where("merchant_id = ? AND level = ? AND name = ? AND deleted_at IS NOT NULL", merchantID, req.Level, name)
 	if parentID == nil {
 		query = query.Where("parent_id IS NULL")
 	} else {
 		query = query.Where("parent_id = ?", *parentID)
 	}
-	err := query.First(&existing).Error
+	err = query.Order("id").First(&existing).Error
 	if err == nil {
-		if !existing.DeletedAt.Valid {
-			return model.Category{}, common.ErrInvalidArgument
-		}
 		updates := map[string]interface{}{
 			"deleted_at": nil,
 			"status":     model.CategoryEnabled,
@@ -157,6 +179,22 @@ func (s *Server) createOwnedCategory(db *gorm.DB, merchantID uint64, req dto.Cre
 }
 
 func (s *Server) updateOwnedCategory(db *gorm.DB, merchantID, categoryID uint64, req dto.UpdateCategoryRequest) (model.Category, error) {
+	var category model.Category
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := s.lockMerchantCategories(tx, merchantID); err != nil {
+			return err
+		}
+		updated, err := s.updateOwnedCategoryLocked(tx, merchantID, categoryID, req)
+		if err != nil {
+			return err
+		}
+		category = updated
+		return nil
+	})
+	return category, err
+}
+
+func (s *Server) updateOwnedCategoryLocked(db *gorm.DB, merchantID, categoryID uint64, req dto.UpdateCategoryRequest) (model.Category, error) {
 	category, err := s.loadOwnedCategory(db, categoryID, merchantID)
 	if err != nil {
 		return model.Category{}, err
@@ -272,6 +310,16 @@ func (s *Server) ensureMerchantLevel2Category(db *gorm.DB, merchantID uint64, ca
 	}
 	if category.Level != 2 || category.Status != model.CategoryEnabled {
 		return common.ErrInvalidArgument
+	}
+	return nil
+}
+
+// lockMerchantCategories serializes category create/rename per merchant so the
+// active-name uniqueness check cannot race. SQLite omits FOR UPDATE.
+func (s *Server) lockMerchantCategories(tx *gorm.DB, merchantID uint64) error {
+	var merchant model.Merchant
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", merchantID).First(&merchant).Error; err != nil {
+		return s.dbError(err)
 	}
 	return nil
 }

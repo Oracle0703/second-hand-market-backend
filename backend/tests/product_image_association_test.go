@@ -3,6 +3,8 @@ package tests
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -202,6 +204,45 @@ func TestProductDeleteByStaffRemovesOwnerUploadedImageRecord(t *testing.T) {
 	}
 	if fileCount != 0 {
 		t.Fatalf("staff delete should remove owner uploaded file record, got count=%d", fileCount)
+	}
+}
+
+func TestProductDeleteKeepsOtherCoverAndGalleryReferences(t *testing.T) {
+	uploadDir := t.TempDir()
+	srv := newTestServerWithConfig(t, newTestConfig(t, uploadDir))
+	token := approvedMerchantToken(t, srv, "shared_images")
+	cover := uploadProductImage(t, srv, token, encodedUploadImage(t, "image/jpeg"), "image/jpeg")
+	gallery := uploadProductImage(t, srv, token, encodedUploadImage(t, "image/jpeg"), "image/jpeg")
+	ids := []uint64{cover.ID, gallery.ID}
+	source := createProductWithImages(t, srv, token, ids)
+	target := createProductWithImages(t, srv, token, ids)
+	if source.Code != 0 || target.Code != 0 {
+		t.Fatalf("failed to create products: %+v %+v", source, target)
+	}
+	// Older records may have a cover without a corresponding gallery row.
+	if err := srv.DB.Where("product_id = ? AND file_id = ?", numToUint64(target.Data["product_id"]), cover.ID).Delete(&model.ProductImage{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	headers := map[string]string{"Authorization": "Bearer " + token}
+	for _, product := range []apiResp{source, target} {
+		result := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/merchant/products/%d", numToUint64(product.Data["product_id"])), nil, headers)
+		if result.Code != 0 {
+			t.Fatalf("delete failed: %+v", result)
+		}
+		var count int64
+		if err := srv.DB.Model(&model.FileRecord{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		shared := product.Data["product_id"] == source.Data["product_id"]
+		if (shared && count != 2) || (!shared && count != 0) {
+			t.Fatalf("shared=%t, remaining file records=%d", shared, count)
+		}
+		for _, image := range []uploadedFile{cover, gallery} {
+			_, err := os.Stat(filepath.Join(uploadDir, filepath.FromSlash(image.ObjectKey)))
+			if (shared && err != nil) || (!shared && !os.IsNotExist(err)) {
+				t.Fatalf("shared=%t file=%d stat=%v", shared, image.ID, err)
+			}
+		}
 	}
 }
 

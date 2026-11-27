@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -88,8 +89,12 @@ func (s *Server) handleMerchantChangePassword(c *gin.Context) {
 			return common.ErrConflict
 		}
 
-		return tx.Model(&model.AuthSession{}).Where("user_type = ? AND user_id = ?", model.UserTypeMerchant, acct.ID).Update("revoked_at", now).Error
+		return tx.Model(&model.AuthSession{}).Where("user_type = ? AND user_id = ? AND revoked_at IS NULL", model.UserTypeMerchant, acct.ID).Update("revoked_at", now).Error
 	}); err != nil {
+		if errors.Is(err, common.ErrConflict) {
+			common.Fail(c, err)
+			return
+		}
 		common.Fail(c, common.ErrInternal)
 		return
 	}
@@ -133,14 +138,27 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	countByStatus := func(table, statusField string, statuses []string) map[string]int64 {
+	countByStatus := func(table, statusField string, statuses []string) (map[string]int64, error) {
 		res := map[string]int64{}
 		for _, st := range statuses {
 			var n int64
-			_ = s.DB.Table(table).Where("merchant_id = ? AND "+statusField+" = ? AND deleted_at IS NULL", actor.MerchantID, st).Count(&n).Error
+			if err := s.DB.Table(table).Where("merchant_id = ? AND "+statusField+" = ? AND deleted_at IS NULL", actor.MerchantID, st).Count(&n).Error; err != nil {
+				return nil, err
+			}
 			res[strings.ToLower(st)] = n
 		}
-		return res
+		return res, nil
+	}
+
+	productStats, err := countByStatus("products", "status", []string{model.ProductDraft, model.ProductOnShelf, model.ProductLocked, model.ProductOffShelf, model.ProductSold})
+	if err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	orderStats, err := countByStatus("orders", "status", []string{model.OrderCreated, model.OrderCompleted, model.OrderClosed})
+	if err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
 	}
 
 	var onShelfTotalAmountCent int64
@@ -153,8 +171,8 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	}
 
 	common.Success(c, gin.H{
-		"product_stats":              countByStatus("products", "status", []string{model.ProductDraft, model.ProductOnShelf, model.ProductLocked, model.ProductOffShelf, model.ProductSold}),
-		"order_stats":                countByStatus("orders", "status", []string{model.OrderCreated, model.OrderCompleted, model.OrderClosed}),
+		"product_stats":              productStats,
+		"order_stats":                orderStats,
 		"on_shelf_total_amount_cent": onShelfTotalAmountCent,
 	})
 }

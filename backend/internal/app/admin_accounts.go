@@ -122,7 +122,7 @@ func (s *Server) updateMerchantAccount(c *gin.Context, values map[string]interfa
 		if err := tx.Model(&account).Updates(values).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.AuthSession{}).Where("user_type = ? AND user_id = ?", model.UserTypeMerchant, account.ID).Update("revoked_at", time.Now()).Error; err != nil {
+		if err := tx.Model(&model.AuthSession{}).Where("user_type = ? AND user_id = ? AND revoked_at IS NULL", model.UserTypeMerchant, account.ID).Update("revoked_at", time.Now()).Error; err != nil {
 			return err
 		}
 		toStatus := account.Status

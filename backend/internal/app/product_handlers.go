@@ -1,12 +1,14 @@
 package app
 
 import (
+	"database/sql"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/dto"
@@ -201,17 +203,15 @@ func (s *Server) validateMerchantProductImageFiles(tx *gorm.DB, actor common.Act
 		uniqueIDs = append(uniqueIDs, id)
 	}
 
-	var files []model.FileRecord
-	if err := tx.Where("id IN ?", uniqueIDs).Find(&files).Error; err != nil {
+	files, err := lockProductImageFiles(tx, uniqueIDs)
+	if err != nil {
 		return err
 	}
 	if len(files) != len(uniqueIDs) {
 		return common.ErrInvalidUpload
 	}
-	filesByID := make(map[uint64]model.FileRecord, len(files))
 	uploaderIDs := make([]uint64, 0, len(files))
 	for _, file := range files {
-		filesByID[file.ID] = file
 		if file.UploaderID != nil {
 			uploaderIDs = append(uploaderIDs, *file.UploaderID)
 		}
@@ -221,8 +221,7 @@ func (s *Server) validateMerchantProductImageFiles(tx *gorm.DB, actor common.Act
 	if err != nil {
 		return err
 	}
-	for _, id := range uniqueIDs {
-		file := filesByID[id]
+	for _, file := range files {
 		if file.BizType != model.FileBizProductImage ||
 			file.ScanStatus != model.FileScanPass ||
 			file.UploaderType != model.UserTypeMerchant ||
@@ -238,6 +237,14 @@ func (s *Server) validateMerchantProductImageFiles(tx *gorm.DB, actor common.Act
 		}
 	}
 	return nil
+}
+
+// Both binding and deletion lock the same file rows, in primary key order.
+func lockProductImageFiles(tx *gorm.DB, ids []uint64) ([]model.FileRecord, error) {
+	var files []model.FileRecord
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id IN ?", ids).Order("id ASC").Find(&files).Error
+	return files, err
 }
 
 func merchantIDsForAccounts(tx *gorm.DB, accountIDs []uint64) (map[uint64]uint64, error) {
@@ -444,6 +451,12 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 
 	deletedFileIDs := make([]uint64, 0)
 	objectKeys := make([]string, 0)
+	var txOptions *sql.TxOptions
+	if s.DB.Dialector.Name() == "mysql" {
+		// Reference checks after the file lock must see any binding that committed
+		// while this deletion waited, even after earlier reads in this transaction.
+		txOptions = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	}
 	if err := s.DB.Transaction(func(tx *gorm.DB) error {
 		product, err := s.loadOwnedProductForUpdate(tx, id, actor.MerchantID)
 		if err != nil {
@@ -486,83 +499,18 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 			fileIDs = append(fileIDs, fileID)
 		}
 
-		deletableFileIDs := make([]uint64, 0, len(fileIDs))
 		if len(fileIDs) > 0 {
-			type refRow struct {
-				FileID   uint64
-				RefCount int64
-			}
-			refs := make([]refRow, 0)
-			if err := tx.Model(&model.ProductImage{}).
-				Select("file_id, COUNT(*) AS ref_count").
-				Where("file_id IN ? AND product_id <> ?", fileIDs, product.ID).
-				Group("file_id").
-				Scan(&refs).Error; err != nil {
+			files, err := unreferencedMerchantProductFiles(tx, product, fileIDs)
+			if err != nil {
 				return err
 			}
-			referenced := make(map[uint64]struct{}, len(refs))
-			for _, row := range refs {
-				if row.RefCount > 0 {
-					referenced[row.FileID] = struct{}{}
-				}
+			for _, file := range files {
+				deletedFileIDs = append(deletedFileIDs, file.ID)
+				objectKeys = append(objectKeys, file.ObjectKey)
 			}
-			coverRefs := make([]refRow, 0)
-			if err := tx.Model(&model.Product{}).
-				Select("cover_file_id AS file_id, COUNT(*) AS ref_count").
-				Where("cover_file_id IN ? AND id <> ? AND deleted_at IS NULL", fileIDs, product.ID).
-				Group("cover_file_id").
-				Scan(&coverRefs).Error; err != nil {
-				return err
-			}
-			for _, row := range coverRefs {
-				if row.RefCount > 0 {
-					referenced[row.FileID] = struct{}{}
-				}
-			}
-			for _, fileID := range fileIDs {
-				if _, inUse := referenced[fileID]; !inUse {
-					deletableFileIDs = append(deletableFileIDs, fileID)
-				}
-			}
-		}
-
-		if len(deletableFileIDs) > 0 {
-			files := make([]model.FileRecord, 0, len(deletableFileIDs))
-			if err := tx.Where(
-				"id IN ? AND biz_type = ? AND uploader_type = ?",
-				deletableFileIDs,
-				model.FileBizProductImage,
-				model.UserTypeMerchant,
-			).Find(&files).Error; err != nil {
-				return err
-			}
-			if len(files) > 0 {
-				ids := make([]uint64, 0, len(files))
-				uploaderIDs := make([]uint64, 0, len(files))
-				for _, file := range files {
-					if file.UploaderID != nil {
-						uploaderIDs = append(uploaderIDs, *file.UploaderID)
-					}
-				}
-				merchantByAccountID, err := merchantIDsForAccounts(tx, uploaderIDs)
-				if err != nil {
+			if len(deletedFileIDs) > 0 {
+				if err := tx.Where("id IN ?", deletedFileIDs).Delete(&model.FileRecord{}).Error; err != nil {
 					return err
-				}
-				for _, file := range files {
-					if file.UploaderID == nil || merchantByAccountID[*file.UploaderID] != actor.MerchantID {
-						continue
-					}
-					ids = append(ids, file.ID)
-					objectKey := strings.TrimSpace(file.ObjectKey)
-					if objectKey != "" {
-						objectKeys = append(objectKeys, objectKey)
-					}
-				}
-				if len(ids) > 0 {
-					if err := tx.Where("id IN ?", ids).Delete(&model.FileRecord{}).Error; err != nil {
-						return err
-					}
-					deletedFileIDs = append(deletedFileIDs, ids...)
 				}
 			}
 		}
@@ -578,7 +526,7 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 			"deleted_file_count": len(deletedFileIDs),
 		})
 		return nil
-	}); err != nil {
+	}, txOptions); err != nil {
 		common.Fail(c, err)
 		return
 	}
@@ -590,6 +538,49 @@ func (s *Server) handleDeleteProduct(c *gin.Context) {
 		"deleted_file_ids":   deletedFileIDs,
 		"deleted_file_count": len(deletedFileIDs),
 	})
+}
+
+func unreferencedMerchantProductFiles(tx *gorm.DB, product model.Product, ids []uint64) ([]model.FileRecord, error) {
+	files, err := lockProductImageFiles(tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	var imageRefs, coverRefs []uint64
+	if err := tx.Model(&model.ProductImage{}).Where("file_id IN ? AND product_id <> ?", ids, product.ID).
+		Distinct().Pluck("file_id", &imageRefs).Error; err != nil {
+		return nil, err
+	}
+	if err := tx.Model(&model.Product{}).Where("cover_file_id IN ? AND id <> ?", ids, product.ID).
+		Distinct().Pluck("cover_file_id", &coverRefs).Error; err != nil {
+		return nil, err
+	}
+	referenced := make(map[uint64]bool, len(imageRefs)+len(coverRefs))
+	for _, id := range imageRefs {
+		referenced[id] = true
+	}
+	for _, id := range coverRefs {
+		referenced[id] = true
+	}
+	var uploaderIDs []uint64
+	var candidates []model.FileRecord
+	for _, file := range files {
+		if !referenced[file.ID] && file.BizType == model.FileBizProductImage &&
+			file.UploaderType == model.UserTypeMerchant && file.UploaderID != nil {
+			uploaderIDs = append(uploaderIDs, *file.UploaderID)
+			candidates = append(candidates, file)
+		}
+	}
+	merchantByAccountID, err := merchantIDsForAccounts(tx, uploaderIDs)
+	if err != nil {
+		return nil, err
+	}
+	var owned []model.FileRecord
+	for _, file := range candidates {
+		if merchantByAccountID[*file.UploaderID] == product.MerchantID {
+			owned = append(owned, file)
+		}
+	}
+	return owned, nil
 }
 
 func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, action string) {
@@ -636,7 +627,9 @@ func (s *Server) doProductStatusChange(c *gin.Context, id uint64, toStatus, acti
 				return err
 			}
 			from, to := fromStatus, toStatus
-			s.writeOperationLog(c, tx, "product", product.ID, action, &from, &to, common.CodeOK, &actor.MerchantID, nil)
+			if err := s.persistOperationLog(c, tx, "product", product.ID, action, &from, &to, common.CodeOK, &actor.MerchantID, nil); err != nil {
+				return err
+			}
 			resp["product_id"] = product.ID
 			resp["from_status"] = fromStatus
 			resp["to_status"] = toStatus

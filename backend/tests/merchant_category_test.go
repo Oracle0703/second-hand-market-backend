@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"second-hand-market-backend/backend/internal/app"
 	"second-hand-market-backend/backend/internal/model"
 )
 
@@ -200,5 +201,86 @@ func TestProductRejectsCrossMerchantCategory(t *testing.T) {
 	}, map[string]string{"Authorization": "Bearer " + merchantTwoToken})
 	if create.Code == 0 {
 		t.Fatal("product creation accepted another merchant's category")
+	}
+}
+
+func newCategoryTestMerchant(t *testing.T, prefix string) (*app.Server, uint64, string) {
+	t.Helper()
+	srv := newTestServer(t)
+	merchantID, username, password := registerMerchant(t, srv, prefix)
+	approveMerchant(t, srv, adminAccessToken(t, srv), merchantID)
+	login := merchantLogin(t, srv, username, password)
+	if login.Code != 0 {
+		t.Fatalf("merchant login failed: %+v", login)
+	}
+	return srv, merchantID, str(login.Data["access_token"])
+}
+
+func createRootCategory(t *testing.T, srv *app.Server, token, name string) uint64 {
+	t.Helper()
+	payload := map[string]interface{}{"level": 1, "name": name, "sort": 1}
+	response := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/categories", payload, map[string]string{"Authorization": "Bearer " + token})
+	if response.Code != 0 {
+		t.Fatalf("create category failed: %+v", response)
+	}
+	return numToUint64(response.Data["id"])
+}
+
+func assertCategoryDeleted(t *testing.T, srv *app.Server, categoryID uint64, wantDeleted bool) {
+	t.Helper()
+	var category model.Category
+	if err := srv.DB.Unscoped().First(&category, categoryID).Error; err != nil {
+		t.Fatalf("load category %d: %v", categoryID, err)
+	}
+	if category.DeletedAt.Valid != wantDeleted {
+		t.Fatalf("category %d deleted=%t, want %t", categoryID, category.DeletedAt.Valid, wantDeleted)
+	}
+}
+
+func TestCreateCategoryRejectsActiveDuplicateBeforeRestoringSoftDeleted(t *testing.T) {
+	srv, merchantID, token := newCategoryTestMerchant(t, "cat_restore_dup")
+	auth := map[string]string{"Authorization": "Bearer " + token}
+
+	deletedID := createRootCategory(t, srv, token, "重名分类")
+	if response := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/merchant/categories/%d", deletedID), nil, auth); response.Code != 0 {
+		t.Fatalf("delete category failed: %+v", response)
+	}
+	renamedID := createRootCategory(t, srv, token, "其他分类")
+	if response := requestJSON(t, srv.Router, http.MethodPut, fmt.Sprintf("/api/v1/merchant/categories/%d", renamedID), map[string]interface{}{"name": "重名分类"}, auth); response.Code != 0 {
+		t.Fatalf("rename category failed: %+v", response)
+	}
+
+	duplicate := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/categories", map[string]interface{}{"level": 1, "name": "重名分类", "sort": 1}, auth)
+	if duplicate.Code == 0 {
+		t.Fatalf("expected duplicate create to be rejected, got %+v", duplicate)
+	}
+	assertCategoryDeleted(t, srv, deletedID, true)
+
+	var activeCount int64
+	if err := srv.DB.Model(&model.Category{}).Where("merchant_id = ? AND level = 1 AND parent_id IS NULL AND name = ?", merchantID, "重名分类").Count(&activeCount).Error; err != nil {
+		t.Fatalf("count active categories: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("active categories named 重名分类 = %d, want 1", activeCount)
+	}
+}
+
+func TestCreateCategoryRestoresSoftDeletedWhenNoActiveDuplicate(t *testing.T) {
+	srv, _, token := newCategoryTestMerchant(t, "cat_restore_ok")
+	auth := map[string]string{"Authorization": "Bearer " + token}
+
+	deletedID := createRootCategory(t, srv, token, "可恢复分类")
+	if response := requestJSON(t, srv.Router, http.MethodDelete, fmt.Sprintf("/api/v1/merchant/categories/%d", deletedID), nil, auth); response.Code != 0 {
+		t.Fatalf("delete category failed: %+v", response)
+	}
+	restoredID := createRootCategory(t, srv, token, "可恢复分类")
+	if restoredID != deletedID {
+		t.Fatalf("restored id = %d, want soft-deleted id %d", restoredID, deletedID)
+	}
+	assertCategoryDeleted(t, srv, deletedID, false)
+
+	again := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/categories", map[string]interface{}{"level": 1, "name": "可恢复分类", "sort": 1}, auth)
+	if again.Code == 0 {
+		t.Fatalf("expected duplicate create to be rejected, got %+v", again)
 	}
 }

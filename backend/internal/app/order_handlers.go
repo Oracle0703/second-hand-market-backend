@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -99,11 +100,20 @@ func (s *Server) handleOrderDetail(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
+	var productOut gin.H
 	var product model.Product
-	_ = s.DB.Where("id = ?", order.ProductID).First(&product).Error
-	var events []model.OrderEvent
-	_ = s.DB.Where("order_id = ?", order.ID).Order("id ASC").Find(&events).Error
-	common.Success(c, gin.H{"order_detail": gin.H{"id": order.ID, "order_no": order.OrderNo, "status": order.Status, "deal_price_cent": order.DealPriceCent, "product": gin.H{"id": product.ID, "title": product.Title, "status": product.Status}}, "events": events})
+	if err := s.DB.Unscoped().Where("id = ? AND merchant_id = ?", order.ProductID, order.MerchantID).First(&product).Error; err == nil {
+		productOut = gin.H{"id": product.ID, "title": product.Title, "status": product.Status, "is_deleted": product.DeletedAt.Valid}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	events := make([]model.OrderEvent, 0)
+	if err := s.DB.Where("order_id = ?", order.ID).Order("id ASC").Find(&events).Error; err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	common.Success(c, gin.H{"order_detail": gin.H{"id": order.ID, "order_no": order.OrderNo, "status": order.Status, "deal_price_cent": order.DealPriceCent, "product": productOut, "product_missing": productOut == nil}, "events": events})
 }
 
 func (s *Server) doOrderAction(c *gin.Context, id uint64, toStatus, action string, note *string) {
