@@ -2,8 +2,11 @@ import Taro from '@tarojs/taro'
 import { merchantNo, withMerchantPath } from './buyer'
 import { apiRequest } from './request'
 import { resolveTaroEnv } from '../utils/platform'
+import { createTracker, type Tracker } from '../vendor/event-analytics'
 
 declare const __API_BASE_URL__: string
+declare const __EVENT_ANALYTICS_ENDPOINT__: string
+declare const __EVENT_ANALYTICS_PROJECT_KEY__: string
 
 export type ClickName = string
 export type AnalyticsProperties = Record<string, string | number | boolean>
@@ -40,6 +43,21 @@ let timer: ReturnType<typeof setTimeout> | undefined
 let sending: Promise<void> | undefined
 let retryDelay = 0
 let visible = true
+let externalTracker: Tracker | undefined
+
+function projectTracker() {
+  if (typeof __EVENT_ANALYTICS_ENDPOINT__ !== 'string' || !__EVENT_ANALYTICS_ENDPOINT__ ||
+      typeof __EVENT_ANALYTICS_PROJECT_KEY__ !== 'string' || !__EVENT_ANALYTICS_PROJECT_KEY__) return
+  if (!externalTracker) {
+    externalTracker = createTracker({
+      endpoint: __EVENT_ANALYTICS_ENDPOINT__,
+      projectKey: __EVENT_ANALYTICS_PROJECT_KEY__,
+      platform: resolveTaroEnv(),
+      runtime: Taro
+    })
+  }
+  return externalTracker
+}
 
 function isRecent(occurredAt: string, now: number) {
   const time = Date.parse(occurredAt)
@@ -133,7 +151,7 @@ function schedule() {
   if (!visible || sending || timer || !queue().length) return
   timer = setTimeout(() => {
     timer = undefined
-    void flushAnalytics()
+    void flushMerchantAnalytics()
   }, retryDelay || flushDelay)
 }
 
@@ -154,7 +172,7 @@ async function sendBatch(events: AnalyticsEvent[]) {
   }
 }
 
-export function flushAnalytics(): Promise<void> {
+function flushMerchantAnalytics(): Promise<void> {
   clearTimeout(timer)
   timer = undefined
   if (sending) return sending
@@ -182,6 +200,12 @@ function currentRoute(): string | undefined {
   }
 }
 
+export function flushAnalytics(): Promise<void> {
+  const merchant = flushMerchantAnalytics()
+  const external = projectTracker()
+  return external ? Promise.all([merchant, external.flush()]).then(() => undefined) : merchant
+}
+
 /** Returns true when the event has entered the local queue. */
 export function trackEvent(name: string, options: TrackEventOptions = {}): boolean {
   if (!options || typeof options !== 'object' || Array.isArray(options)) return false
@@ -197,6 +221,14 @@ export function trackEvent(name: string, options: TrackEventOptions = {}): boole
   if (events.length > maxQueueSize) events.shift()
   persist()
   schedule()
+  const external = projectTracker()
+  if (external) {
+    let properties = fields.properties
+    if (fields.product_id !== undefined && (!properties || 'product_id' in properties || Object.keys(properties).length < 16)) {
+      properties = { ...properties, product_id: fields.product_id }
+    }
+    external.track(fields.name, { page: fields.page, source: fields.source, properties })
+  }
   return true
 }
 
@@ -211,9 +243,11 @@ export function trackClick(name: ClickName, page: string, source: string, produc
 export function resumeAnalytics() {
   visible = true
   schedule()
+  projectTracker()?.resume()
 }
 
 export function pauseAnalytics() {
   visible = false
-  void flushAnalytics()
+  projectTracker()?.pause()
+  void flushMerchantAnalytics()
 }
