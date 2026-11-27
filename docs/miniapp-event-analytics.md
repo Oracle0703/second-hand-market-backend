@@ -81,4 +81,19 @@ trackEvent('order_created', {
 
 ## 升级
 
+### 接入独立的多项目埋点平台
+
+在独立平台管理后台创建「二手家居」项目。构建本仓小程序时同时提供以下变量，已有的曝光、商品、收藏和联系事件会额外上报到该项目。独立平台项目可由获授权的运营人员查询，原商家报表继续按原有商户范围统计。
+
+| 构建变量 | 值 |
+| --- | --- |
+| `TARO_APP_ANALYTICS_ENDPOINT` | 独立平台的完整采集地址，如 `https://analytics.example.com/api/events` |
+| `TARO_APP_ANALYTICS_PROJECT_KEY` | 管理后台为本项目生成的写入标识 |
+
+微信、抖音正式包需要将采集域名加入 request 合法域名；本机模拟器可以使用开发环境地址。商品 ID 映射为独立平台的 `properties.product_id`。未配置独立平台的构建继续使用本仓的采集服务。
+
+`miniapp/src/vendor/event-analytics/` 中的 `index.js` 与 `index.d.ts` 是独立仓库 `event-analytics/sdk/miniapp/` 对应版本的原样副本。升级 SDK 时一并更新两份文件，再运行小程序测试与双端构建。
+
+### 本仓原有采集服务的数据库迁移
+
 在目标 MySQL 的 `backend/` 运行已存在的 `0012_miniapp_analytics` 迁移后，再运行 `go run ./scripts/migrate --migration 0013_analytics_properties`。已有 0012 的环境只需执行 0013。随后依次发布 API、后台和小程序。历史曝光、点击可直接查询，旧行的属性显示为空对象。

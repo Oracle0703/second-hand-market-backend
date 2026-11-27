@@ -3,6 +3,7 @@ import type { TrackEventOptions } from '../src/services/analytics'
 
 const storage = new Map<string, unknown>()
 const request = vi.fn()
+const externalRequest = vi.fn()
 const currentInstance = vi.fn()
 let env: 'weapp' | 'tt'
 let onShow: () => void
@@ -11,6 +12,7 @@ vi.mock('@tarojs/taro', () => ({
   ENV_TYPE: { WEAPP: 'weapp', TT: 'tt' },
   useDidShow: (callback: () => void) => { onShow = callback },
   default: {
+    request: externalRequest,
     getCurrentInstance: currentInstance,
     getEnv: () => env,
     getStorageSync: (key: string) => storage.get(key),
@@ -31,6 +33,7 @@ describe('小程序埋点队列', () => {
     env = 'weapp'
     storage.clear()
     currentInstance.mockReset()
+    externalRequest.mockReset()
     request.mockReset().mockResolvedValue({})
   })
 
@@ -77,6 +80,25 @@ describe('小程序埋点队列', () => {
     await sdk.flushAnalytics()
     expect(request.mock.calls.map(([payload]) => payload.data.events.length)).toEqual([1, 1])
     expect(request.mock.calls[1][0].data.events[0].name).toBe('contact_click')
+  })
+
+  it('配置独立平台时保留商户上报，并将商品编号和动态属性发送到项目专属队列', async () => {
+    vi.stubGlobal('__EVENT_ANALYTICS_ENDPOINT__', 'https://analytics.example.test/api/events')
+    vi.stubGlobal('__EVENT_ANALYTICS_PROJECT_KEY__', 'fixture_project')
+    externalRequest.mockImplementation(options => {
+      options.success({ statusCode: 200, data: { data: { received: options.data.events.length, discarded: 0 } } })
+    })
+    const sdk = await load()
+    expect(sdk.trackEvent('cart_opened', { page: detail, productId: 15, properties: { quantity: 2 } })).toBe(true)
+    await sdk.flushAnalytics()
+    expect(request.mock.calls[0][0].data.events[0]).toMatchObject({ name: 'cart_opened', product_id: 15, properties: { quantity: 2 } })
+    expect(externalRequest).toHaveBeenCalledTimes(1)
+    expect(externalRequest.mock.calls[0][0]).toMatchObject({
+      url: 'https://analytics.example.test/api/events',
+      header: { 'X-Project-Key': 'fixture_project' },
+      data: { platform: 'weapp', events: [{ name: 'cart_opened', page: detail, properties: { quantity: 2, product_id: 15 } }] }
+    })
+    expect(externalRequest.mock.calls[0][0].data).not.toHaveProperty('merchant_no')
   })
 
   it('断网后保留 ID，重新启动在原商家和平台恢复；切换商家不发送旧数据', async () => {
