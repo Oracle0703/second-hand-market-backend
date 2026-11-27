@@ -15,22 +15,34 @@ export default function LoginPage() {
     setLoading(true)
     setError('')
     try {
+      const deviceID = ensureDeviceID()
+      const startingVersion = useSessionStore.getState().sessionVersion
       const loginRes = await Taro.login()
       const code = loginRes.code || `mock_${Date.now()}`
-      const deviceID = ensureDeviceID()
       const data = await loginByMiniProgram({
         provider: platform.provider,
         code,
         device_id: deviceID,
         nickname: platform.defaultNickname
       })
-      useSessionStore.getState().setSession(data.access_token, data.refresh_token, data.user)
+      const beforeLogin = useSessionStore.getState()
+      if (beforeLogin.sessionVersion !== startingVersion) return
+      const loginVersion = beforeLogin.setSession(data.access_token, data.refresh_token, data.user)
+      if (useSessionStore.getState().sessionVersion !== loginVersion) return
+      let syncFailed = false
       try {
         await mergeGuest(deviceID)
       } catch {
-        void Taro.showToast({ title: '游客数据同步失败', icon: 'none' })
+        syncFailed = true
       }
 
+      const current = useSessionStore.getState()
+      if (!current.accessToken) {
+        setError('登录已过期，请重新登录')
+        return
+      }
+      if (current.sessionVersion !== loginVersion) return
+      if (syncFailed) void Taro.showToast({ title: '游客数据同步失败', icon: 'none' })
       const redirect = router.params.redirect ? decodeURIComponent(router.params.redirect) : '/pages/me/index'
       if (redirect.startsWith('/pages/')) {
         Taro.redirectTo({ url: redirect })

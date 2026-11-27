@@ -1,35 +1,46 @@
-import React from 'react'
-import { useQuery } from '@/libs/react-query'
+import React, { useEffect } from 'react'
+import { useQuery, useQueryClient } from '@/libs/react-query'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { fetchSummary, logoutBuyer } from '../../services/buyer'
-import { useSessionStore } from '../../stores/session'
+import { ensureDeviceID, useSessionStore } from '../../stores/session'
 import { getMiniProgramPlatform } from '../../utils/platform'
 
 export default function MePage() {
-  const clearSession = useSessionStore((state) => state.clearSession)
-  const summary = useQuery({ queryKey: ['buyer-summary'], queryFn: fetchSummary })
-  const platform = getMiniProgramPlatform()
-
-  const reloadSummary = () => {
-    void summary.refetch().catch(() => undefined)
-  }
+  const owner = useSessionStore((state) => {
+    if (!state.hydrated) return null
+    if (state.accessToken) return `buyer:${state.profile?.id ?? 'unknown'}:${state.sessionVersion}`
+    return state.deviceID ? `guest:${state.deviceID}` : null
+  })
+  const client = useQueryClient()
+  useEffect(() => {
+    ensureDeviceID()
+  }, [])
 
   useDidShow(() => {
-    reloadSummary()
+    if (owner) void client.invalidateQueries({ queryKey: ['buyer-summary', owner] })
   })
 
+  return owner ? <OwnerSummary key={owner} owner={owner} /> : <View className="page">加载账户信息…</View>
+}
+
+function OwnerSummary({ owner }: { owner: string }) {
+  const summary = useQuery({ queryKey: ['buyer-summary', owner], queryFn: fetchSummary })
+  const platform = getMiniProgramPlatform()
+  const reloadSummary = () => { void summary.refetch().catch(() => undefined) }
   const logout = async () => {
+    const version = useSessionStore.getState().sessionVersion
     try {
       await logoutBuyer()
     } catch {
       // ignore logout network failures
     }
-    clearSession()
-    reloadSummary()
+    const current = useSessionStore.getState()
+    if (current.sessionVersion === version) current.clearSession()
   }
 
   const data = summary.data
+  if (!data && !summary.error) return <View className="page">加载账户信息…</View>
   const loadFailed = Boolean(summary.error) && !data
   return (
     <View className="page">

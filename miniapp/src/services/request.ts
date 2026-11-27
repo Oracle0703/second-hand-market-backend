@@ -194,13 +194,13 @@ async function refreshAccessToken(owner: SessionIdentity): Promise<RefreshOutcom
     refreshToken: payload.data.refresh_token
   }
   try {
-    current.setSession(refreshedSession.accessToken, refreshedSession.refreshToken, current.profile)
+    current.rotateTokens(refreshedSession.accessToken, refreshedSession.refreshToken)
   } catch {
     // The server has already rotated the refresh token, so the old one is unusable.
     return failOwnedRefresh(owner)
   }
 
-  // Zustand subscribers run synchronously. Re-check after setSession so a
+  // Zustand subscribers run synchronously. Re-check after rotation so a
   // concurrent login/logout cannot be overwritten or used for the replay.
   if (!isSameSession(sessionIdentity(), refreshedSession)) {
     return { status: 'stale', owner }

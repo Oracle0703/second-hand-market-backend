@@ -15,7 +15,11 @@ type SessionState = {
   refreshToken: string
   profile?: BuyerProfile
   deviceID: string
-  setSession: (accessToken: string, refreshToken: string, profile?: BuyerProfile) => void
+  hydrated: boolean
+  // Identifies this login even if its tokens rotate or the same buyer signs in again.
+  sessionVersion: number
+  setSession: (accessToken: string, refreshToken: string, profile?: BuyerProfile) => number
+  rotateTokens: (accessToken: string, refreshToken: string) => void
   clearSession: () => void
   setDeviceID: (deviceID: string) => void
 }
@@ -28,8 +32,6 @@ const STORAGE_KEYS = {
 }
 
 type SessionSnapshot = Pick<SessionState, 'accessToken' | 'refreshToken' | 'profile' | 'deviceID'>
-
-let hydrated = false
 
 function readStorageSync<T>(key: string): T | undefined {
   try {
@@ -48,41 +50,49 @@ function loadSessionSnapshot(): SessionSnapshot {
   }
 }
 
-export const useSessionStore = create<SessionState>((set) => ({
+function storeTokens(accessToken: string, refreshToken: string) {
+  Taro.setStorageSync(STORAGE_KEYS.access, accessToken)
+  Taro.setStorageSync(STORAGE_KEYS.refresh, refreshToken)
+}
+
+export const useSessionStore = create<SessionState>((set, get) => ({
   accessToken: '',
   refreshToken: '',
   profile: undefined,
   deviceID: '',
+  hydrated: false,
+  sessionVersion: 0,
   setSession: (accessToken, refreshToken, profile) => {
-    hydrated = true
-    Taro.setStorageSync(STORAGE_KEYS.access, accessToken)
-    Taro.setStorageSync(STORAGE_KEYS.refresh, refreshToken)
+    const sessionVersion = get().sessionVersion + 1
+    storeTokens(accessToken, refreshToken)
     if (profile) {
       Taro.setStorageSync(STORAGE_KEYS.profile, profile)
+    } else {
+      Taro.removeStorageSync(STORAGE_KEYS.profile)
     }
-    set({ accessToken, refreshToken, profile })
+    set({ accessToken, refreshToken, profile, sessionVersion, hydrated: true })
+    return sessionVersion
+  },
+  rotateTokens: (accessToken, refreshToken) => {
+    storeTokens(accessToken, refreshToken)
+    set({ accessToken, refreshToken })
   },
   clearSession: () => {
-    hydrated = true
     Taro.removeStorageSync(STORAGE_KEYS.access)
     Taro.removeStorageSync(STORAGE_KEYS.refresh)
     Taro.removeStorageSync(STORAGE_KEYS.profile)
-    set({ accessToken: '', refreshToken: '', profile: undefined })
+    set((state) => ({ accessToken: '', refreshToken: '', profile: undefined, sessionVersion: state.sessionVersion + 1, hydrated: true }))
   },
   setDeviceID: (deviceID) => {
-    hydrated = true
     Taro.setStorageSync(STORAGE_KEYS.deviceID, deviceID)
-    set({ deviceID })
+    set({ deviceID, hydrated: true })
   }
 }))
 
 export function hydrateSessionStore(): void {
-  if (hydrated) {
-    return
+  if (!useSessionStore.getState().hydrated) {
+    useSessionStore.setState({ ...loadSessionSnapshot(), hydrated: true })
   }
-
-  hydrated = true
-  useSessionStore.setState(loadSessionSnapshot())
 }
 
 export function ensureDeviceID(): string {
