@@ -94,6 +94,19 @@ trackEvent('order_created', {
 
 `miniapp/src/vendor/event-analytics/` 中的 `index.js` 与 `index.d.ts` 是独立仓库 `event-analytics/sdk/miniapp/` 对应版本的原样副本。升级 SDK 时一并更新两份文件，再运行小程序测试与双端构建。
 
+### 独立后台的双项目验收
+
+2026-11-28，在同一后台从「二手家居」切换到「转盘小程序」。两个测试项目的初始事件数均为 0。
+
+| 项目 | 模拟器操作 | 后台结果 |
+| --- | --- | --- |
+| 二手家居（微信） | 从首页打开书桌详情并点击收藏 | 4 条事件、1 台设备：首页和详情曝光各 1 次，商品点击、收藏各 1 次 |
+| 转盘示例（抖音） | 打开并重编译示例，点击「转一次」，转盘停在「喝杯茶」 | 4 条事件、1 台设备：曝光 2 次、开始转动 1 次、转动结果 1 次 |
+
+家具 3 批、转盘 4 批上报均返回 HTTP 200，丢弃 0 条。两个模拟器的 8 个事件 ID 都与所属项目的数据库记录及后台明细一致，出现在另一项目中的数量为 0。切到转盘项目，按 `wheel_result`、文本 `choice = "tea"`、数值 `segment >= 5` 筛出 1 条，刷新查询链接后仍能复现。家具原商户接口同时接收到了对应的 4 条事件。
+
+[家居项目后台截图](images/standalone-analytics/furniture-query.jpg) · [转盘项目筛选截图](images/standalone-analytics/wheel-query.jpg)
+
 ### 本仓原有采集服务的数据库迁移
 
 在目标 MySQL 的 `backend/` 运行已存在的 `0012_miniapp_analytics` 迁移后，再运行 `go run ./scripts/migrate --migration 0013_analytics_properties`。已有 0012 的环境只需执行 0013。随后依次发布 API、后台和小程序。历史曝光、点击可直接查询，旧行的属性显示为空对象。
