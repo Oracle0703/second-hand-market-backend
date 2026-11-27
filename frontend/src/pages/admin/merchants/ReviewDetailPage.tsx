@@ -5,7 +5,7 @@ import {
   ProDescriptions,
   ProTable
 } from '@ant-design/pro-components'
-import { Button, Form, Popconfirm, message } from 'antd'
+import { Alert, Button, Form, Popconfirm, message } from 'antd'
 import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '@/services/api'
@@ -57,6 +57,7 @@ export function ReviewDetailPage() {
           { title: '创建时间', dataIndex: 'created_at', valueType: 'dateTime' }
         ]}
       />
+      {!account && <Alert type="warning" showIcon message="该商户缺少店主账号" />}
       {account && (
         <ProCard
           title={`登录账号：${account.username}`}

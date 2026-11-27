@@ -15,7 +15,9 @@ type OrderDetail = {
     id: number
     title: string
     status: string
-  }
+    is_deleted: boolean
+  } | null
+  product_missing: boolean
 }
 
 type OrderEventRow = {
@@ -137,11 +139,16 @@ export function DetailPage() {
           {
             title: '商品',
             key: 'product',
-            render: (_, row) => (
-              <span>
-                <Link to={`/merchant/products/${row.product.id}`}>{row.product.title}</Link> ({getStatusText(PRODUCT_STATUS_META, row.product.status)})
-              </span>
-            )
+            render: (_, row) =>
+              row.product_missing || !row.product || row.product.is_deleted ? (
+                <span>
+                  {row.product?.title || '商品缺失'} <Tag color="error">已删除</Tag>
+                </span>
+              ) : (
+                <span>
+                  <Link to={`/merchant/products/${row.product.id}`}>{row.product.title}</Link> ({getStatusText(PRODUCT_STATUS_META, row.product.status)})
+                </span>
+              )
           }
         ]}
         dataSource={order}

@@ -1,5 +1,6 @@
 import React from 'react'
-import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
+import { useQuery, useQueryClient } from '@/libs/react-query'
+import { useToastMutation } from '@/hooks/useToastMutation'
 import Taro, { useDidShow, useRouter, useShareAppMessage } from '@tarojs/taro'
 import { Button, Image, Swiper, SwiperItem, Text, View } from '@tarojs/components'
 import { addFavorite, fetchBuyerProductDetail, removeFavorite, reportView } from '../../../services/buyer'
@@ -28,11 +29,12 @@ export default function ProductDetailPage() {
     void detail.refetch().catch(() => undefined)
   })
 
-  const favoriteMutation = useMutation({
+  const favoriteMutation = useToastMutation({
     mutationFn: async (nextFav: boolean) => {
       if (nextFav) return addFavorite(id)
       return removeFavorite(id)
     },
+    errorMessage: '收藏操作失败，请重试',
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['buyer-product-detail', id] })
       await queryClient.invalidateQueries({ queryKey: ['buyer-favorites'] })
@@ -110,6 +112,7 @@ export default function ProductDetailPage() {
             <Button
               className="btn-secondary"
               onClick={() => favoriteMutation.mutate(!product.is_favorited)}
+              disabled={favoriteMutation.isPending}
               loading={favoriteMutation.isPending}
             >
               {product.is_favorited ? '取消收藏' : '收藏'}

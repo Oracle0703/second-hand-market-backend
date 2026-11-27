@@ -29,12 +29,14 @@ type RefreshOutcome =
   | { status: 'refreshed'; owner: SessionIdentity; session: SessionIdentity }
   | { status: 'failed'; owner: SessionIdentity }
   | { status: 'stale'; owner: SessionIdentity }
+  | { status: 'transient'; owner: SessionIdentity; error: unknown }
 type RefreshFlight = {
   owner: SessionIdentity
   promise: Promise<RefreshOutcome>
   outcome?: RefreshOutcome
 }
 
+const REFRESH_AUTH_FAILURE_CODES = new Set([10002, 10003, 10007])
 const BASE_URL = (typeof __API_BASE_URL__ === 'string' && __API_BASE_URL__.trim()) || 'https://market.meaningful.ink/api/v1'
 let refreshFlight: RefreshFlight | null = null
 
@@ -107,6 +109,18 @@ function failOwnedRefresh(owner: SessionIdentity): RefreshOutcome {
   return { status: 'failed', owner }
 }
 
+function transientRefresh(owner: SessionIdentity, error: unknown): RefreshOutcome {
+  if (!isSameSession(sessionIdentity(), owner)) {
+    return { status: 'stale', owner }
+  }
+  return { status: 'transient', owner, error }
+}
+
+function isRefreshAuthFailure(statusCode: number, payload: unknown): boolean {
+  return statusCode === 401 || statusCode === 403 ||
+    (isAPIResponse(payload) && REFRESH_AUTH_FAILURE_CODES.has(payload.code))
+}
+
 function formatPayloadSummary(payload: unknown): string {
   if (typeof payload === 'string') {
     return `string:${payload.slice(0, 200)}`
@@ -126,9 +140,11 @@ function buildMalformedResponseError(res: Taro.request.SuccessCallbackResult<unk
 }
 
 async function refreshAccessToken(owner: SessionIdentity): Promise<RefreshOutcome> {
+  const url = buildURL('/buyer/auth/refresh')
+  let res
   try {
-    const res = await Taro.request<APIResponse<{ access_token: string; refresh_token: string }>>({
-      url: buildURL('/buyer/auth/refresh'),
+    res = await Taro.request<APIResponse<{ access_token: string; refresh_token: string }>>({
+      url,
       method: 'POST',
       data: { refresh_token: owner.refreshToken },
       header: {
@@ -136,44 +152,67 @@ async function refreshAccessToken(owner: SessionIdentity): Promise<RefreshOutcom
         'X-Device-Id': ensureDeviceID()
       }
     })
-    const payload = res.data
-    if (res.statusCode < 200 || res.statusCode >= 300 ||
-      !isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
-      if (__DEV_MODE__) {
-        console.error('[miniapp-api] refresh malformed response', res.statusCode, res.header, res.data)
-      }
-      return failOwnedRefresh(owner)
+  } catch (err) {
+    if (__DEV_MODE__) {
+      console.error('[miniapp-api] refresh request failed', url, err)
     }
-    if (payload.code !== 0 || !hasRefreshTokens(payload.data)) {
-      return failOwnedRefresh(owner)
-    }
+    return transientRefresh(owner, err)
+  }
 
-    const current = useSessionStore.getState()
-    if (!isSameSession(current, owner)) {
-      return { status: 'stale', owner }
-    }
-
-    const refreshedSession = {
-      accessToken: payload.data.access_token,
-      refreshToken: payload.data.refresh_token
-    }
-    current.setSession(refreshedSession.accessToken, refreshedSession.refreshToken, current.profile)
-
-    // Zustand subscribers run synchronously. Re-check after setSession so a
-    // concurrent login/logout cannot be overwritten or used for the replay.
-    if (!isSameSession(sessionIdentity(), refreshedSession)) {
-      return { status: 'stale', owner }
-    }
-    return { status: 'refreshed', owner, session: refreshedSession }
-  } catch {
+  const payload = res.data
+  // Only an explicit auth rejection proves the refresh token is unusable;
+  // transport errors, 5xx and other unexpected responses keep the session.
+  if (isRefreshAuthFailure(res.statusCode, payload)) {
     return failOwnedRefresh(owner)
   }
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    if (__DEV_MODE__) {
+      console.error('[miniapp-api] refresh failed response', res.statusCode, res.header, res.data)
+    }
+    return transientRefresh(
+      owner,
+      new Error(`request failed: status=${res.statusCode}, url=${url}, payload=${formatPayloadSummary(payload)}`)
+    )
+  }
+  if (!isAPIResponse<{ access_token: string; refresh_token: string }>(payload)) {
+    if (__DEV_MODE__) {
+      console.error('[miniapp-api] refresh malformed response', res.statusCode, res.header, res.data)
+    }
+    return transientRefresh(owner, buildMalformedResponseError(res as Taro.request.SuccessCallbackResult<unknown>, url))
+  }
+  if (payload.code !== 0 || !hasRefreshTokens(payload.data)) {
+    return transientRefresh(owner, new Error(payload.message || `request failed: ${payload.code}`))
+  }
+
+  const current = useSessionStore.getState()
+  if (!isSameSession(current, owner)) {
+    return { status: 'stale', owner }
+  }
+
+  const refreshedSession = {
+    accessToken: payload.data.access_token,
+    refreshToken: payload.data.refresh_token
+  }
+  try {
+    current.setSession(refreshedSession.accessToken, refreshedSession.refreshToken, current.profile)
+  } catch {
+    // The server has already rotated the refresh token, so the old one is unusable.
+    return failOwnedRefresh(owner)
+  }
+
+  // Zustand subscribers run synchronously. Re-check after setSession so a
+  // concurrent login/logout cannot be overwritten or used for the replay.
+  if (!isSameSession(sessionIdentity(), refreshedSession)) {
+    return { status: 'stale', owner }
+  }
+  return { status: 'refreshed', owner, session: refreshedSession }
 }
 
 function refreshFor(owner: SessionIdentity): Promise<RefreshOutcome> {
   const existing = refreshFlight
   if (existing && isSameSession(existing.owner, owner)) {
     const current = sessionIdentity()
+    // A transient outcome keeps the session, so the next 401 starts a new flight.
     if (!existing.outcome ||
       existing.outcome.status === 'refreshed' ||
       !isSameSession(current, owner)) {
@@ -189,10 +228,12 @@ function refreshFor(owner: SessionIdentity): Promise<RefreshOutcome> {
   }
 
   let flight!: RefreshFlight
-  const promise = refreshAccessToken(owner).then((outcome) => {
-    flight.outcome = outcome
-    return outcome
-  })
+  const promise = refreshAccessToken(owner)
+    .catch((err: unknown) => transientRefresh(owner, err))
+    .then((outcome) => {
+      flight.outcome = outcome
+      return outcome
+    })
   flight = { owner, promise }
   refreshFlight = flight
   return promise
@@ -256,6 +297,9 @@ export async function apiRequest<T>(options: RequestOptions<T>): Promise<T> {
         retrying: true,
         expectedSession: outcome.session
       })
+    }
+    if (outcome.status === 'transient') {
+      throw outcome.error
     }
     throw new AuthExpiredError()
   }

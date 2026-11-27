@@ -25,7 +25,11 @@ export default function LoginPage() {
         nickname: platform.defaultNickname
       })
       useSessionStore.getState().setSession(data.access_token, data.refresh_token, data.user)
-      await mergeGuest(deviceID)
+      try {
+        await mergeGuest(deviceID)
+      } catch {
+        void Taro.showToast({ title: '游客数据同步失败', icon: 'none' })
+      }
 
       const redirect = router.params.redirect ? decodeURIComponent(router.params.redirect) : '/pages/me/index'
       if (redirect.startsWith('/pages/')) {

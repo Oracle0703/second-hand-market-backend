@@ -11,8 +11,12 @@ export default function MePage() {
   const summary = useQuery({ queryKey: ['buyer-summary'], queryFn: fetchSummary })
   const platform = getMiniProgramPlatform()
 
+  const reloadSummary = () => {
+    void summary.refetch().catch(() => undefined)
+  }
+
   useDidShow(() => {
-    summary.refetch()
+    reloadSummary()
   })
 
   const logout = async () => {
@@ -22,29 +26,37 @@ export default function MePage() {
       // ignore logout network failures
     }
     clearSession()
-    summary.refetch()
+    reloadSummary()
   }
 
   const data = summary.data
+  const loadFailed = Boolean(summary.error) && !data
   return (
     <View className="page">
       <View className="card" style={{ marginBottom: '16rpx' }}>
         <View className="title">我的</View>
-        {data?.is_login ? (
+        {loadFailed ? (
+          <Text>账户信息加载失败</Text>
+        ) : data?.is_login ? (
           <Text>{data.profile?.nickname || platform.defaultNickname}</Text>
         ) : (
           <Text>当前为游客模式</Text>
         )}
+        {summary.error ? <Text>{(summary.error as Error).message || '加载失败，请重试'}</Text> : null}
       </View>
 
       <View className="card" style={{ marginBottom: '16rpx' }}>
-        <View className="list-item">收藏: {data?.counters?.favorites ?? 0}</View>
+        <View className="list-item">收藏: {loadFailed ? '--' : data?.counters?.favorites ?? 0}</View>
         <View className="list-item" onClick={() => Taro.navigateTo({ url: '/pages/history/index' })}>
-          浏览记录: {data?.counters?.histories ?? 0}
+          浏览记录: {loadFailed ? '--' : data?.counters?.histories ?? 0}
         </View>
       </View>
 
-      {!data?.is_login ? (
+      {loadFailed ? (
+        <Button className="btn-primary" onClick={reloadSummary}>
+          重试
+        </Button>
+      ) : !data?.is_login ? (
         <Button className="btn-primary" onClick={() => Taro.navigateTo({ url: '/pages/login/index?redirect=%2Fpages%2Fme%2Findex' })}>
           去登录
         </Button>
