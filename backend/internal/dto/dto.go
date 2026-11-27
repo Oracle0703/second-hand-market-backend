@@ -64,12 +64,12 @@ type CreateProductRequest struct {
 }
 
 type UpdateProductRequest struct {
-	Title             *string  `json:"title"`
-	Description       *string  `json:"description"`
+	Title             *string  `json:"title" binding:"omitempty,min=2,max=128"`
+	Description       *string  `json:"description" binding:"omitempty,min=2,max=5000"`
 	CategoryID        *uint64  `json:"category_id"`
 	PriceCent         *int     `json:"price_cent"`
 	OriginalPriceCent *int     `json:"original_price_cent"`
-	ConditionLevel    *string  `json:"condition_level"`
+	ConditionLevel    *string  `json:"condition_level" binding:"omitempty,oneof=LIKE_NEW GOOD FAIR POOR"`
 	Stock             *int     `json:"stock"`
 	ImageFileIDs      []uint64 `json:"image_file_ids"`
 }

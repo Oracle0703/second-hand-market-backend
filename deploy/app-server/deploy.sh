@@ -87,6 +87,7 @@ fi
 
 compose config --quiet
 compose pull api web
+compose run --rm --no-deps -T --entrypoint /srv/check-transaction-tables api
 
 legacy_stopped=false
 activation_started=false

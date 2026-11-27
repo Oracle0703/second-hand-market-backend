@@ -303,31 +303,15 @@ describe('miniapp authenticated request refresh', () => {
   })
 
   test.each([
-    { name: 'transport rejection', kind: 'network' },
-    { name: 'non-2xx success envelope', kind: 'http' },
-    { name: 'malformed envelope', kind: 'malformed' },
-    { name: 'nonzero business code', kind: 'business' },
-    { name: 'empty access token', kind: 'empty-access' },
-    { name: 'empty refresh token', kind: 'empty-refresh' }
-  ])('clears the owned session when refresh has $name', async ({ kind }) => {
+    { name: 'HTTP 401', response: apiResponse(401, 0, { access_token: 'new-access', refresh_token: 'new-refresh' }) },
+    { name: 'HTTP 403', response: apiResponse(403, 10003) },
+    { name: 'business unauthorized code', response: apiResponse(200, 10002) },
+    { name: 'business forbidden code', response: apiResponse(200, 10003) },
+    { name: 'business account disabled code', response: apiResponse(200, 10007) }
+  ])('clears the owned session when refresh is rejected with $name', async ({ response }) => {
     const request = vi.fn(async (options: RequestOptions) => {
       if (options.url.endsWith('/buyer/auth/refresh')) {
-        switch (kind) {
-          case 'network':
-            throw new Error('refresh network failed')
-          case 'http':
-            return apiResponse(401, 0, { access_token: 'new-access', refresh_token: 'new-refresh' })
-          case 'malformed':
-            return { statusCode: 200, header: {}, data: { unexpected: true } }
-          case 'business':
-            return apiResponse(200, 10002)
-          case 'empty-access':
-            return apiResponse(200, 0, { access_token: '', refresh_token: 'new-refresh' })
-          case 'empty-refresh':
-            return apiResponse(200, 0, { access_token: 'new-access', refresh_token: '' })
-          default:
-            throw new Error(`unknown refresh fixture: ${kind}`)
-        }
+        return response
       }
       if (options.header.Authorization === 'Bearer old-access') return apiResponse(401, 10002)
       return apiResponse(200, 0, { should_not_replay: true })
@@ -367,7 +351,7 @@ describe('miniapp authenticated request refresh', () => {
       if (options.url.endsWith('/buyer/auth/refresh')) {
         refreshCalls += 1
         await refreshGate
-        throw new Error('refresh unavailable')
+        return apiResponse(401, 10002)
       }
       return apiResponse(401, 10002)
     })
@@ -393,6 +377,152 @@ describe('miniapp authenticated request refresh', () => {
       ['buyer_refresh_token'],
       ['buyer_profile']
     ])
+  })
+
+  test.each([
+    { name: 'transport rejection', kind: 'network', message: 'refresh network failed' },
+    { name: 'HTTP 503', kind: 'http-503', message: 'request failed: status=503' },
+    { name: 'HTTP 500', kind: 'http-500', message: 'request failed: status=500' },
+    { name: 'HTTP 429', kind: 'http-429', message: 'request failed: status=429' },
+    { name: 'malformed envelope', kind: 'malformed', message: 'API response malformed' },
+    { name: 'empty access token', kind: 'empty-access', message: 'OK' },
+    { name: 'empty refresh token', kind: 'empty-refresh', message: 'OK' }
+  ])('keeps the session and surfaces the error when refresh has $name', async ({ kind, message }) => {
+    const transportError = new Error('refresh network failed')
+    const request = vi.fn(async (options: RequestOptions) => {
+      if (options.url.endsWith('/buyer/auth/refresh')) {
+        switch (kind) {
+          case 'network':
+            throw transportError
+          case 'http-503':
+            return { statusCode: 503, header: {}, data: '<html>Service Unavailable</html>' }
+          case 'http-500':
+            return apiResponse(500, 20001)
+          case 'http-429':
+            return apiResponse(429, 10009)
+          case 'malformed':
+            return { statusCode: 200, header: {}, data: { unexpected: true } }
+          case 'empty-access':
+            return apiResponse(200, 0, { access_token: '', refresh_token: 'new-refresh' })
+          case 'empty-refresh':
+            return apiResponse(200, 0, { access_token: 'new-access', refresh_token: '' })
+          default:
+            throw new Error(`unknown refresh fixture: ${kind}`)
+        }
+      }
+      if (options.header.Authorization === 'Bearer old-access') return apiResponse(401, 10002)
+      return apiResponse(200, 0, { should_not_replay: true })
+    })
+    const { apiRequest, AuthExpiredError, useSessionStore, storage } = await loadRequestModule(request)
+    const profile = { id: 9, buyer_no: 'B0009', nickname: 'Buyer' }
+    useSessionStore.getState().setSession('old-access', 'old-refresh', profile)
+
+    const result = apiRequest({ method: 'GET', path: '/buyer/favorites' })
+
+    await expect(result).rejects.toThrow(message)
+    await expect(result).rejects.not.toBeInstanceOf(AuthExpiredError)
+    if (kind === 'network') {
+      await expect(result).rejects.toBe(transportError)
+    }
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(useSessionStore.getState()).toMatchObject({
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      profile
+    })
+    expect(storage.get('buyer_access_token')).toBe('old-access')
+    expect(storage.get('buyer_refresh_token')).toBe('old-refresh')
+    expect(storage.get('buyer_profile')).toEqual(profile)
+  })
+
+  test('shares one transient refresh failure across concurrent waiters without clearing the session', async () => {
+    let releaseRefresh!: () => void
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve
+    })
+    const transportError = new Error('refresh timeout')
+    let refreshCalls = 0
+    const request = vi.fn(async (options: RequestOptions) => {
+      if (options.url.endsWith('/buyer/auth/refresh')) {
+        refreshCalls += 1
+        await refreshGate
+        throw transportError
+      }
+      return apiResponse(401, 10002)
+    })
+    const { apiRequest, useSessionStore, taro } = await loadRequestModule(request)
+    useSessionStore.getState().setSession('old-access', 'old-refresh', { id: 9, buyer_no: 'B0009' })
+
+    const first = apiRequest({ method: 'GET', path: '/buyer/favorites' })
+    const second = apiRequest({ method: 'GET', path: '/buyer/histories' })
+    void first.catch(() => undefined)
+    void second.catch(() => undefined)
+    await vi.waitFor(() => expect(refreshCalls).toBe(1))
+    releaseRefresh()
+
+    await expect(first).rejects.toBe(transportError)
+    await expect(second).rejects.toBe(transportError)
+    expect(refreshCalls).toBe(1)
+    expect(taro.removeStorageSync).not.toHaveBeenCalled()
+    expect(useSessionStore.getState()).toMatchObject({ accessToken: 'old-access', refreshToken: 'old-refresh' })
+  })
+
+  test('retries refresh on the next 401 after a transient refresh failure', async () => {
+    let refreshCalls = 0
+    const request = vi.fn(async (options: RequestOptions) => {
+      if (options.url.endsWith('/buyer/auth/refresh')) {
+        refreshCalls += 1
+        if (refreshCalls === 1) {
+          return apiResponse(503, 20001)
+        }
+        expect(options.data).toEqual({ refresh_token: 'old-refresh' })
+        return apiResponse(200, 0, { access_token: 'new-access', refresh_token: 'new-refresh' })
+      }
+      if (options.header.Authorization === 'Bearer old-access') return apiResponse(401, 10002)
+      if (options.header.Authorization === 'Bearer new-access') return apiResponse(200, 0, { recovered: true })
+      throw new Error(`unexpected authorization: ${options.header.Authorization}`)
+    })
+    const { apiRequest, useSessionStore, storage } = await loadRequestModule(request)
+    useSessionStore.getState().setSession('old-access', 'old-refresh', { id: 9, buyer_no: 'B0009' })
+
+    await expect(apiRequest({ method: 'GET', path: '/buyer/favorites' })).rejects.toThrow('request failed: status=503')
+    await expect(
+      apiRequest<{ recovered: boolean }>({ method: 'GET', path: '/buyer/favorites' })
+    ).resolves.toEqual({ recovered: true })
+
+    expect(refreshCalls).toBe(2)
+    expect(storage.get('buyer_access_token')).toBe('new-access')
+    expect(storage.get('buyer_refresh_token')).toBe('new-refresh')
+  })
+
+  test('does not leave a stuck refresh flight when persisting refreshed tokens fails', async () => {
+    let refreshCalls = 0
+    const request = vi.fn(async (options: RequestOptions) => {
+      if (options.url.endsWith('/buyer/auth/refresh')) {
+        refreshCalls += 1
+        const next = refreshCalls === 1 ? 'broken' : 'replacement-next'
+        return apiResponse(200, 0, { access_token: `${next}-access`, refresh_token: `${next}-refresh` })
+      }
+      if (options.header.Authorization === 'Bearer replacement-next-access') return apiResponse(200, 0, { recovered: true })
+      return apiResponse(401, 10002)
+    })
+    const { apiRequest, AuthExpiredError, useSessionStore, taro, storage } = await loadRequestModule(request)
+    useSessionStore.getState().setSession('old-access', 'old-refresh', { id: 9, buyer_no: 'B0009' })
+    const setStorage = taro.setStorageSync.getMockImplementation()!
+    taro.setStorageSync.mockImplementation((key: string, value: unknown) => {
+      if (value === 'broken-access') throw new Error('storage quota exceeded')
+      setStorage(key, value)
+    })
+
+    await expect(apiRequest({ method: 'GET', path: '/buyer/favorites' })).rejects.toBeInstanceOf(AuthExpiredError)
+    expect(useSessionStore.getState()).toMatchObject({ accessToken: '', refreshToken: '' })
+
+    useSessionStore.getState().setSession('replacement-access', 'replacement-refresh', { id: 9, buyer_no: 'B0009' })
+    await expect(
+      apiRequest<{ recovered: boolean }>({ method: 'GET', path: '/buyer/favorites' })
+    ).resolves.toEqual({ recovered: true })
+    expect(refreshCalls).toBe(2)
+    expect(storage.get('buyer_access_token')).toBe('replacement-next-access')
   })
 
   test('clears stale credentials without calling refresh when no refresh token exists', async () => {

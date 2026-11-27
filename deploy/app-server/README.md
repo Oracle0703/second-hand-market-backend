@@ -50,6 +50,8 @@ The GitHub token needs permission to publish packages. The workflow publishes AP
 
 Pushes to `main` deploy to `staging` after CI succeeds. Run the workflow manually with a full commit SHA to deploy that exact revision to `production`.
 
+Before stopping legacy services, replacing the API, or switching the frontend, the candidate image runs `/srv/check-transaction-tables` with its configured database credentials. For MySQL it verifies that the tables involved in stock, orders, intents, product images, audit and idempotency are visible as InnoDB. It also checks `merchant_accounts` and `auth_sessions` for merchant sign-in and session revocation, `merchant_audit_logs` for password resets and status changes, and `merchants` and `categories` for category creation and renaming. A failed check stops activation and reports the missing or incompatible tables. SQLite deployments skip the engine check.
+
 The deployment script checks API health before switching the frontend link and starting Web. A failed update restores the running API's image ID and frontend link, then recreates Web after the API. A first handover runs the legacy Compose file without the CD project name and restarts only the original API/Web containers on failure; it never builds legacy images or restarts MySQL. Failed containers left in `Created` state do not count as a previous release. A per-directory lock prevents concurrent activation.
 
 On Linux with Docker Compose, `python3 deploy/app-server/tests/handover_test.py` rehearses failed first handover, retry, managed-release rollback, and repeated deployment using temporary directories and isolated containers. CI runs this alongside the image build.

@@ -41,6 +41,9 @@ class HandoverTest(unittest.TestCase):
             (new / 'deploy').mkdir(parents=True)
             (new / 'frontend' / 'releases').mkdir(parents=True)
             (new / 'incoming').mkdir()
+            checker = new / 'fixture-checker'
+            checker.write_text('#!/bin/sh\necho "fixture preflight rejected" >&2\nexit 1\n')
+            checker.chmod(0o755)
             (old / '.env').write_text(f'COMPOSE_PROJECT_NAME={legacy_project}\n')
             (old / 'site' / 'index.html').write_text('legacy')
             (old / 'site' / 'healthz').write_text('ok')
@@ -60,7 +63,7 @@ class HandoverTest(unittest.TestCase):
             compose.write_text(json.dumps({'name': '${COMPOSE_PROJECT_NAME}', 'services': {
                 'api': {'image': '${BACKEND_IMAGE}',
                         'ports': [f'127.0.0.1:{self.ports[0]}:80'],
-                        'volumes': [f'{old}/site:/usr/share/nginx/html:ro'],
+                        'volumes': [f'{old}/site:/usr/share/nginx/html:ro', f'{checker}:/srv/check-transaction-tables:ro'],
                         'healthcheck': health},
                 'web': {'image': IMAGE,
                         'ports': [f'127.0.0.1:{self.ports[1]}:80'],
@@ -82,7 +85,7 @@ class HandoverTest(unittest.TestCase):
                         for service in ('api', 'web', 'database')
                         if service != 'database' or command is legacy}
 
-            def deploy(release, content, succeeds):
+            def deploy(release, content, succeeds, error='Previous services restored'):
                 site = root / ('site-' + release)
                 site.mkdir()
                 (site / 'index.html').write_text(content)
@@ -94,13 +97,18 @@ class HandoverTest(unittest.TestCase):
                              FRONTEND_ARCHIVE=str(archive)), check=False)
                 self.assertEqual(result.returncode == 0, succeeds, result.stdout)
                 if not succeeds:
-                    self.assertIn('Previous services restored', result.stdout)
+                    self.assertIn(error, result.stdout)
                     self.assertNotIn('Recovery failed', result.stdout)
                 return result
 
             try:
                 run(*legacy, 'up', '-d', '--wait', env=clean_env)
                 before = ids(legacy, clean_env)
+                deploy('d' * 40, 'healthy', False, 'fixture preflight rejected')
+                self.assertEqual(ids(legacy, clean_env), before)
+                self.assertFalse((new / 'frontend' / 'current').exists())
+                self.assertFalse(any(ids(current, env).values()))
+                checker.write_text('#!/bin/sh\nexit 0\n')
                 deploy('a' * 40, 'broken', False)
                 self.assertEqual(ids(legacy, clean_env), before)
                 self.assertFalse((new / 'frontend' / 'current').exists())

@@ -395,6 +395,63 @@ func TestBuyerHistoryClearSingleProductKeepsOtherMerchantScopedRecords(t *testin
 	}
 }
 
+func TestBuyerFavoritesHistoriesTotalsExcludeHiddenProducts(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "buyerhidden")
+	approveMerchant(t, srv, adminToken, merchantID)
+	merchant := merchantLogin(t, srv, username, password)
+	merchantToken := str(merchant.Data["access_token"])
+	merchantNo := merchantNoByID(t, srv, merchantID)
+	visibleID := createAndOnShelfProduct(t, srv, merchantToken)
+	deletedID := createAndOnShelfProduct(t, srv, merchantToken)
+	draftID := createAndOnShelfProduct(t, srv, merchantToken)
+	movedID := createAndOnShelfProduct(t, srv, merchantToken)
+	otherMerchantID, _, _ := registerMerchant(t, srv, "buyer-other-store")
+
+	headers := map[string]string{"X-Device-Id": "dev-hidden-001"}
+	for _, productID := range []uint64{visibleID, deletedID, draftID, movedID} {
+		if resp := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/favorites", merchantNo), map[string]interface{}{"product_id": productID}, headers); resp.Code != 0 {
+			t.Fatalf("favorite add failed: %+v", resp)
+		}
+		if resp := requestJSON(t, srv.Router, http.MethodPost, withMerchantNo("/api/v1/buyer/histories/views", merchantNo), map[string]interface{}{"product_id": productID}, headers); resp.Code != 0 {
+			t.Fatalf("history view failed: %+v", resp)
+		}
+	}
+	if err := srv.DB.Delete(&model.Product{}, deletedID).Error; err != nil {
+		t.Fatalf("soft delete product: %v", err)
+	}
+	if err := srv.DB.Model(&model.Product{}).Where("id = ?", draftID).Update("status", model.ProductDraft).Error; err != nil {
+		t.Fatalf("set product draft: %v", err)
+	}
+	if err := srv.DB.Model(&model.Product{}).Where("id = ?", movedID).Update("merchant_id", otherMerchantID).Error; err != nil {
+		t.Fatalf("prepare historical records pointing outside this store: %v", err)
+	}
+
+	for _, path := range []string{"/api/v1/buyer/favorites", "/api/v1/buyer/histories"} {
+		list := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo(path+"?page=1&page_size=1", merchantNo), nil, headers)
+		if list.Code != 0 {
+			t.Fatalf("%s list failed: %+v", path, list)
+		}
+		items, _ := list.Data["items"].([]interface{})
+		if len(items) != 1 || numToUint64(list.Data["total"]) != 1 {
+			t.Fatalf("%s should only count visible products: %+v", path, list)
+		}
+		if numToUint64(items[0].(map[string]interface{})["product_id"]) != visibleID {
+			t.Fatalf("%s returned unexpected product: %+v", path, list)
+		}
+	}
+
+	summary := requestJSON(t, srv.Router, http.MethodGet, withMerchantNo("/api/v1/buyer/me/summary", merchantNo), nil, headers)
+	if summary.Code != 0 {
+		t.Fatalf("buyer summary failed: %+v", summary)
+	}
+	counters := summary.Data["counters"].(map[string]interface{})
+	if numToUint64(counters["favorites"]) != 1 || numToUint64(counters["histories"]) != 1 {
+		t.Fatalf("summary counters should only count visible products: %+v", summary)
+	}
+}
+
 func TestBuyerSummaryRequiresMerchantNoAndCountsCurrentMerchant(t *testing.T) {
 	srv := newTestServer(t)
 	adminToken := adminAccessToken(t, srv)

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type AccessClaims struct {
@@ -35,7 +36,8 @@ func BuildAccessToken(secret string, claims AccessClaims, ttl time.Duration) (st
 func BuildRefreshToken(secret string, claims RefreshClaims, ttl time.Duration) (string, time.Time, error) {
 	now := time.Now()
 	exp := now.Add(ttl)
-	claims.RegisteredClaims = jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(exp), IssuedAt: jwt.NewNumericDate(now)}
+	// A unique ID keeps every rotated refresh token distinct, even within the same second.
+	claims.RegisteredClaims = jwt.RegisteredClaims{ID: uuid.NewString(), ExpiresAt: jwt.NewNumericDate(exp), IssuedAt: jwt.NewNumericDate(now)}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(secret))
 	return signed, exp, err

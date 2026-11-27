@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -52,6 +53,15 @@ func isBuyerProductDetailVisible(status string) bool {
 		}
 	}
 	return false
+}
+
+// buyerVisibleProductRecords scopes buyer favorites/histories to products that are
+// not soft-deleted and are visible to buyers, so counts match the listed items.
+func (s *Server) buyerVisibleProductRecords(record interface{}, table string, ownerKey string, merchantID uint64) *gorm.DB {
+	return s.DB.Model(record).
+		Joins("JOIN products ON products.id = "+table+".product_id AND products.deleted_at IS NULL").
+		Where(table+".owner_key = ? AND "+table+".merchant_id = ? AND "+table+".is_active = ?", ownerKey, merchantID, true).
+		Where("products.merchant_id = ? AND products.status IN ?", merchantID, buyerDetailVisibleStatuses)
 }
 
 func (s *Server) ensureBuyerOrGuest(c *gin.Context) (*common.Actor, error) {
@@ -659,14 +669,14 @@ func (s *Server) handleBuyerFavoriteList(c *gin.Context) {
 		return
 	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true)
+	query := s.buyerVisibleProductRecords(&model.BuyerFavorite{}, "buyer_favorites", owner.OwnerKey, merchant.ID)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
 	var favs []model.BuyerFavorite
-	if err := query.Order("updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&favs).Error; err != nil {
+	if err := query.Select("buyer_favorites.*").Order("buyer_favorites.updated_at DESC").Offset((page - 1) * size).Limit(size).Find(&favs).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
@@ -907,14 +917,14 @@ func (s *Server) handleBuyerHistoryList(c *gin.Context) {
 		return
 	}
 	page, size := parsePage(c)
-	query := s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true)
+	query := s.buyerVisibleProductRecords(&model.BuyerHistory{}, "buyer_histories", owner.OwnerKey, merchant.ID)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
 	var histories []model.BuyerHistory
-	if err := query.Order("last_viewed_at DESC").Offset((page - 1) * size).Limit(size).Find(&histories).Error; err != nil {
+	if err := query.Select("buyer_histories.*").Order("buyer_histories.last_viewed_at DESC").Offset((page - 1) * size).Limit(size).Find(&histories).Error; err != nil {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
@@ -1007,21 +1017,7 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 		common.Fail(c, err)
 		return
 	}
-	if err := s.checkRateLimit("buyer:intent:min", fmt.Sprintf("%d", actor.UserID), 5, time.Minute); err != nil {
-		common.Fail(c, err)
-		return
-	}
-	if err := s.checkRateLimit("buyer:intent:day", fmt.Sprintf("%d", actor.UserID), 20, 24*time.Hour); err != nil {
-		common.Fail(c, err)
-		return
-	}
 	deviceID := getDeviceID(c)
-	if deviceID != "" {
-		if err := s.checkRateLimit("buyer:intent:device_day", deviceID, 30, 24*time.Hour); err != nil {
-			common.Fail(c, err)
-			return
-		}
-	}
 
 	var req dto.BuyerIntentCreateRequest
 	if err := bindJSON(c, &req); err != nil {
@@ -1033,24 +1029,26 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 		return
 	}
 
-	var product model.Product
-	if err := s.DB.Where("id = ? AND merchant_id = ?", req.ProductID, merchant.ID).First(&product).Error; err != nil {
-		common.Fail(c, s.dbError(err))
-		return
-	}
-	if product.Status != model.ProductOnShelf {
-		common.Fail(c, common.ErrInvalidTransition)
-		return
-	}
-
 	payload := map[string]interface{}{"product_id": req.ProductID, "contact_name": req.ContactName, "contact_phone": req.ContactPhone, "contact_wechat": req.ContactWechat, "message": req.Message}
 	data, err := s.runWithIdempotency(c, payload, func(idemTx *gorm.DB) (map[string]interface{}, error) {
+		buyerKey := fmt.Sprintf("%d", actor.UserID)
+		if err := s.checkRateLimit("buyer:intent:min", buyerKey, 5, time.Minute); err != nil {
+			return nil, err
+		}
+		if err := s.checkRateLimit("buyer:intent:day", buyerKey, 20, 24*time.Hour); err != nil {
+			return nil, err
+		}
+		if deviceID != "" {
+			if err := s.checkRateLimit("buyer:intent:device_day", deviceID, 30, 24*time.Hour); err != nil {
+				return nil, err
+			}
+		}
 		intent := model.BuyerIntent{
 			IntentNo:       common.BuildBizNo("I"),
 			BuyerID:        actor.UserID,
 			SourceDeviceID: &deviceID,
 			ProductID:      req.ProductID,
-			MerchantID:     product.MerchantID,
+			MerchantID:     merchant.ID,
 			Status:         model.IntentNew,
 			IsOpen:         true,
 			ContactName:    req.ContactName,
@@ -1071,6 +1069,27 @@ func (s *Server) handleBuyerIntentCreate(c *gin.Context) {
 	if err != nil {
 		common.Fail(c, err)
 		return
+	}
+	if data["idempotent"] == true {
+		// Existing keys hash the request body without the merchant query parameter.
+		// Verify the original intent's ownership before returning its saved response.
+		intentNo, ok := data["intent_no"].(string)
+		if !ok || intentNo == "" {
+			common.Fail(c, common.ErrDuplicateSubmit)
+			return
+		}
+		var original model.BuyerIntent
+		err := s.DB.Select("id").
+			Where("intent_no = ? AND buyer_id = ? AND merchant_id = ? AND product_id = ?", intentNo, actor.UserID, merchant.ID, req.ProductID).
+			Take(&original).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.Fail(c, common.ErrDuplicateSubmit)
+			return
+		}
+		if err != nil {
+			common.Fail(c, common.ErrInternal)
+			return
+		}
 	}
 	common.Success(c, data)
 }
@@ -1216,18 +1235,32 @@ func (s *Server) handleBuyerSummary(c *gin.Context) {
 
 	favorites := int64(0)
 	histories := int64(0)
-	_ = s.DB.Model(&model.BuyerFavorite{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true).Count(&favorites).Error
-	_ = s.DB.Model(&model.BuyerHistory{}).Where("owner_key = ? AND merchant_id = ? AND is_active = ?", owner.OwnerKey, merchant.ID, true).Count(&histories).Error
+	if err := s.buyerVisibleProductRecords(&model.BuyerFavorite{}, "buyer_favorites", owner.OwnerKey, merchant.ID).Count(&favorites).Error; err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
+	if err := s.buyerVisibleProductRecords(&model.BuyerHistory{}, "buyer_histories", owner.OwnerKey, merchant.ID).Count(&histories).Error; err != nil {
+		common.Fail(c, common.ErrInternal)
+		return
+	}
 
 	isLogin := owner.BuyerID != nil
 	profile := gin.H{}
 	intentsOpen := int64(0)
 	if owner.BuyerID != nil {
 		var buyer model.BuyerUser
-		if err := s.DB.Where("id = ?", *owner.BuyerID).First(&buyer).Error; err == nil {
+		err := s.DB.Where("id = ?", *owner.BuyerID).First(&buyer).Error
+		switch {
+		case err == nil:
 			profile = gin.H{"buyer_id": buyer.ID, "nickname": buyer.Nickname, "avatar_url": buyer.AvatarURL}
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			common.Fail(c, common.ErrInternal)
+			return
 		}
-		_ = s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND is_open = ?", *owner.BuyerID, merchant.ID, true).Count(&intentsOpen).Error
+		if err := s.DB.Model(&model.BuyerIntent{}).Where("buyer_id = ? AND merchant_id = ? AND is_open = ?", *owner.BuyerID, merchant.ID, true).Count(&intentsOpen).Error; err != nil {
+			common.Fail(c, common.ErrInternal)
+			return
+		}
 	}
 
 	common.Success(c, gin.H{

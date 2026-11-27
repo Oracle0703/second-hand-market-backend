@@ -1,5 +1,6 @@
 import React from 'react'
-import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
+import { useQuery, useQueryClient } from '@/libs/react-query'
+import { useToastMutation } from '@/hooks/useToastMutation'
 import Taro from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { BuyerHistoryItem, clearHistories, listHistories } from '../../services/buyer'
@@ -8,8 +9,9 @@ import { centToYuanText } from '../../utils/price'
 export default function HistoryPage() {
   const queryClient = useQueryClient()
   const query = useQuery({ queryKey: ['buyer-histories'], queryFn: () => listHistories(1, 50) })
-  const clearMutation = useMutation({
+  const clearMutation = useToastMutation({
     mutationFn: async () => clearHistories(),
+    errorMessage: '清空浏览记录失败，请重试',
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['buyer-histories'] })
     }
@@ -19,7 +21,13 @@ export default function HistoryPage() {
     <View className="page">
       <View style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <View className="title">浏览记录</View>
-        <Button className="btn-secondary" size="mini" onClick={() => clearMutation.mutate()}>
+        <Button
+          className="btn-secondary"
+          size="mini"
+          disabled={clearMutation.isPending}
+          loading={clearMutation.isPending}
+          onClick={() => clearMutation.mutate()}
+        >
           清空
         </Button>
       </View>

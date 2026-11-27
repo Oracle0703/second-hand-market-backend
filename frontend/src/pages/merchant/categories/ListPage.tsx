@@ -36,7 +36,10 @@ export function ListPage() {
   })
 
   const invalidateCategories = async () => {
-    await queryClient.invalidateQueries({ queryKey: ['merchant-categories'] })
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['merchant-categories'] }),
+      queryClient.invalidateQueries({ queryKey: ['categories'] })
+    ])
   }
 
   const createMutation = useMutation({

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -112,7 +113,7 @@ func (s *Server) handleAdminMerchantDetail(c *gin.Context) {
 	var accountInfo interface{}
 	if err := s.DB.Where("merchant_id = ? AND role = ?", id, model.AccountRoleOwner).First(&account).Error; err == nil {
 		accountInfo = gin.H{"username": account.Username, "status": account.Status}
-	} else if err != gorm.ErrRecordNotFound {
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
@@ -164,5 +165,36 @@ func (s *Server) handleAdminLogs(c *gin.Context) {
 		common.Fail(c, common.ErrInternal)
 		return
 	}
-	common.Success(c, common.PageResult[model.OperationLog]{Items: items, Total: total, Page: page, PageSize: size})
+	type logItem struct {
+		ID           uint64    `json:"id"`
+		RequestID    string    `json:"request_id"`
+		OperatorType string    `json:"operator_type"`
+		OperatorID   uint64    `json:"operator_id"`
+		MerchantID   *uint64   `json:"merchant_id"`
+		Action       string    `json:"action"`
+		ResourceType string    `json:"resource_type"`
+		ResourceID   uint64    `json:"resource_id"`
+		FromStatus   *string   `json:"from_status"`
+		ToStatus     *string   `json:"to_status"`
+		ResultCode   int       `json:"result_code"`
+		CreatedAt    time.Time `json:"created_at"`
+	}
+	out := make([]logItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, logItem{
+			ID:           it.ID,
+			RequestID:    it.RequestID,
+			OperatorType: it.OperatorType,
+			OperatorID:   it.OperatorID,
+			MerchantID:   it.MerchantID,
+			Action:       it.Action,
+			ResourceType: it.ResourceType,
+			ResourceID:   it.ResourceID,
+			FromStatus:   it.FromStatus,
+			ToStatus:     it.ToStatus,
+			ResultCode:   it.ResultCode,
+			CreatedAt:    it.CreatedAt,
+		})
+	}
+	common.Success(c, common.PageResult[logItem]{Items: out, Total: total, Page: page, PageSize: size})
 }

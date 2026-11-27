@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"second-hand-market-backend/backend/internal/app"
+	"second-hand-market-backend/backend/internal/common"
 	"second-hand-market-backend/backend/internal/model"
 )
 
@@ -903,5 +904,103 @@ func TestDashboardOnShelfTotalAmount(t *testing.T) {
 	}
 	if int64(onShelfAmount) != 20000 {
 		t.Fatalf("on_shelf_total_amount_cent mismatch: expected=20000 got=%v", onShelfAmount)
+	}
+}
+
+func TestOrderDetailHandlesMissingProductAndQueryErrors(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := adminAccessToken(t, srv)
+	merchantID, username, password := registerMerchant(t, srv, "order_detail_errors")
+	approveMerchant(t, srv, adminToken, merchantID)
+	login := merchantLogin(t, srv, username, password)
+	token := str(login.Data["access_token"])
+	auth := map[string]string{"Authorization": "Bearer " + token}
+
+	productID := createAndOnShelfProduct(t, srv, token)
+	createOrder := requestJSON(t, srv.Router, http.MethodPost, "/api/v1/merchant/orders", map[string]interface{}{"product_id": productID, "deal_price_cent": 9900}, auth)
+	if createOrder.Code != 0 {
+		t.Fatalf("create order failed: %+v", createOrder)
+	}
+	orderID := numToUint64(createOrder.Data["order_id"])
+	detailPath := fmt.Sprintf("/api/v1/merchant/orders/%d", orderID)
+	orderDetail := func(resp apiResp) map[string]interface{} {
+		t.Helper()
+		detail, ok := resp.Data["order_detail"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("order_detail missing: %+v", resp)
+		}
+		return detail
+	}
+
+	if err := srv.DB.Where("order_id = ?", orderID).Delete(&model.OrderEvent{}).Error; err != nil {
+		t.Fatalf("delete order events: %v", err)
+	}
+	normal := requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)
+	if normal.Code != 0 {
+		t.Fatalf("order detail failed: %+v", normal)
+	}
+	if events, ok := normal.Data["events"].([]interface{}); !ok || len(events) != 0 {
+		t.Fatalf("events should be an empty array, got %#v", normal.Data["events"])
+	}
+	if detail := orderDetail(normal); detail["product_missing"] != false || detail["product"].(map[string]interface{})["is_deleted"] != false {
+		t.Fatalf("product should be present and not deleted: %+v", detail)
+	}
+
+	if err := srv.DB.Delete(&model.Product{}, productID).Error; err != nil {
+		t.Fatalf("soft delete product: %v", err)
+	}
+	softDeleted := requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)
+	if softDeleted.Code != 0 {
+		t.Fatalf("order detail with soft-deleted product failed: %+v", softDeleted)
+	}
+	detail := orderDetail(softDeleted)
+	product, _ := detail["product"].(map[string]interface{})
+	if numToUint64(product["id"]) != productID || str(product["title"]) == "" || product["is_deleted"] != true || detail["product_missing"] != false {
+		t.Fatalf("soft-deleted product should still be returned: %+v", detail)
+	}
+
+	if err := srv.DB.Unscoped().Model(&model.Product{}).Where("id = ?", productID).Update("merchant_id", merchantID+1).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertMissingProduct := func(detail map[string]interface{}) {
+		t.Helper()
+		// Existing web pages dereference product.id/title/status without a null check.
+		product, ok := detail["product"].(map[string]interface{})
+		if !ok || product["id"] != float64(0) || product["title"] != "" || product["status"] != "" || detail["product_missing"] != true {
+			t.Fatalf("missing product must keep the legacy fields without exposing another merchant: %+v", detail)
+		}
+	}
+	assertMissingProduct(orderDetail(requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)))
+
+	if err := srv.DB.Migrator().DropTable(&model.OrderEvent{}); err != nil {
+		t.Fatalf("drop order events table: %v", err)
+	}
+	eventsFailure := requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)
+	if eventsFailure.HTTPStatus != http.StatusInternalServerError || eventsFailure.Code != common.CodeInternal {
+		t.Fatalf("event query failure should return internal error: status=%d resp=%+v", eventsFailure.HTTPStatus, eventsFailure)
+	}
+	if err := srv.DB.AutoMigrate(&model.OrderEvent{}); err != nil {
+		t.Fatalf("recreate order events table: %v", err)
+	}
+
+	if err := srv.DB.Exec("DELETE FROM products WHERE id = ?", productID).Error; err != nil {
+		t.Fatalf("hard delete product: %v", err)
+	}
+	missing := requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)
+	if missing.Code != 0 {
+		t.Fatalf("order detail with missing product should degrade, got: status=%d resp=%+v", missing.HTTPStatus, missing)
+	}
+	detail = orderDetail(missing)
+	assertMissingProduct(detail)
+	if numToUint64(detail["id"]) != orderID {
+		t.Fatalf("order fields should still be returned: %+v", detail)
+	}
+
+	if err := srv.DB.Migrator().DropTable(&model.Product{}); err != nil {
+		t.Fatalf("drop products table: %v", err)
+	}
+	productFailure := requestJSON(t, srv.Router, http.MethodGet, detailPath, nil, auth)
+	if productFailure.HTTPStatus != http.StatusInternalServerError || productFailure.Code != common.CodeInternal {
+		t.Fatalf("product query failure should return internal error: status=%d resp=%+v", productFailure.HTTPStatus, productFailure)
 	}
 }

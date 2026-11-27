@@ -1,5 +1,6 @@
 import React from 'react'
-import { useMutation, useQuery, useQueryClient } from '@/libs/react-query'
+import { useQuery, useQueryClient } from '@/libs/react-query'
+import { useToastMutation } from '@/hooks/useToastMutation'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { BuyerFavoriteItem, listFavorites, removeFavorite } from '../../services/buyer'
@@ -23,8 +24,9 @@ export default function FavoritePage() {
     void query.refetch().catch(() => undefined)
   })
 
-  const removeMutation = useMutation({
+  const removeMutation = useToastMutation({
     mutationFn: async (productID: number) => removeFavorite(productID),
+    errorMessage: '取消收藏失败，请重试',
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['buyer-favorites'] })
     }
@@ -50,7 +52,13 @@ export default function FavoritePage() {
               </View>
             </View>
             <View style={{ marginTop: '10rpx', display: 'flex', gap: '12rpx' }}>
-              <Button className="btn-secondary" size="mini" onClick={() => removeMutation.mutate(item.product_id)}>
+              <Button
+                className="btn-secondary"
+                size="mini"
+                disabled={removeMutation.isPending}
+                loading={removeMutation.isPending}
+                onClick={() => removeMutation.mutate(item.product_id)}
+              >
                 取消收藏
               </Button>
               {canContactForProduct(item.status) ? (

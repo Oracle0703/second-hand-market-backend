@@ -23,12 +23,8 @@ vi.mock('@ant-design/pro-components', async () => {
   }
 })
 
-function renderWithQuery(ui: ReactNode) {
-  return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      {ui}
-    </QueryClientProvider>
-  )
+function renderWithQuery(ui: ReactNode, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
 }
 
 describe('Category ListPage', () => {
@@ -85,6 +81,25 @@ describe('Category ListPage', () => {
       expect(api.deleteCategory).toHaveBeenCalledWith(2)
     })
   }, 15000)
+
+  it('invalidates shared product category options after category changes', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['categories', 'level1'], [])
+    client.setQueryData(['categories', 'level2-all'], [])
+    renderWithQuery(<ListPage />, client)
+
+    expect(await screen.findByText('家具类')).toBeInTheDocument()
+    expect(client.getQueryState(['categories', 'level1'])?.isInvalidated).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '新增一级分类' }))
+    fireEvent.change(screen.getByLabelText('分类名称'), { target: { value: '家电类' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => {
+      expect(client.getQueryState(['categories', 'level1'])?.isInvalidated).toBe(true)
+      expect(client.getQueryState(['categories', 'level2-all'])?.isInvalidated).toBe(true)
+    })
+  })
 
   it('confirms cascading deletion before deleting a root category', async () => {
     renderWithQuery(<ListPage />)

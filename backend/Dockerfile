@@ -10,6 +10,7 @@ RUN go mod download
 COPY backend/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/server ./cmd/server
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/migrate ./scripts/migrate
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/check-transaction-tables ./scripts/check_transaction_tables
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/backfill-product-images ./scripts/backfill_product_images
 
 FROM debian:bookworm-slim
@@ -22,6 +23,7 @@ WORKDIR /srv
 
 COPY --from=build /out/server /srv/server
 COPY --from=build /out/migrate /srv/migrate
+COPY --from=build /out/check-transaction-tables /srv/check-transaction-tables
 COPY --from=build /out/backfill-product-images /srv/backfill-product-images
 COPY backend/migrations /srv/migrations
 

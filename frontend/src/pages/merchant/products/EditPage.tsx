@@ -39,7 +39,7 @@ type ProductEditValues = {
   title: string
   description: string
   price_yuan: number
-  original_price_yuan: number
+  original_price_yuan?: number | null
   stock: number
   condition_level: (typeof conditionOptions)[number]
   category_id?: number
@@ -95,7 +95,7 @@ export function EditPage() {
       title: detail.data.title,
       description: detail.data.description ?? '',
       price_yuan: centToYuanNumber(detail.data.price_cent),
-      original_price_yuan: centToYuanNumber(detail.data.original_price_cent ?? detail.data.price_cent),
+      original_price_yuan: detail.data.original_price_cent == null ? undefined : centToYuanNumber(detail.data.original_price_cent),
       stock: Number(detail.data.stock ?? 1),
       condition_level: detail.data.condition_level,
       category_id: selectedCategoryID
@@ -124,6 +124,7 @@ export function EditPage() {
   const status = detail.data?.status
   const canEditAll = status === 'DRAFT' || status === 'OFF_SHELF'
   const canEditDescImages = canEditAll || status === 'ON_SHELF'
+  const hasOriginalPrice = detail.data?.original_price_cent != null
 
   const updateMutation = useMutation({
     mutationFn: async (values: ProductEditValues) => {
@@ -138,9 +139,15 @@ export function EditPage() {
         if (!values.category_id) {
           throw new Error('请选择二级分类')
         }
-        if (Number(values.original_price_yuan) < Number(values.price_yuan)) {
+        const hasOriginalPriceInput = values.original_price_yuan != null
+        if (hasOriginalPrice && !hasOriginalPriceInput) {
+          throw new Error('请输入原价')
+        }
+        if (hasOriginalPriceInput && Number(values.original_price_yuan) < Number(values.price_yuan)) {
           throw new Error('原价不能低于价格')
         }
+        const originalPriceCent = hasOriginalPriceInput ? yuanToCent(values.original_price_yuan) : undefined
+        const originalPriceChanged = originalPriceCent !== undefined && originalPriceCent !== detail.data?.original_price_cent
         if (Number(values.stock) <= 0) {
           throw new Error('库存数量必须大于0')
         }
@@ -149,7 +156,7 @@ export function EditPage() {
           description: values.description,
           category_id: values.category_id,
           price_cent: yuanToCent(values.price_yuan),
-          original_price_cent: yuanToCent(values.original_price_yuan),
+          ...(originalPriceChanged ? { original_price_cent: originalPriceCent } : {}),
           stock: Math.max(1, Math.floor(Number(values.stock))),
           condition_level: values.condition_level,
           image_file_ids: imageIDs
@@ -390,7 +397,7 @@ export function EditPage() {
           min={0.01}
           disabled={!canEditAll}
           fieldProps={{ precision: 2, step: 0.01 }}
-          rules={[{ required: true, message: '请输入原价' }]}
+          rules={hasOriginalPrice ? [{ required: true, message: '请输入原价' }] : []}
         />
         <ProFormDigit
           name="stock"

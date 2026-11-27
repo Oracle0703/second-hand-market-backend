@@ -19,7 +19,7 @@ type InvalidateQueryFilters = {
   queryKey?: QueryKey
 }
 
-type MutationOptions<TData, TVariables> = {
+export type MutationOptions<TData, TVariables> = {
   mutationFn: (variables: TVariables) => Promise<TData> | TData
   onSuccess?: (data: TData, variables: TVariables) => void | Promise<void>
   onError?: (error: unknown, variables: TVariables) => void | Promise<void>
@@ -35,7 +35,7 @@ type QueryResult<TData> = {
   refetch: () => Promise<TData | undefined>
 }
 
-type MutationResult<TData, TVariables> = {
+export type MutationResult<TData, TVariables> = {
   data: TData | undefined
   error: unknown
   status: MutationStatus
